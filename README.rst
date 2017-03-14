@@ -1,5 +1,5 @@
 A Python project to monitor and predict glacier Mass Balance
-=============================================================
+============================================================
 
 .. ******************************************
 ..  ******* A Placeholder for Test status****
@@ -11,12 +11,12 @@ This is what it should look like when it's done:
 
 
 
-.. image:: docs/_static/MB_line_example.jpg
-
+.. image:: /docs/_static/MB_line_example.png
+         :scale: 50%
 |
 
 .. image:: docs/_static/MB_statusmap_example.jpg
-
+         :scale: 50%
 
 
 Installation
@@ -97,11 +97,11 @@ Details
     At ETH and WSL
 
 .. image:: https://www.ethz.ch/services/de/service/kommunikation/corporate-design/logo/_jcr_content/par/twocolumn_0/par_left/fullwidthimage/image.imageformat.lightbox.1322628801.png
-    :height: 300px
-    :width: 700 px
+    :height: 150px
+    :width: 350 px
     :scale: 50 %
 .. image:: https://upload.wikimedia.org/wikipedia/de/thumb/9/94/Logo_WSL.svg/200px-Logo_WSL.svg.png
-    :height: 300px
-    :width: 300 px
+    :height: 150px
+    :width: 150 px
     :scale: 50 %
     :align: right
