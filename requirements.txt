@@ -1,2 +1,12 @@
+numpy
+pandas
+geopandas
+ConfigObj
+salem
+oggm
+matplotlib
+pyproj
+netCDF4
+
 #nose
 #sphinx

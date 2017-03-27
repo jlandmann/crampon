@@ -23,7 +23,7 @@ logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
 log = logging.getLogger(__name__)
 
 # Path to the cache directory
-CACHE_DIR = os.path.join(os.path.expanduser('~'), '.oggm')
+CACHE_DIR = os.path.join(os.path.expanduser('~'), '.crampon')
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
@@ -78,7 +78,8 @@ SEC_IN_HOUR = 3600
 DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 SEC_IN_MONTHS = [d * SEC_IN_DAY for d in DAYS_IN_MONTH]
 CUMSEC_IN_MONTHS = np.cumsum(SEC_IN_MONTHS)
-BEGINSEC_IN_MONTHS = np.cumsum([0] + [(d + 1) * SEC_IN_DAY for d in DAYS_IN_MONTH[:-1]])
+BEGINSEC_IN_MONTHS = np.cumsum([0] + [(d + 1) * SEC_IN_DAY
+                                      for d in DAYS_IN_MONTH[:-1]])
 
 RHO = 900.  # ice density
 G = 9.81  # gravity
@@ -347,6 +348,7 @@ def pack_config():
         'BASENAMES': dict(BASENAMES)
     }
 
+
 def unpack_config(cfg_dict):
     """Unpack and apply the config packed via pack_config."""
 
@@ -357,7 +359,8 @@ def unpack_config(cfg_dict):
     PARAMS = cfg_dict['PARAMS']
     PATHS = cfg_dict['PATHS']
 
-    # BASENAMES is a DocumentedDict, which cannot be pickled because set intentionally mismatches with get
+    # BASENAMES is a DocumentedDict, which cannot be pickled because set
+    # intentionally mismatches with get
     BASENAMES = DocumentedDict()
     for k in cfg_dict['BASENAMES']:
         BASENAMES[k] = (cfg_dict['BASENAMES'][k], 'Imported Pickle')
