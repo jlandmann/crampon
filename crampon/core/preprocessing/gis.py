@@ -1,3 +1,5 @@
+from __future__ import absolute_import, division
+
 from salem import Grid, wgs84
 import numpy as np
 import pyproj

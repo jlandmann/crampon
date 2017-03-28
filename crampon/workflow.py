@@ -1,4 +1,4 @@
-
+from __future__ import absolute_import, division
 import salem
 import logging
 from oggm.workflow import _init_pool_globals, _init_pool, _merge_dicts,\
