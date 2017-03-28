@@ -19,10 +19,16 @@ import crampon.cfg as cfg
 
 
 # I should introduce/alter:
-"""utils.joblib_read_climate, get_demo_file, in general: get_files"""
+"""utils.joblib_read_climate, get_crampon_demo_file, in general: get_files"""
 
 # Joblib
 MEMORY = Memory(cachedir=cfg.CACHE_DIR, verbose=0)
+SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
+
+
+def get_oggm_demo_file(fname):
+    """ Wraps the oggm.utils.get_demo_file function"""
+    get_demo_file(fname)  # Calls the func imported from oggm.utils
 
 
 def leap_year(year, calendar='standard'):

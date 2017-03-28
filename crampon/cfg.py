@@ -299,8 +299,8 @@ def initialize(file=None):
         PARAMS[k] = cp.as_float(k)
 
     # Empty defaults
-    from oggm.utils import get_demo_file
-    set_divides_db(get_demo_file('divides_alps.shp'))
+    from crampon.utils import get_oggm_demo_file
+    set_divides_db(get_oggm_demo_file('divides_alps.shp'))
     IS_INITIALIZED = True
 
 
@@ -308,7 +308,7 @@ def set_divides_db(path=None):
     """Read the divides database.
 
     Currently the only divides available are for the Alps:
-    ``utils.get_demo_file('divides_alps.shp')``
+    ``utils.get_oggm_demo_file('divides_alps.shp')``
 
     """
 

@@ -20,7 +20,7 @@ import xarray as xr
 from crampon.core.preprocessing import gis, geometry
 import crampon.cfg as cfg
 from crampon import utils
-from crampon.utils import get_demo_file, tuple2int
+from crampon.utils import get_oggm_demo_file, tuple2int
 from crampon.tests import is_slow, HAS_NEW_GDAL, requires_py3, RUN_PREPRO_TESTS
 
 # General settings
