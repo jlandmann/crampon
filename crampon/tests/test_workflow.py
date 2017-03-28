@@ -17,7 +17,7 @@ from numpy.testing import assert_allclose
 # Locals
 import crampon.cfg as cfg
 from crampon import workflow
-from crampon.utils import get_demo_file, rmsd, write_centerlines_to_shape
+from crampon.utils import get_oggm_demo_file, rmsd, write_centerlines_to_shape
 from crampon.tests import is_slow, ON_TRAVIS, RUN_WORKFLOW_TESTS, \
     requires_mpltest, RUN_GRAPHIC_TESTS, BASELINE_DIR
 from crampon import utils
