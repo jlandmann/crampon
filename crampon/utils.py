@@ -2,6 +2,8 @@
 A collection of some useful miscellaneous functions.
 """
 
+from __future__ import absolute_import, division
+
 from joblib import Memory
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps

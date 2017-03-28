@@ -1,5 +1,7 @@
 """ Prepare the meteodata from netCDF4 """
 
+from __future__ import division
+
 import netCDF4 as nc
 import glob
 import os

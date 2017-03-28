@@ -1,3 +1,5 @@
+from __future__ import division
+
 from crampon.utils import entity_task, global_task
 import logging
 from matplotlib.ticker import NullFormatter
