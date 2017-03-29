@@ -31,6 +31,12 @@ def get_oggm_demo_file(fname):
     get_demo_file(fname)  # Calls the func imported from oggm.utils
 
 
+def get_crampon_demo_file():
+    """This should be done once some test data are allowed to be moved to an 
+    external repo"""
+    raise NotImplementedError
+
+
 def leap_year(year, calendar='standard'):
     """
     Determine if year is a leap year.
