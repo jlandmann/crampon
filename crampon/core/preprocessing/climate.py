@@ -6,6 +6,7 @@ import netCDF4 as nc
 import glob
 import os
 import salem
+import crampon.cfg as cfg
 
 # To (re)write:
 # mb_climate_on_height, _get_ref_glaciers, _get_optimal_scaling_factor
@@ -111,6 +112,26 @@ class MeteoSuisseGrid(object):
     def get_gradient(self):
         raise NotImplementedError()
 
+    def downsample(self):
+        # This should remain in crampon maybe, as OGGM doesn't need it
+        raise NotImplementedError()
+
+    def write_oggm_format(self):
+        # Write out an OGGM suitable format
+        raise NotImplementedError()
+
+    def merge(self, other):
+        """
+        Merge with another MeteoSuisseGrid.
+        
+        Parameters
+        ----------
+        other: MeteoSuisseGrid to merge with.
+
+        Returns
+        -------
+        Merged MeteoSuisseGrid.
+        """
 
 if __name__ == '__main__':
     print(glob.glob(testtemp_dir+'*TabsD*'))
