@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SAGA_METADATA>
+  <HISTORY>
+    <MODULE>Merge Layers</MODULE>
+    <OPTION type="boolean" id="SRCINFO" name="Add Source Information">TRUE</OPTION>
+    <OPTION type="boolean" id="MATCH" name="Match Fields by Name">TRUE</OPTION>
+    <DATA_LIST type="shapes_list" id="INPUT" name="Layers">
+      <DATA>
+        <FILE>C:/Users/Johannes/Documents/crampon/data/test/shp/Glaernisch/RGI50-11.00539.shp</FILE>
+      </DATA>
+      <DATA>
+        <FILE>C:/Users/Johannes/Documents/crampon/data/test/shp/Aletsch/RGI50-11.01450.shp</FILE>
+      </DATA>
+      <DATA>
+        <FILE>C:/Users/Johannes/Documents/crampon/data/test/shp/Gries/RGI50-11.01876.shp</FILE>
+      </DATA>
+    </DATA_LIST>
+  </HISTORY>
+  <SOURCE>
+    <FILE>C:/Users/Johannes/Documents/crampon/data/test/shp/testglaciers_rgi.shp</FILE>
+    <DATABASE></DATABASE>
+    <PROJECTION>
+      <OGC_WKT>GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.017453292519943295]]</OGC_WKT>
+      <PROJ4>+proj=longlat +a=6378137.000000 +b=6356752.314245 +no_defs</PROJ4>
+      <EPSG>-1</EPSG>
+    </PROJECTION>
+  </SOURCE>
+  <DESCRIPTION></DESCRIPTION>
+</SAGA_METADATA>
