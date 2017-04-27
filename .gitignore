@@ -98,3 +98,6 @@ ENV/
 
 # Big data
 data/bigdata/
+
+# credentials
+.credentials
