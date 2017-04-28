@@ -16,19 +16,19 @@ from os import path
 
 here = path.abspath(path.dirname(__file__))
 
-NAME = 'CRaMPON'
+NAME = 'crampon'
 DESCRIPTION = 'A Python Project for Cryospheric Monitoring and Prediction ' \
               'Online'
 LONG_DESCRIPTION = 'The long description is still to come...'
 AUTHOR = 'Johannes Landmann and others'
 AUTHOR_EMAIL = 'landmann@vaw.baug.ethz.ch'
-URL = 'https://github.com/jlandmann/CRaMPON'
+URL = 'https://github.com/jlandmann/crampon'
 KEYWORDS = ['glacier', 'mass-balance', 'runoff', 'model', 'python',
             'monitoring', 'prediction']
 
 
 # Get the long description from the README file
-with open(path.join(here, NAME.lower(), 'README.rst'), encoding='utf-8') as f:
+with open(path.join(here, 'README.rst'), encoding='utf-8') as f:
     long_description = f.read()
 
 
