@@ -7,10 +7,12 @@ import glob
 import os
 import salem
 import crampon.cfg as cfg
+from oggm.core.preprocessing.climate import *
 
 # To (re)write:
 # mb_climate_on_height, _get_ref_glaciers, _get_optimal_scaling_factor
 
+"""
 # Parameters to be kicked out later on
 testprec_dir = os.path.join(os.getcwd(), 'data\\test\\prec')
 testtemp_dir = os.path.join(os.getcwd(), 'data\\test\\temp')
@@ -19,6 +21,7 @@ aletsch_shp = shape_dir + '\\Aletsch\\G008032E46504N.shp'
 
 testtemp = glob.glob(testtemp_dir+'\\*.nc')[0]
 testprec = glob.glob(testtemp_dir+'\\*.nc')[0]
+"""
 
 
 class MeteoSuisseGrid(object):

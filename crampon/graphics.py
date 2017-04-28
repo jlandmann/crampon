@@ -3,8 +3,7 @@ from __future__ import division
 from crampon.utils import entity_task, global_task
 import logging
 from matplotlib.ticker import NullFormatter
-from oggm.graphics import truncate_colormap, _plot_map, plot_googlemap, \
-    plot_domain
+from oggm.graphics import *
 
 # Local imports
 import crampon.cfg as cfg

@@ -1,9 +1,9 @@
 from __future__ import absolute_import, division
 import salem
 import logging
+import crampon.cfg as cfg
 from oggm.workflow import _init_pool_globals, _init_pool, _merge_dicts,\
     _pickle_copier, execute_entity_task, init_glacier_regions
-
 
 # MPI similar to OGGM - not yet implemented
 try:

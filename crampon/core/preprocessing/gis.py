@@ -3,6 +3,7 @@ from __future__ import absolute_import, division
 from salem import Grid, wgs84
 import numpy as np
 import pyproj
+import crampon.cfg as cfg
 from oggm.core.preprocessing.gis import gaussian_blur, _check_geometry,\
     _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks
 

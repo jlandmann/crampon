@@ -5,6 +5,11 @@ A collection of some useful miscellaneous functions.
 from __future__ import absolute_import, division
 
 from joblib import Memory
+import salem
+import os
+import pandas as pd
+import numpy as np
+import logging
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
@@ -70,4 +75,74 @@ def leap_year(year, calendar='standard'):
             leap = False
     return leap
 
+'''
+@entity_task(log, writes=['meteo'])
+def process_meteosuisse_data(gdir):
+    """Processes and writes the climate data from a user-defined climate file.
 
+    The input file must have a specific format (see
+    oggm-sample-data/test-files/histalp_merged_hef.nc for an example).
+
+    Uses caching for faster retrieval.
+
+    This is the way OGGM does it for the Alps (HISTALP).
+    """
+
+    if not (('climate_file' in cfg.PATHS) and
+                os.path.exists(cfg.PATHS['climate_file'])):
+        raise IOError('Custom climate file not found')
+
+    # read the file
+    fpath = cfg.PATHS['climate_file']
+    nc_ts = salem.GeoNetcdf(fpath)
+
+    # set temporal subset for the ts data (hydro years)
+    yrs = nc_ts.time.year
+    y0, y1 = yrs[0], yrs[-1]
+    if pd.infer_freq(nc_ts.time) == 'MS':  # month start frequency
+        nc_ts.set_period(t0='{}-10-01'.format(y0), t1='{}-09-01'.format(y1))
+        time = nc_ts.time
+        ny, r = divmod(len(time), 12)
+        if r != 0:
+            raise ValueError('Climate data should be N full years exclusively')
+    elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
+        nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
+        time = nc_ts.time
+        ny, r = divmod(len(time), 12)
+        if r != 0:
+            raise ValueError('Climate data should be N full years exclusively')
+    elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
+        pass  # doesn't matter if it's entire years or not
+    else:
+        raise NotImplementedError('Climate data frequency not yet understood')
+
+    # Units
+    assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter']
+    assert nc_ts._nc.variables['temp'].units.lower() in ['degC', 'degrees',
+                                                         'degree']
+    assert nc_ts._nc.variables['prcp'].units.lower() in ['kg m-2', 'l m-2',
+                                                         'mm']
+
+    # geoloc
+    lon = nc_ts._nc.variables['lon'][:]
+    lat = nc_ts._nc.variables['lat'][:]
+
+    # Gradient defaults
+    use_grad = cfg.PARAMS['temp_use_local_gradient']
+    def_grad = cfg.PARAMS['temp_default_gradient']
+    g_minmax = cfg.PARAMS['temp_local_gradient_bounds']
+
+    ilon = np.argmin(np.abs(lon - gdir.cenlon))
+    ilat = np.argmin(np.abs(lat - gdir.cenlat))
+    ref_pix_lon = lon[ilon]
+    ref_pix_lat = lat[ilat]
+    iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon,
+                                                          ilat, def_grad,
+                                                          g_minmax,
+                                                          use_grad)
+    gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
+                                    ref_pix_lon, ref_pix_lat)
+    # metadata
+    out = {'climate_source': fpath, 'hydro_yr_0': y0+1, 'hydro_yr_1': y1}
+    gdir.write_pickle(out, 'climate_info')
+'''

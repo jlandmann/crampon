@@ -4,11 +4,18 @@ A number of globals are defined here to be available everywhere.
 """
 from __future__ import absolute_import, division
 
+from oggm.cfg import PathOrderedDict, DocumentedDict, set_divides_db, \
+    set_intersects_db
+from oggm.cfg import initialize as oggminitialize
+
+
 import logging
 import os
 import shutil
 import sys
+import glob
 from collections import OrderedDict
+from distutils.util import strtobool
 
 import numpy as np
 import pandas as pd
@@ -23,46 +30,9 @@ logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
 log = logging.getLogger(__name__)
 
 # Path to the cache directory
-CACHE_DIR = os.path.join(os.path.expanduser('~'), '.crampon')
+CACHE_DIR = os.path.join(os.path.expanduser('~'), '.oggm')
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
-
-
-class DocumentedDict(dict):
-    """Quick "magic" to document the BASENAMES entries."""
-
-    def __init__(self):
-        self._doc = dict()
-
-    def _set_key(self, key, value, docstr=''):
-        if key in self:
-            raise ValueError('Cannot overwrite a key.')
-        dict.__setitem__(self, key, value)
-        self._doc[key] = docstr
-
-    def __setitem__(self, key, value):
-        # Overrides the original dic to separate value and documentation
-        try:
-            self._set_key(key, value[0], docstr=value[1])
-        except:
-            raise ValueError('DocumentedDict accepts only tuple of len 2')
-
-    def info_str(self, key):
-        """Info string for the documentation."""
-        return '    {}'.format(self[key]) + '\n' + '        ' + self._doc[key]
-
-    def doc_str(self, key):
-        """Info string for the documentation."""
-        return '        {}'.format(self[key]) + '\n' + '            ' + \
-               self._doc[key]
-
-
-class PathOrderedDict(OrderedDict):
-    """Quick "magic" to be sure that paths are expanded correctly."""
-
-    def __setitem__(self, key, value):
-        # Overrides the original dic to expand the path
-        OrderedDict.__setitem__(self, key, os.path.expanduser(value))
 
 # Globals
 IS_INITIALIZED = False
@@ -70,6 +40,9 @@ CONTINUE_ON_ERROR = False
 PARAMS = OrderedDict()
 PATHS = PathOrderedDict()
 BASENAMES = DocumentedDict()
+RGI_REG_NAMES = False
+RGI_SUBREG_NAMES = False
+LRUHANDLERS = OrderedDict()
 
 # Constants
 SEC_IN_YEAR = 365*24*3600
@@ -78,8 +51,7 @@ SEC_IN_HOUR = 3600
 DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 SEC_IN_MONTHS = [d * SEC_IN_DAY for d in DAYS_IN_MONTH]
 CUMSEC_IN_MONTHS = np.cumsum(SEC_IN_MONTHS)
-BEGINSEC_IN_MONTHS = np.cumsum([0] + [(d + 1) * SEC_IN_DAY
-                                      for d in DAYS_IN_MONTH[:-1]])
+BEGINSEC_IN_MONTHS = np.cumsum([0] + [(d + 1) * SEC_IN_DAY for d in DAYS_IN_MONTH[:-1]])
 
 RHO = 900.  # ice density
 G = 9.81  # gravity
@@ -110,6 +82,15 @@ BASENAMES['dem'] = ('dem.tif', _doc)
 
 _doc = 'The glacier outlines in the local projection.'
 BASENAMES['outlines'] = ('outlines.shp', _doc)
+
+_doc = 'The glacier intersects in the local projection.'
+BASENAMES['intersects'] = ('intersects.shp', _doc)
+
+_doc = 'The flowline catchments in the local projection.'
+BASENAMES['flowline_catchments'] = ('flowline_catchments.shp', _doc)
+
+_doc = 'The catchments intersections in the local projection.'
+BASENAMES['catchments_intersects'] = ('catchments_intersects.shp', _doc)
 
 _doc = 'A ``salem.Grid`` handling the georeferencing of the local grid.'
 BASENAMES['glacier_grid'] = ('glacier_grid.json', _doc)
@@ -163,6 +144,10 @@ _doc = 'Some information (dictionary) about the climate data for this ' \
        'glacier, avoiding many useless accesses to the netCDF file.'
 BASENAMES['climate_info'] = ('climate_info.pkl', _doc)
 
+_doc = 'The monthly GCM climate timeseries for this glacier, stored in a netCDF ' \
+       'file.'
+BASENAMES['cesm_data'] = ('cesm_data.nc', _doc)
+
 _doc = 'A Dataframe containing the bias scores as a function of the prcp ' \
        'factor. This is useful for testing mostly.'
 BASENAMES['prcp_fac_optim'] = ('prcp_fac_optim.pkl', _doc)
@@ -206,6 +191,12 @@ def initialize(file=None):
     global N
     global A
     global RHO
+    global RGI_REG_NAMES
+    global RGI_SUBREG_NAMES
+
+    # This is necessary as OGGM still refers to its own initialisation
+    oggminitialize(file=file)
+
     if file is None:
         file = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                             'params.cfg')
@@ -230,6 +221,12 @@ def initialize(file=None):
     if cp['rgi_dir'] == '~':
         cp['rgi_dir'] = os.path.join(homedir, 'OGGM_data', 'rgi')
 
+    # Setup Download-Cache-Dir
+    if os.environ.get('OGGM_DOWNLOAD_CACHE_RO') is not None:
+        cp['dl_cache_readonly'] = bool(strtobool(os.environ.get('OGGM_DOWNLOAD_CACHE_RO')))
+    if os.environ.get('OGGM_DOWNLOAD_CACHE') is not None:
+        cp['dl_cache_dir'] = os.environ.get('OGGM_DOWNLOAD_CACHE')
+
     CONTINUE_ON_ERROR = cp.as_bool('continue_on_error')
 
     PATHS['working_dir'] = cp['working_dir']
@@ -253,6 +250,7 @@ def initialize(file=None):
     PARAMS['grid_dx_method'] = cp['grid_dx_method']
     PARAMS['topo_interp'] = cp['topo_interp']
     PARAMS['use_divides'] = cp.as_bool('use_divides')
+    PARAMS['use_intersects'] = cp.as_bool('use_intersects')
     PARAMS['use_compression'] = cp.as_bool('use_compression')
     PARAMS['mpi_recv_buf_size'] = cp.as_int('mpi_recv_buf_size')
     PARAMS['use_multiple_flowlines'] = cp.as_bool('use_multiple_flowlines')
@@ -280,6 +278,17 @@ def initialize(file=None):
     _k = 'use_optimized_inversion_params'
     PARAMS[_k] = cp.as_bool(_k)
 
+    # Make sure we have a proper cache dir
+    from oggm.utils import download_oggm_files
+    download_oggm_files()
+
+    # Parse RGI metadata
+    _d = os.path.join(CACHE_DIR, 'oggm-sample-data-master', 'rgi_meta')
+    RGI_REG_NAMES = pd.read_csv(os.path.join(_d, 'rgi_regions.csv'),
+                                index_col=0)
+    RGI_SUBREG_NAMES = pd.read_csv(os.path.join(_d, 'rgi_subregions.csv'),
+                                   index_col=0)
+
     # Delete non-floats
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
            'glathida_rgi_links', 'grid_dx_method', 'topo_dir', 'cru_dir',
@@ -290,7 +299,7 @@ def initialize(file=None):
            'optimize_inversion_params', 'use_multiple_flowlines',
            'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
            'tstar_search_window', 'use_bias_for_run', 'run_period',
-           'prcp_scaling_factor']
+           'prcp_scaling_factor', 'use_intersects']
     for k in ltr:
         del cp[k]
 
@@ -299,68 +308,8 @@ def initialize(file=None):
         PARAMS[k] = cp.as_float(k)
 
     # Empty defaults
-    from crampon.utils import get_oggm_demo_file
-    set_divides_db(get_oggm_demo_file('divides_alps.shp'))
+    #from oggm.utils import get_demo_file
+    #set_divides_db(get_demo_file('divides_alps.shp'))
+    #set_intersects_db(get_demo_file('rgi_intersect_oetztal.shp'))
     IS_INITIALIZED = True
 
-
-def set_divides_db(path=None):
-    """Read the divides database.
-
-    Currently the only divides available are for the Alps:
-    ``utils.get_oggm_demo_file('divides_alps.shp')``
-
-    """
-
-    if PARAMS['use_divides'] and path is not None:
-        df = gpd.read_file(path)
-        try:
-            # dirty fix for RGIV5
-            r5 = df.copy()
-            r5.RGIID = [r.replace('RGI40', 'RGI50') for r in r5.RGIID.values]
-            df = pd.concat([df, r5])
-            PARAMS['divides_gdf'] = df.set_index('RGIID')
-        except AttributeError:
-            # dirty fix for RGIV4
-            r4 = df.copy()
-            r4.RGIId = [r.replace('RGI50', 'RGI40') for r in r5.RGIId.values]
-            df = pd.concat([df, r4])
-            PARAMS['divides_gdf'] = df.set_index('RGIId')
-    else:
-        PARAMS['divides_gdf'] = gpd.GeoDataFrame()
-
-
-def reset_working_dir():
-    """Deketes the working directory."""
-    if os.path.exists(PATHS['working_dir']):
-        shutil.rmtree(PATHS['working_dir'])
-    os.makedirs(PATHS['working_dir'])
-
-
-def pack_config():
-    """Pack the entire configuration in one pickleable dict."""
-
-    return {
-        'IS_INITIALIZED': IS_INITIALIZED,
-        'CONTINUE_ON_ERROR': CONTINUE_ON_ERROR,
-        'PARAMS': PARAMS,
-        'PATHS': PATHS,
-        'BASENAMES': dict(BASENAMES)
-    }
-
-
-def unpack_config(cfg_dict):
-    """Unpack and apply the config packed via pack_config."""
-
-    global IS_INITIALIZED, CONTINUE_ON_ERROR, PARAMS, PATHS, BASENAMES
-
-    IS_INITIALIZED = cfg_dict['IS_INITIALIZED']
-    CONTINUE_ON_ERROR = cfg_dict['CONTINUE_ON_ERROR']
-    PARAMS = cfg_dict['PARAMS']
-    PATHS = cfg_dict['PATHS']
-
-    # BASENAMES is a DocumentedDict, which cannot be pickled because set
-    # intentionally mismatches with get
-    BASENAMES = DocumentedDict()
-    for k in cfg_dict['BASENAMES']:
-        BASENAMES[k] = (cfg_dict['BASENAMES'][k], 'Imported Pickle')
