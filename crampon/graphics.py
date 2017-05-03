@@ -77,5 +77,4 @@ def plot_fog_mb_glaciers(fog_dir=None, y=[], x=[]):
     ax.set_title('Available MB glacier in FoG')
 
     # make it nice
-    #plt.tight_layout()
     plt.show()
