@@ -2,8 +2,8 @@ numpy
 pandas
 geopandas
 ConfigObj
-salem
-oggm
+-e https://github.com/fmaussion/salem.git
+-e https://github.com/OGGM/oggm.git
 matplotlib
 pyproj
 netCDF4
