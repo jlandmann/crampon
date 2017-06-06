@@ -180,6 +180,11 @@ BASENAMES['past_model'] = ('past_model.nc', _doc)
 _doc = 'Calving output'
 BASENAMES['calving_output'] = ('calving_output.pkl', _doc)
 
+# Added from CRAMPON:
+_doc = 'CSV output from the calibration on custom mass balance data with ' \
+       'mustar, bias and error'
+BASENAMES['mustar_from_mauro'] = ('mustar_from_mauro.csv', _doc)
+
 
 def initialize(file=None):
     """Read the configuration file containing the run's parameters."""
@@ -313,3 +318,34 @@ def initialize(file=None):
     #set_intersects_db(get_demo_file('rgi_intersect_oetztal.shp'))
     IS_INITIALIZED = True
 
+
+def pack_config():
+    """Pack the entire configuration in one pickleable dict."""
+
+    return {
+        'IS_INITIALIZED': IS_INITIALIZED,
+        'CONTINUE_ON_ERROR': CONTINUE_ON_ERROR,
+        'PARAMS': PARAMS,
+        'PATHS': PATHS,
+        'LRUHANDLERS': LRUHANDLERS,
+        'BASENAMES': dict(BASENAMES)
+    }
+
+
+def unpack_config(cfg_dict):
+    """Unpack and apply the config packed via pack_config."""
+
+    global IS_INITIALIZED, CONTINUE_ON_ERROR, PARAMS, PATHS, \
+        BASENAMES, LRUHANDLERS
+
+    IS_INITIALIZED = cfg_dict['IS_INITIALIZED']
+    CONTINUE_ON_ERROR = cfg_dict['CONTINUE_ON_ERROR']
+    PARAMS = cfg_dict['PARAMS']
+    PATHS = cfg_dict['PATHS']
+    LRUHANDLERS = cfg_dict['LRUHANDLERS']
+
+    # BASENAMES is a DocumentedDict, which cannot be pickled because
+    # set intentionally mismatches with get
+    BASENAMES = DocumentedDict()
+    for k in cfg_dict['BASENAMES']:
+        BASENAMES[k] = (cfg_dict['BASENAMES'][k], 'Imported Pickle')
