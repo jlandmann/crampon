@@ -1,5 +1,14 @@
 import logging
 from oggm.tests import *
+import os
+import osgeo.gdal
+from distutils.version import LooseVersion
+import matplotlib
+from oggm import cfg as oggmcfg
+import sys
+import socket
+from six.moves.urllib.request import urlopen
+from six.moves.urllib.error import URLError
 
 # Defaults
 logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
@@ -21,7 +30,7 @@ if osgeo.gdal.__version__ >= '1.11':
 HAS_MPL_FOR_TESTS = False
 if LooseVersion(matplotlib.__version__) >= LooseVersion('2'):
     HAS_MPL_FOR_TESTS = True
-    BASELINE_DIR = os.path.join(cfg.CACHE_DIR, 'oggm-sample-data-master',
+    BASELINE_DIR = os.path.join(oggmcfg.CACHE_DIR, 'oggm-sample-data-master',
                                 'baseline_images', '2.0.x')
 
 

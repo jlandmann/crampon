@@ -24,6 +24,11 @@ TEST_DIR = os.path.join(CURRENT_DIR, 'tmp_download')
 if not os.path.exists(TEST_DIR):
     os.makedirs(TEST_DIR)
 
-# I have to change/set up
-#class TestInitialize(unittest.TestCase):
-#TestDataFiles
+
+class TestFuncs(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    def tearDown(self):
+        pass
