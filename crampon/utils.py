@@ -10,6 +10,8 @@ import os
 import pandas as pd
 import numpy as np
 import logging
+import paramiko as pm
+import xarray as xr
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
@@ -74,6 +76,111 @@ def leap_year(year, calendar='standard'):
               (year < 1583)):
             leap = False
     return leap
+
+
+class CirrusClient(pm.SSHClient):
+    """
+    Class for SSH interaction with Cirrus Server at WSL.
+    """
+    def __init__(self):
+        self.connect()
+
+    def create_connect(self, user, password, server='cirrus.wsl.ch', port=22):
+        client = pm.SSHClient()
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(pm.AutoAddPolicy())
+        client.connect(self.server, self.port, self.user, self.password)
+
+        return client
+
+    def list_content(self, dir=None, options=None):
+        """
+        
+        Parameters
+        ----------
+        dir: str
+            Directory whose output shall be listed
+        options: str
+            Options for listing. Any one letter-option from the UNIX 'ls' 
+            command is allowed.
+
+        Returns
+        -------
+
+        """
+
+        # Get the minus for ls options
+        if options:
+            options = '-' + options
+
+        _, stdout, stderr = self.exec_command('ls {} {}'.format(options, dir))
+        raise NotImplementedError()
+
+    def get_file(self, mode=None):
+        raise NotImplementedError()
+
+    def check_news(self):
+        """
+        Take some file list and compare it to the current content via os-walkdir
+        if there are new files => Download them and hand them over to the MeteoSeries
+        Returns
+        -------
+
+        """
+
+
+class MeteoTimeSeries(xr.Dataset):
+
+    def __init__(self, *args, **kwargs):
+
+        # Pseudo: If no in cache, download whole series
+        xr.Dataset.__init__(self, *args, **kwargs)
+
+    def update_with_verified(self):
+        """
+        Updates the time series with verified MeteoSwiss data.
+        
+        Returns
+        -------
+
+        """
+        raise NotImplementedError()
+
+    def update_with_operational(self):
+        """
+        Updates the time series with operational MeteoSwiss data.
+        
+        Returns
+        -------
+
+        """
+        raise NotImplementedError()
+
+    def check_time_continuity(self):
+        """
+        Checks the time continuity of the time series.
+        
+        If there are missing time steps, fill them with NaN via the 
+        xr.Dataset.resample method.
+        
+        Returns
+        -------
+
+        """
+        # Pseudo:
+        # If self.time misses a time step => resample with netcdf time unit
+
+    def digest_input(self, file):
+        """
+        Take a file and append it to the current series (copy of update_with_*?)
+        Parameters
+        ----------
+        file
+
+        Returns
+        -------
+
+        """
 
 '''
 @entity_task(log, writes=['meteo'])
