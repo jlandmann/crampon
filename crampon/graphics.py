@@ -212,6 +212,7 @@ def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disgui
     marker_cluster = folium.MarkerCluster().add_to(m)
 
     sorted = glc_gdf.sort_values('Area', ascending=False)
+    sorted = sorted.reset_index()
     locations = sorted[['CenLat', 'CenLon']]
     locationlist = locations.values.tolist()
     # At the moment, the browser doesn't load the map anymore with more than
@@ -221,10 +222,10 @@ def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disgui
     #                                                       icon_anchor=(10, 10),
     #    html='<div style="font-size: 12pt">{}</div>'.format(glc_gdf['Name'][i]),
     #    )).add_to(marker_cluster)
-    for i, row in enumerate(sorted.values[:10]):
+    for i, row in enumerate(sorted.ix[:10]):
         folium.Marker(locationlist[i], icon=folium.DivIcon(icon_size=(5, 5),
                                                            icon_anchor=(10, 10),
-        html='<div style="font-size: 12pt">{}</div>'.format(glc_gdf['Name'][i]),
+        html='<div style="font-size: 12pt">{}</div>'.format(sorted.iloc[i]['Name']),
         )).add_to(marker_cluster)
 
     ## Add PopUp on GeoJSON - makes the map superslow
