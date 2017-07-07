@@ -15,7 +15,7 @@ from crampon.core.preprocessing.geometry import catchment_width_geom
 from crampon.core.preprocessing.geometry import catchment_width_correction
 from oggm.core.preprocessing.climate import mu_candidates
 from oggm.core.preprocessing.climate import process_cru_data
-from oggm.core.preprocessing.climate import process_custom_climate_data
+from crampon.core.preprocessing.climate import process_custom_climate_data
 from oggm.core.preprocessing.climate import process_cesm_data
 
 from oggm.core.preprocessing.inversion import prepare_for_inversion

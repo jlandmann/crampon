@@ -9,6 +9,7 @@ import salem
 import crampon.cfg as cfg
 import numpy as np
 from crampon.core.models.massbalance import PastMassBalanceModel
+from crampon import utils
 from crampon.utils import date_to_year, GlacierDirectory
 import crampon.utils
 from oggm.core.preprocessing.climate import *
@@ -153,8 +154,96 @@ class MeteoSuisseGrid(object):
         Merged MeteoSuisseGrid.
         """
 
+# This writes 'climate_monthly' in the original version (doesn't fit anymore)
+@entity_task(log, writes=[])
+def process_custom_climate_data(gdir):
+    """Processes and writes the climate data from a user-defined climate file.
+
+    The input file must have a specific format (see
+    oggm-sample-data/test-files/histalp_merged_hef.nc for an example).
+
+    Uses caching for faster retrieval.
+
+    The modifications to the original function allow a more flexible handling
+    of the climate file, e.g. with a daily frequency.
+    """
+
+    if not (('climate_file' in cfg.PATHS) and
+                os.path.exists(cfg.PATHS['climate_file'])):
+        raise IOError('Custom climate file not found')
+
+    # read the file
+    fpath = cfg.PATHS['climate_file']
+    nc_ts = salem.GeoNetcdf(fpath)
+
+    # Units
+    assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter']
+    assert nc_ts._nc.variables['temp'].units.lower() in ['degc', 'degrees',
+                                                         'degree']
+    assert nc_ts._nc.variables['prcp'].units.lower() in ['kg m-2', 'l m-2',
+                                                         'mm', 'millimeters',
+                                                         'millimeter']
+
+    # geoloc
+    lon = nc_ts._nc.variables['lon'][:]
+    lat = nc_ts._nc.variables['lat'][:]
+
+    # Gradient defaults
+    use_grad = cfg.PARAMS['temp_use_local_gradient']
+    def_grad = cfg.PARAMS['temp_default_gradient']
+    g_minmax = cfg.PARAMS['temp_local_gradient_bounds']
+
+    ilon = np.argmin(np.abs(lon - gdir.cenlon))
+    ilat = np.argmin(np.abs(lat - gdir.cenlat))
+    ref_pix_lon = lon[ilon]
+    ref_pix_lat = lat[ilat]
+
+    # Can stay as is in OGGM (no time-dependent operation)
+    iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon,
+                                                          ilat, def_grad,
+                                                          g_minmax,
+                                                          use_grad)
+
+    # Set temporal subset for the ts data depending on frequency:
+    # hydro years if monthly data, else no restriction
+    yrs = nc_ts.time.year
+    y0, y1 = yrs[0], yrs[-1]
+    time = nc_ts.time
+    if pd.infer_freq(nc_ts.time) == 'MS':  # month start frequency
+        nc_ts.set_period(t0='{}-10-01'.format(y0), t1='{}-09-01'.format(y1))
+        ny, r = divmod(len(time), 12)
+        if r != 0:
+            raise ValueError('Climate data should be N full years exclusively')
+        gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
+                                        ref_pix_lon, ref_pix_lat)
+    elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
+        nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
+        ny, r = divmod(len(time), 12)
+        if r != 0:
+            raise ValueError('Climate data should be N full years exclusively')
+        gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
+                                        ref_pix_lon, ref_pix_lat)
+    elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
+        # Doesn't matter if entire years or not, BUT a correction for y1 to be
+        # the last hydro/glacio year is needed
+        if not '{}-09-30'.format(y1) in nc_ts.time:
+            y1 = yrs[-2]
+        gdir.write_daily_climate_file(time, iprcp, itemp, igrad, ihgt,
+                                        # FUNCTION WRITE_DAILY_CLIMATE FILE MUST BE ADDED TO GDIR
+                                        ref_pix_lon, ref_pix_lat)
+    else:
+        raise NotImplementedError('Climate data frequency not yet understood')
+
+    # for logging
+    end_date = time[-1]
+
+    # metadata
+    out = {'climate_source': fpath, 'hydro_yr_0': y0 + 1,
+           'hydro_yr_1': y1, 'end_date': end_date}
+    gdir.write_pickle(out, 'climate_info')
+
 '''
-def past_mb_anytime(gdir, cali_params, ym_prod, cl):
+def past_mb_anytime(gdir, cali_params, ym_prod, cl, insitu):
     """
     
     Parameters
@@ -162,6 +251,7 @@ def past_mb_anytime(gdir, cali_params, ym_prod, cl):
     gdir
     ym_prod
     cl
+    insitu
 
     Returns
     -------
@@ -178,13 +268,13 @@ def past_mb_anytime(gdir, cali_params, ym_prod, cl):
               cfg.SEC_IN_MONTHS[m-1] * cfg.RHO / 1000.
         mb_monthly.append(sum(tmp))
     mb = (sum(mb_monthly))
-    return np.abs(np.subtract(np.ones_like(mb)*-0.71586703*27, mb))
+    return np.abs(np.subtract(np.ones_like(mb)*insitu, mb))
 '''
 
 
-@entity_task(log, writes=['mustar_from_mauro'])
-def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
-                       prcp_fac_rg=None, recurs=0):
+#@entity_task(log, writes=['mustar_from_mauro'])
+def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
+                       prcp_fac_rg=None, recurs=0, err_thresh=5.):
     """
     Get mustar from a volume change.
     
@@ -192,12 +282,19 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
     ----------
     gdir: oggm.utils.GlacierDirectory
         An OGGM GlacierDirectory.
+    deltah_df: pandas.DataFrame or geopandas.GeoDataFrame
+        A DataFrame with thickness changes im millimeters of ice and begin date
+        and end date of the measurement period. A the moment, the column names
+        are still odd and result from putting FoG column names in the 13 spaces
+        limited shapefile attributes
     mustar_rg: list-like
         A range for the temperature sensitivity to be tested
     prcp_fac_rg: list-like
         A range for the precipitation correction factor to be tested
     recurs: int
         Number of recursions (needed if parameters bump into corners)
+    err_thresh: float
+        Allowed error threshold in reproduction of given ice thickness change.
     
     Returns
     -------
@@ -207,16 +304,15 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
         The squared error with respect to the calibration value (mm w.e. ** 2).
     """
 
-
     p_comb = list(itertools.product(enumerate(mustar_rg),
                                     enumerate(prcp_fac_rg)))
 
     # the column names are odd, but due to the 13 char limitation in SHPs
-    ybeg = int(str(deltav[deltav.RGIId == gdir.rgi_id].REFERENCE_.iloc[0])[:4])
-    yend = int(str(deltav[deltav.RGIId == gdir.rgi_id].BgnDate.iloc[0])[:4])
+    ybeg = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id].REFERENCE_.iloc[0])[:4])
+    yend = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id].BgnDate.iloc[0])[:4])
 
     # thickness change in meters of ice
-    insitu_ally = deltav[deltav.RGIId == gdir.rgi_id]['THICKNESS_'].iloc[0] \
+    insitu_ally = deltah_df[deltah_df.RGIId == gdir.rgi_id]['THICKNESS_'].iloc[0] \
                   / 1000.
     ym_prod = list(itertools.product([ybeg], [9, 10, 11, 12])) +\
               list(itertools.product(np.arange(ybeg + 1, yend),
@@ -224,8 +320,6 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
               list(itertools.product([yend], [1, 2, 3, 4, 5, 6, 7, 8]))
     ##### HERE SHOULD GO A PROCEDURE TO ACCOUNT FOR UNCERTAINTIES IN DEM DATES
 
-    #ym_prod = list(itertools.product(np.arange(years[gdir.rgi_id][0], years[gdir.rgi_id][1]),
-    #                                 np.arange(1, 13)))    ##### STIMMT DAS? VON WANN GENAU SIND MAUROS DHMS=?
     majid = gdir.read_pickle('major_divide', div_id=0)
     cl = gdir.read_pickle('inversion_input', div_id=majid)[-1]
 
@@ -234,14 +328,14 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
     #result_minimize = optimize.minimize(past_mb_anytime,
     #                                    [(np.mean(mustar_rg),
     #                                     np.mean(prcp_fac_rg))],
-    #                                    args=(gdir, ym_prod, cl),
+    #                                    args=(gdir, ym_prod, cl, insitu_ally),
     #                                    bounds=((None, None), (None, None)))
     #result_de = optimize.differential_evolution(past_mb_anytime,
     #                                            [(np.min(mustar_rg),
     #                                              np.max(mustar_rg)),
     #                                             (np.min(prcp_fac_rg),
     #                                              np.max(prcp_fac_rg))],
-    #                                            args=(gdir, ym_prod, cl))
+    #                                            args=(gdir, ym_prod, cl, insitu_ally))
 
     for (mi, mustar), (pi, prcp_fac) in p_comb:
         past_model = PastMassBalanceModel(gdir, mu_star=mustar,
@@ -277,18 +371,22 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
     # check if the minimum error got caught at the edges of the definition
     # interval of mustar and prcp_fac
     min_ind = np.where(err == err.min())
+
+    """
     # Ineffective, as whole range is calculated again
     if (min_ind[0] == 0 or min_ind[1] == 0) and recurs == 0:
         #new_mrg = np.append(mustar_rg - np.abs(np.max(mustar_rg)), mustar_rg) # the range becomes negative, this makes no sense!!!
         #new_prg = np.append(prcp_fac_rg - np.abs(np.max(prcp_fac_rg)), prcp_fac_rg) # the range becomes negative, this makes no sense!!!
         # let's try to decrease the step width instead
         new_mrg = np.arange(np.min(mustar_rg), np.max(mustar_rg),
-                            ((np.max(mustar_rg) - np.min(mustar_rg)) / (len(mustar_rg) - 1)) / 2.)
+                            ((np.max(mustar_rg) - np.min(mustar_rg)) /
+                             (len(mustar_rg) - 1)) / 2.)
         new_prg = np.arange(np.min(prcp_fac_rg), np.max(prcp_fac_rg),
-                            ((np.max(prcp_fac_rg) - np.min(prcp_fac_rg)) / (len(prcp_fac_rg) - 1)) / 2.)
+                            ((np.max(prcp_fac_rg) - np.min(prcp_fac_rg)) /
+                             (len(prcp_fac_rg) - 1)) / 2.)
         print('Cali param values bumped into lower bounds')
         print(new_mrg, new_prg)
-        mb, err = mustar_from_deltav(gdir=gdir, deltav=deltav,
+        mb, err = mustar_from_deltah(gdir=gdir, deltah_df=deltah_df,
                                      mustar_rg=new_mrg,
                                      prcp_fac_rg=new_prg, recurs=1)
         min_ind = np.where(err == err.min())
@@ -296,25 +394,29 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
         return mb, err
     elif (min_ind[0] == err.shape[0] or min_ind[1] == err.shape[1]) and recurs == 0:
         new_mrg = np.append(mustar_rg, mustar_rg + np.abs(np.max(mustar_rg)))
-        new_prg = np.append(prcp_fac_rg, prcp_fac_rg + np.abs(np.max(prcp_fac_rg)))
+        new_prg = np.append(prcp_fac_rg, prcp_fac_rg +
+                            np.abs(np.max(prcp_fac_rg)))
         print('Cali param values bumped into upper bounds')
         print(new_mrg, new_prg)
-        mb, err = mustar_from_deltav(gdir=gdir, deltav=deltav,
+        mb, err = mustar_from_deltah(gdir=gdir, deltah_df=deltah_df,
                                      mustar_rg=new_mrg,
                                      prcp_fac_rg=new_prg, recurs=1)
         min_ind = np.where(err == err.min())
         print(mustar_rg[min_ind[0]], prcp_fac_rg[min_ind[1]])
         return mb, err
+    """
 
-    # Error greater than 5%
-    elif (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100 > 5. and recurs == 0:
-        print('Error too big ({}\%) for {}'.format((np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100, gdir.rgi_id))
+    # Error greater than thresholt
+    if (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100 > err_thresh and recurs == 0:
+        print('Error too big ({}\%) for {}'.format((np.sqrt([err[min_ind]][0])
+                                                    / insitu_ally)[0] * 100,
+                                                   gdir.rgi_id))
         # let's try to decrease the step width instead
         new_mrg = np.arange(np.min(mustar_rg), np.max(mustar_rg),
                             ((np.max(mustar_rg) - np.min(mustar_rg)) / (len(mustar_rg) - 1)) / 2.)
         new_prg = np.arange(np.min(prcp_fac_rg), np.max(prcp_fac_rg),
                             ((np.max(prcp_fac_rg) - np.min(prcp_fac_rg)) / (len(prcp_fac_rg) - 1)) / 2.)
-        mb, err = mustar_from_deltav(gdir=gdir, deltav=deltav,
+        mb, err = mustar_from_deltah(gdir=gdir, deltah_df=deltah_df,
                                      mustar_rg=new_mrg,
                                      prcp_fac_rg=new_prg, recurs=1)
         min_ind = np.where(err == err.min())
@@ -322,6 +424,20 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
         return mb, err
 
     else:
+        # Take up to 50 values close to minimum as long as they are smaller
+        # than error threshold
+        N = 50
+        n_lowest_val = err[np.unravel_index(err.argsort(axis=None),
+                                            err.shape)][:N]
+
+        # Indices for lowest mustasr and precipitation
+        n_lowest_m = np.unravel_index(err.argsort(axis=None), err.shape)[0][:N]
+        n_lowest_p = np.unravel_index(err.argsort(axis=None), err.shape)[1][:N]
+
+        n_lowest_val = np.where(np.abs(np.sqrt(n_lowest_val) / insitu_ally * 100) <= err_thresh)
+        print(err[n_lowest_m, n_lowest_p])
+        print(mustar_rg[n_lowest_m], prcp_fac_rg[n_lowest_p])
+
         print(mustar_rg[min_ind[0]], prcp_fac_rg[min_ind[1]])
         print('Error in Percent:{}'.format(
             (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100))
@@ -329,12 +445,14 @@ def mustar_from_deltav(gdir, deltav=None, mustar_rg=None,
         for div_id in [0] + list(gdir.divide_ids):
             # Scalars in a small dataframe for later
             df = pd.DataFrame()
-            df['rgi_id'] = [gdir.rgi_id]
-            df['t_star'] = [None]
-            df['mu_star'] = [mustar_rg[min_ind[0]]][0]
-            df['prcp_fac'] = [prcp_fac_rg[min_ind[1]]][0]
-            df['bias'] = [err[min_ind]][0]
-            df['err_perc'] = (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100
+            df['rgi_id'] = [gdir.rgi_id] * len(n_lowest_m)
+            df['t_star'] = [None] * len(n_lowest_m)
+            df['mu_star'] = mustar_rg[n_lowest_m]#[mustar_rg[min_ind[0]]][0]
+            df['prcp_fac'] = prcp_fac_rg[n_lowest_p]#[prcp_fac_rg[min_ind[1]]][0]
+            df['bias'] = np.sqrt(err[n_lowest_m, n_lowest_p]) #[err[min_ind]][0]
+            df['err_perc'] = np.abs((np.sqrt([err[n_lowest_m, n_lowest_p]]) / insitu_ally)[0] * 100) #(np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100
+            #  drop lines where error too big
+            df = df[df.err_perc <= err_thresh]
             df.to_csv(gdir.dir+'\\mustar_from_mauro.csv',
                       index=False)
 
@@ -345,6 +463,13 @@ if __name__ == '__main__':
     # Initialize CRAMPON (and OGGM, hidden in cfg.py), IMPORTANT!
     cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
                         'CH_params.cfg')
+
+    # Some changes in cfg
+    # Added from CRAMPON:
+    _doc = 'CSV output from the calibration on custom mass balance data with ' \
+           'mustar, bias and error'
+    cfg.BASENAMES['mustar_from_mauro'] = ('mustar_from_mauro.csv', _doc)
+
     # for testglaciers
     #gdirs = [GlacierDirectory(i) for i in
     #         glob('C:\\Users\\Johannes\\Desktop\\testglaciers_safe\\'
@@ -374,9 +499,13 @@ if __name__ == '__main__':
             print(i)
             continue
 
+    # remove
+    gdirs = gdirs[:2]
+    ################
+
     deltav_file = 'C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disguise_entities_old_and_new.shp'
-    deltav = gpd.read_file(deltav_file)
-    deltav = deltav[['RGIId', 'THICKNESS_', 'BgnDate', 'REFERENCE_']]
+    deltah = gpd.read_file(deltav_file)
+    deltah = deltah[['RGIId', 'THICKNESS_', 'BgnDate', 'REFERENCE_']]
 
     # set ranges and steps for calibration parameters
     mrg_step = 0.25
@@ -384,30 +513,33 @@ if __name__ == '__main__':
     mrg = np.arange(0., 80. + mrg_step, mrg_step)
     prg = np.arange(0.05, 2.5 + prg_step, prg_step)
 
+
     for gdir in gdirs:
         # read from OGGM
         #tdf = pd.read_csv(gdir.get_filepath('local_mustar'))
         #oggm_mustar = tdf.mu_star.iloc[0]
         #oggm_prcp_fac = tdf.prcp_fac.iloc[0]
 
-        #mb, err, rm, rd = mustar_from_deltav(gdir=gdir, mustar_rg=mrg,
-        #                                     prcp_fac_rg=prg)
-
+        mb, err = mustar_from_deltah(gdir=gdir, mustar_rg=mrg,
+                                     deltah_df=deltah, prcp_fac_rg=prg)
+    '''
         # if already calibrated, then skip
         if os.path.exists(gdir.dir + '\\mustar_from_mauro.csv'):
             gdirs.remove(gdir)
 
 
     #try:
-    #    mb, err = mustar_from_deltav(gdir=gdir, deltav=deltav,
+    #    mb, err = mustar_from_deltah(gdir=gdir, deltah=deltah,
     #                                 mustar_rg=mrg, prcp_fac_rg=prg)
     #except (FileNotFoundError, ValueError) as ex:
     #    print('{} for {}'.format(ex, gdir.dir))
     #    errorlist.append([ex, gdir.dir])
     #    continue
+    '''
 
-    execute_entity_task(mustar_from_deltav, gdirs, deltav=deltav,
-                        mustar_rg=mrg, prcp_fac_rg=prg)
+    #execute_entity_task(mustar_from_deltah, gdirs, deltah_df=deltah,
+    #                    mustar_rg=mrg, prcp_fac_rg=prg)
+
 
     '''
     # show mass balances produced by the model
@@ -467,7 +599,7 @@ if __name__ == '__main__':
     plt.scatter((oggm_mustar - np.min(mrg)) / mrg_step,
                 (oggm_prcp_fac - np.min(prg)) / prg_step, c='y')
 
-    oggm_mb, oggm_err = mustar_from_deltav(gdir=gdir,
+    oggm_mb, oggm_err = mustar_from_deltah(gdir=gdir,
                                            deltav_file=deltav_file,
                                            mustar_rg=np.arange(oggm_mustar,
                                                                oggm_mustar
