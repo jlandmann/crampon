@@ -30,15 +30,12 @@ cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
                     'CH_params.cfg')
 
 # Local paths (where to write output and where to download input)
-print(cfg.PATHS)
 PLOTS_DIR = os.path.join(cfg.PATHS['working_dir'], 'plots')
+print(PLOTS_DIR)
 
 # Currently OGGM wants some directories to exist
 # (maybe I'll change this but it can also catch errors in the user config)
 utils.mkdir(cfg.PATHS['working_dir'])
-utils.mkdir(cfg.PATHS['topo_dir'])
-utils.mkdir(cfg.PATHS['cru_dir'])
-utils.mkdir(cfg.PATHS['rgi_dir'])
 
 # Read one test glacier
 #testglacier = 'C:\\Users\\Johannes\\Documents\\data\\outlines\\RGI\\' \
@@ -47,15 +44,10 @@ utils.mkdir(cfg.PATHS['rgi_dir'])
 testglacier = 'C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disguise_entities_old_and_new.shp'
 rgidf = gpd.read_file(testglacier)
 #rgidf = rgidf[rgidf.RGIId == 'RGI50-11.00536']
-#rgidf = rgidf[rgidf.RGIId == 'RGI50-11.A51D31n']
 
 # where problems occur
-#problem_glaciers_rgi = ['RGI50-11.00761', 'RGI50-11.02813', 'RGI50-11.02812',
-#                    'RGI50-11.02996', 'RGI50-11.01249', 'RGI50-11.01459',
-#                    'RGI50-11.01697', 'RGI50-11.01994',  # during masking
-#                    'RGI50-11.02058']  # local_mustar.csv not found
 problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
-                         'RGI50-11.01509-0','RGI50-11.01538-0',
+                         'RGI50-11.01509-0', 'RGI50-11.01538-0',
                         'RGI50-11.01956-0', 'RGI50-11.B6302-1',
                          'RGI50-11.02552-0', 'RGI50-11.B3643n',
                         'RGI50-11.02576-0', 'RGI50-11.02663-0',
@@ -64,16 +56,10 @@ problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
                         'RGI50-11.A54I17n-0', 'RGI50-11.A14F13-4',
                         'RGI50-11.B4616-0',   # 'bottleneck' polygons
                         'RGI50-11.02848']  # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
-ok = ['RGI50-11.01158-0', 'RGI50-11.01639', 'RGI50-11.02516','RGI50-11.02543-0','RGI50-11.02679',  'RGI50-11.A14I03-0','RGI50-11.A14I09n-0', 'RGI50-11.A51E49n',
-                        'RGI50-11.A51G01-1', 'RGI50-11.A51H05-1',
-                        'RGI50-11.A54G67n',
-                        'RGI50-11.B5820',
-                        'RGI50-11.B8252n',
-                        'RGI50-11.B9506']
 rgidf = rgidf[~rgidf.RGIId.isin(problem_glaciers_sgi)]
-#rgidf = rgidf.head(300)
+#rgidf = rgidf.head(50)
 #rgidf = rgidf[rgidf.Area >= 0.01]
-#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.01471'])]
+#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.00638'])] # just to have one REFMB glacier
 
 # Run parameters
 cfg.PARAMS['d1'] = 4
@@ -148,10 +134,8 @@ if __name__ == '__main__':
         for i in np.arange(12):
             mb_ymon.append(mb_avg[i::12])
 
-        # Multi-year cumulative MB for glaciological years:
-        # Make October the 1st month by rolling & calculate cumulative sums
-        mb_ymon_r = np.roll(mb_ymon, 3, axis=0)
-        mb_ymon_r_cs = np.nancumsum(mb_ymon_r, axis=0)
+        # No need to roll the data: ALREADY IN GLACIO YEARS!!
+        mb_ymon_cs = np.nancumsum(mb_ymon, axis=0)
 
         # OGGM standard plots
         if PLOTS_DIR == '':
@@ -204,7 +188,7 @@ if __name__ == '__main__':
         ax.set_xlim(1, 12)
         start, end = ax.get_xlim()
         ax.xaxis.set_ticks(np.arange(start, end))
-        ax.set_xticklabels([m for m in 'JFMAMJJASOND'])
+        ax.set_xticklabels([m for m in 'ONDJFMAMJJAS'])
         ax.grid(True, which='both', alpha=0.5)
         plt.title('Multi-year Monthly MB Distribution of ' +
                   g.rgi_id + '(' + g.name + ')')
@@ -216,17 +200,17 @@ if __name__ == '__main__':
         # Climatology CumSum
         fig, ax = plt.subplots(figsize=(10, 5))
         #  plot median
-        ax.plot(np.arange(1, 13), [np.nanmedian(m) for m in mb_ymon_r_cs],
+        ax.plot(np.arange(1, 13), [np.nanmedian(m) for m in mb_ymon_cs],
                 c='b', label='Median')
         #  plot IQR
         ax.fill_between(np.arange(1, 13),
-                        [np.nanpercentile(m, 25) for m in mb_ymon_r_cs],
-                        [np.nanpercentile(m, 75) for m in mb_ymon_r_cs],
+                        [np.nanpercentile(m, 25) for m in mb_ymon_cs],
+                        [np.nanpercentile(m, 75) for m in mb_ymon_cs],
                         facecolor='cornflowerblue', alpha=0.5)
         #  plot 10th to 90th pctl
         ax.fill_between(np.arange(1, 13),
-                        [np.nanpercentile(m, 10) for m in mb_ymon_r_cs],
-                        [np.nanpercentile(m, 90) for m in mb_ymon_r_cs],
+                        [np.nanpercentile(m, 10) for m in mb_ymon_cs],
+                        [np.nanpercentile(m, 90) for m in mb_ymon_cs],
                         facecolor='cornflowerblue', alpha=0.3)
         ax.set_xlabel('Months')
         ax.set_ylabel('Cumulative Mass Balance (m we)')
@@ -239,6 +223,7 @@ if __name__ == '__main__':
                   g.rgi_id + '(' + g.name + ')')
         legend = plt.legend()
         plt.setp(legend.get_title())
+        plt.show()
         fig.savefig(bname + 'Ymon_Cumul_MB.png')
         plt.close()
 
