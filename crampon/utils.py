@@ -12,6 +12,9 @@ import numpy as np
 import logging
 import paramiko as pm
 import xarray as xr
+from configobj import ConfigObj, ConfigObjError
+import sys
+from glob import glob
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
@@ -27,6 +30,12 @@ import crampon.cfg as cfg
 
 # I should introduce/alter:
 """utils.joblib_read_climate, get_crampon_demo_file, in general: get_files"""
+
+# Module logger
+log = logging.getLogger(__name__)
+# Stop paramiko from logging successes to the console
+#logging.getLogger ('paramiko').addHandler(log.handlers)
+#logging.getLogger("paramiko").setLevel(logging.WARNING)
 
 # Joblib
 MEMORY = Memory(cachedir=cfg.CACHE_DIR, verbose=0)
@@ -82,23 +91,54 @@ class CirrusClient(pm.SSHClient):
     """
     Class for SSH interaction with Cirrus Server at WSL.
     """
-    def __init__(self):
-        self.connect()
+    def __init__(self, credfile=None):
+        """
+        Initialize.
 
-    def create_connect(self, user, password, server='cirrus.wsl.ch', port=22):
+        Parameters
+        ----------
+        credfile: str
+            Path to the credentials file (must be parsable as
+            configobj.ConfigObj).
+        """
+
+        pm.SSHClient.__init__(self)
+
+        self.sftp = None
+        self.sftp_open = False
+        self.ssh_open = False
+
+        if credfile is None:
+            credfile = os.path.join(os.path.abspath(os.path.dirname(
+                os.path.dirname(__file__))), '.credentials')
+
+        try:
+            cr = ConfigObj(credfile, file_error=True)
+        except (ConfigObjError, IOError) as e:
+            log.critical('Credentials file could not be parsed (%s): %s',
+                         credfile, e)
+            sys.exit()
+
+        self.cr = cr
+        self.client = self.create_connect(cr['cirrus']['host'],
+                                          cr['cirrus']['user'],
+                                          cr['cirrus']['password'])
+
+    def create_connect(self, host, user, password, port=22):
         client = pm.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(pm.AutoAddPolicy())
-        client.connect(self.server, self.port, self.user, self.password)
+        client.connect(host, port, user, password)
+        self.ssh_open = True
 
         return client
 
-    def list_content(self, dir=None, options=None):
+    def list_content(self, idir='.', options=''):
         """
         
         Parameters
         ----------
-        dir: str
+        idir: str
             Directory whose output shall be listed
         options: str
             Options for listing. Any one letter-option from the UNIX 'ls' 
@@ -106,35 +146,120 @@ class CirrusClient(pm.SSHClient):
 
         Returns
         -------
-
+        The stdout of the host machine separated into lines as a list.
         """
 
         # Get the minus for ls options
         if options:
             options = '-' + options
 
-        _, stdout, stderr = self.exec_command('ls {} {}'.format(options, dir))
-        raise NotImplementedError()
+        _, stdout, stderr = self.client.exec_command('ls {} {}'
+                                                     .format(options, idir))
 
-    def get_file(self, mode=None):
-        raise NotImplementedError()
+        stdout = stdout.read().splitlines()
 
-    def check_news(self):
+        return stdout
+
+    def get_files(self, remotedir, remotelist, targetdir):
         """
-        Take some file list and compare it to the current content via os-walkdir
-        if there are new files => Download them and hand them over to the MeteoSeries
+        Get a file from the host to a local machine.
+
+        Parameters
+        ----------
+        remotedir: str
+            Base remote directory as relative path from the $HOME.
+        remotelist: list
+            Relative paths (from remote directory) to remote files which shall
+            be retrieved.
+        local: list
+            Directory where to put the files (the relative path will be
+            maintained).
+
         Returns
         -------
 
         """
+        if not self.sftp_open:
+            self.sftp = self.client.open_sftp()
+            self.sftp_open = True
+
+        remotepaths = [os.path.join(remotedir, r) for r in remotelist]
+        localpaths = [os.path.join(targetdir, f) for f in remotelist]
+
+        print(remotepaths)
+        print(localpaths)
+
+        for remotef, localf in zip(remotepaths, localpaths):
+            if not os.path.exists(os.path.dirname(localf)):
+                os.makedirs(os.path.dirname(localf), exist_ok=True)
+            print(remotef)
+            self.sftp.pwd
+            self.sftp.get(remotef, localf)
+
+
+    def sync_files(self, remotedir, localdir, globpattern='*', rm_local=False):
+        """
+        Synchronize a host machine with local content.
+
+        If there are new files, download them. If there are less files on the
+        host machine now than locally, you can choose to delete them with the
+        `rm_local` keyword.
+
+        This is a supercheap version of rsync which works via SFTP.
+        Probably it makes sense to replace this by:
+        https://stackoverflow.com/questions/16497166/
+        rsync-over-ssh-using-channel-created-by-paramiko-in-python, THE PROBLEM
+        IS ONLY THE WINDOWS SYSTEMS
+
+        Parameters
+        ----------
+        remotedir: str
+            Relative path (from home directory) to a remote destination which
+            shall be synced recursively.
+        localdir: str
+            Absolute path to a local directory to be synced with remote
+            directory.
+        globpattern: str
+            Pattern used for searching by glob. Default: '*' (list all files).
+
+        Returns
+        -------
+        """
+
+        remotelist = glob(remotedir + os.sep + globpattern)
+        locallist = glob(localdir + os.sep + globpattern)
+
+        # copy everything needed from remote to local
+        needed = list(set(remotelist) - set(locallist))
+        self.get_files(remotedir, needed, [localdir+os.sep+i for i in needed])
+
+        # delete unnecessary stuff if desired
+        if rm_local:
+            oldlist = list(set(locallist) - set(remotelist))
+            if oldlist:
+                for old in oldlist:
+                    try:
+                        os.rmdir(old)
+                    except PermissionError:
+                        log.warning('File {} could not be deleted (Permission '
+                                    'denied).'.format(old))
+
+    def close(self):
+        if self.sftp_open:
+            self.sftp.close()
+            self.sftp_open = False
+        if self.ssh_open:
+            self.client.close()
+            self.ssh_open = False
 
 
 class MeteoTimeSeries(xr.Dataset):
 
     def __init__(self, *args, **kwargs):
-
-        # Pseudo: If no in cache, download whole series
         xr.Dataset.__init__(self, *args, **kwargs)
+
+        # Pseudo: If not in cache, download whole series
+
 
     def update_with_verified(self):
         """
@@ -253,3 +378,6 @@ def process_meteosuisse_data(gdir):
     out = {'climate_source': fpath, 'hydro_yr_0': y0+1, 'hydro_yr_1': y1}
     gdir.write_pickle(out, 'climate_info')
 '''
+
+if __name__ == '__main__':
+    cirrus = CirrusClient()
