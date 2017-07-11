@@ -5,6 +5,7 @@ A collection of some useful miscellaneous functions.
 from __future__ import absolute_import, division
 
 from joblib import Memory
+import posixpath
 import salem
 import os
 import pandas as pd
@@ -14,7 +15,8 @@ import paramiko as pm
 import xarray as xr
 from configobj import ConfigObj, ConfigObjError
 import sys
-from glob import glob
+import glob
+from fnmatch import filter as fnfilter
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
@@ -34,8 +36,7 @@ import crampon.cfg as cfg
 # Module logger
 log = logging.getLogger(__name__)
 # Stop paramiko from logging successes to the console
-#logging.getLogger ('paramiko').addHandler(log.handlers)
-#logging.getLogger("paramiko").setLevel(logging.WARNING)
+
 
 # Joblib
 MEMORY = Memory(cachedir=cfg.CACHE_DIR, verbose=0)
@@ -167,11 +168,11 @@ class CirrusClient(pm.SSHClient):
         Parameters
         ----------
         remotedir: str
-            Base remote directory as relative path from the $HOME.
+            Base remote directory as POSIX style relative path from the $HOME.
         remotelist: list
-            Relative paths (from remote directory) to remote files which shall
-            be retrieved.
-        local: list
+            Relative paths in POSIX style (from remote directory) to remote
+            files which shall be retrieved.
+        targetdir: str
             Directory where to put the files (the relative path will be
             maintained).
 
@@ -183,19 +184,15 @@ class CirrusClient(pm.SSHClient):
             self.sftp = self.client.open_sftp()
             self.sftp_open = True
 
-        remotepaths = [os.path.join(remotedir, r) for r in remotelist]
+        # Use posixpath for host (os.path.join joins in style of local OS)
+        remotepaths = [posixpath.join(remotedir, r) for r in remotelist]
         localpaths = [os.path.join(targetdir, f) for f in remotelist]
-
-        print(remotepaths)
-        print(localpaths)
 
         for remotef, localf in zip(remotepaths, localpaths):
             if not os.path.exists(os.path.dirname(localf)):
                 os.makedirs(os.path.dirname(localf), exist_ok=True)
             print(remotef)
-            self.sftp.pwd
             self.sftp.get(remotef, localf)
-
 
     def sync_files(self, remotedir, localdir, globpattern='*', rm_local=False):
         """
@@ -221,28 +218,68 @@ class CirrusClient(pm.SSHClient):
             directory.
         globpattern: str
             Pattern used for searching by glob. Default: '*' (list all files).
+        rm_local: bool
+            Remove also local files if they are no longer on the host machine.
+            Default: False.
 
         Returns
         -------
+        tuple of lists
+            (paths to retrieved files, paths to deleted files)
         """
 
-        remotelist = glob(remotedir + os.sep + globpattern)
-        locallist = glob(localdir + os.sep + globpattern)
+        # Do some tricky and fake glob on host with stupid error catching
+        if not globpattern.startswith('./'):
+            globpattern = './' + globpattern
+        _, stdout, _ = self.client.exec_command('find . -path "{}" '
+                                                '-print 2>/dev/null'
+                                                .format(globpattern))
+        remotelist = stdout.read().splitlines()
+        remotelist = [r.decode("utf-8") for r in remotelist]
+        locallist = glob.glob(posixpath.join(localdir, globpattern))
+
+        # Problem: files under different paths can have same names!
+        remote_npaths = [os.path.normpath(p) for p in remotelist]
+        local_npaths = [os.path.normpath(p) for p in locallist]
 
         # copy everything needed from remote to local
-        needed = list(set(remotelist) - set(locallist))
-        self.get_files(remotedir, needed, [localdir+os.sep+i for i in needed])
+        missing = [p for p in remote_npaths if all(p not in x for x in
+                                                  local_npaths)]
+        # there might be empty files from failed syncs
+        size_zero = [p for p in local_npaths if os.stat(p).st_size == 0]
+        if size_zero:
+            missing.extend([p for p in remote_npaths if any(p in x for x in
+                                                           size_zero)])
+
+        # back to POSIX
+        missing = [p.replace('\\', '/') for p in missing]
+        self.get_files(remotedir, missing, localdir)
+
+        log.info('{} remote files were retrieved during file sync.'
+                 .format(len(missing)))
 
         # delete unnecessary stuff if desired
+        surplus = []
         if rm_local:
-            oldlist = list(set(locallist) - set(remotelist))
-            if oldlist:
-                for old in oldlist:
+            available = glob.glob(os.path.join(localdir,
+                                               os.path.normpath(globpattern).
+                                               split('\\')[0] + '\\**'),
+                                  recursive=True)
+            available = [p for p in available if os.path.isfile(p)]
+
+            surplus = [p for p in available if all(x not in p for x in
+                                             remote_npaths)]
+            if surplus:
+                for s in surplus:
                     try:
-                        os.rmdir(old)
+                        os.remove(s)
+                        log.info('{} local surplus files removed during file '
+                                 'sync.'.format(len(surplus)))
                     except PermissionError:
                         log.warning('File {} could not be deleted (Permission '
-                                    'denied).'.format(old))
+                                    'denied).'.format(s))
+
+        return missing, surplus
 
     def close(self):
         if self.sftp_open:
