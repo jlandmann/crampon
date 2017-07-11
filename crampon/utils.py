@@ -202,6 +202,9 @@ class CirrusClient(pm.SSHClient):
         host machine now than locally, you can choose to delete them with the
         `rm_local` keyword.
 
+        This function has some severe defects, if you don't follow the Cirrus
+        "rules" (e.g. the top dir of globpattern may not be the file itself )
+
         This is a supercheap version of rsync which works via SFTP.
         Probably it makes sense to replace this by:
         https://stackoverflow.com/questions/16497166/
@@ -219,6 +222,7 @@ class CirrusClient(pm.SSHClient):
         globpattern: str
             Pattern used for searching by glob. Default: '*' (list all files).
         rm_local: bool
+            DO NOT YET USE!!!!!!!!!!!!!!!!!!!!!
             Remove also local files if they are no longer on the host machine.
             Default: False.
 
@@ -237,6 +241,9 @@ class CirrusClient(pm.SSHClient):
         remotelist = stdout.read().splitlines()
         remotelist = [r.decode("utf-8") for r in remotelist]
         locallist = glob.glob(posixpath.join(localdir, globpattern))
+
+        print(remotelist)
+        print(locallist)
 
         # Problem: files under different paths can have same names!
         remote_npaths = [os.path.normpath(p) for p in remotelist]
@@ -265,10 +272,18 @@ class CirrusClient(pm.SSHClient):
                                                os.path.normpath(globpattern).
                                                split('\\')[0] + '\\**'),
                                   recursive=True)
+            print(os.path.join(localdir,
+                                               os.path.normpath(globpattern).
+                                               split('\\')[0] + '\\**'))
             available = [p for p in available if os.path.isfile(p)]
-
+            # THIS IS DANGEROUS!!!!!!!! If 'available' is too big, EVERYTHING in that list is deleted
             surplus = [p for p in available if all(x not in p for x in
                                              remote_npaths)]
+            print(surplus)
+            log.error('Keyword rm_local must not yet be used')
+            raise('Keyword rm_local must not yet be used')
+
+            '''
             if surplus:
                 for s in surplus:
                     try:
@@ -278,7 +293,7 @@ class CirrusClient(pm.SSHClient):
                     except PermissionError:
                         log.warning('File {} could not be deleted (Permission '
                                     'denied).'.format(s))
-
+            '''
         return missing, surplus
 
     def close(self):
