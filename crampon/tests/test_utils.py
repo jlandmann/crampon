@@ -10,10 +10,9 @@ import numpy as np
 import pandas as pd
 from numpy.testing import assert_array_equal
 
-from crampon.tests import is_download
+from crampon.tests import requires_credentials
 from crampon import utils
 from crampon import cfg
-from oggm.tests.test_utils import TestFuncs, TestInitialize
 
 # General settings
 warnings.filterwarnings("once", category=DeprecationWarning)
@@ -22,13 +21,39 @@ warnings.filterwarnings("once", category=DeprecationWarning)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEST_DIR = os.path.join(CURRENT_DIR, 'tmp_download')
 if not os.path.exists(TEST_DIR):
-    os.makedirs(TEST_DIR)
+    os.mkdir(TEST_DIR)
 
 
-class TestFuncs(unittest.TestCase):
+
+@requires_credentials
+class TestCirrusClient(unittest.TestCase):
 
     def setUp(self):
-        pass
+        self.client = utils.CirrusClient()
 
     def tearDown(self):
-        pass
+        self.client.close()
+
+        if os.path.exists(TEST_DIR):
+            shutil.rmtree(TEST_DIR)
+
+    def test_create_connect(self):
+        assert isinstance(self.client, utils.CirrusClient)
+
+    def test_list_content(self):
+        content =  self.client.list_content('/data/*.pdf')
+
+        assert content == [b'/data/CIRRUS USER GUIDE.pdf']
+
+    def test_get_files(self):
+        self.client.get_files('/data', ['./CIRRUS USER GUIDE.pdf'], TEST_DIR)
+
+        assert os.path.exists(os.path.join(TEST_DIR, 'CIRRUS USER GUIDE.pdf'))
+
+    def test_sync_files(self):
+
+        miss, delete = self.client.sync_files('/data', TEST_DIR,
+                                              globpattern='./griddata/Product_Description/*ENG.pdf')
+
+        assert len(miss) == 1
+        assert len(delete) == 0

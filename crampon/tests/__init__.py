@@ -4,11 +4,13 @@ import os
 import osgeo.gdal
 from distutils.version import LooseVersion
 import matplotlib
-from oggm import cfg as oggmcfg
+import crampon.cfg as cfg
 import sys
 import socket
+import unittest
 from six.moves.urllib.request import urlopen
 from six.moves.urllib.error import URLError
+from configobj import ConfigObj, ConfigObjError
 
 # Defaults
 logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
@@ -30,7 +32,7 @@ if osgeo.gdal.__version__ >= '1.11':
 HAS_MPL_FOR_TESTS = False
 if LooseVersion(matplotlib.__version__) >= LooseVersion('2'):
     HAS_MPL_FOR_TESTS = True
-    BASELINE_DIR = os.path.join(oggmcfg.CACHE_DIR, 'oggm-sample-data-master',
+    BASELINE_DIR = os.path.join(cfg.CACHE_DIR, 'oggm-sample-data-master',
                                 'baseline_images', '2.0.x')
 
 
@@ -100,4 +102,17 @@ try:
     HAS_INTERNET = True
 except URLError:
     HAS_INTERNET = False
-#########################
+
+# check if there is a credentials file (should be added to .gitignore)
+cred_path = os.path.abspath(os.path.join(__file__, "../../..", '.credentials'))
+if os.path.exists(cred_path):
+    HAS_CREDENTIALS = True
+    try:
+        cred = ConfigObj(cred_path)
+    except ConfigObjError:
+        raise
+
+def requires_credentials(test):
+    # Test decorator
+    msg = 'requires credentials'
+    return test if HAS_CREDENTIALS else unittest.skip(msg)(test)
