@@ -7,6 +7,7 @@ ConfigObj
 matplotlib
 pyproj
 netCDF4
+pytest.cov
 
 #nose
 #sphinx
