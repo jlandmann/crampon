@@ -76,7 +76,7 @@ _doc = 'The daily climate timeseries for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
 
-# OGGM changed it to -1., let's first see what Fabi writes in his paper 
+# OGGM changed it to -1., let's first see what Fabi writes in his paper
 CPARAMS['temp_melt'] = 0.
 
 
