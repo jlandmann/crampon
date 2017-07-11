@@ -21,7 +21,7 @@ python:
 install:
   - pip install -r requirements.txt
   - pip install -e .
-  - py.test --cov=crampon --cov-report term-missing
+  - py.test ./crampon --cov=crampon --cov-report term-missing
 
 # command to run tests
 script: py.test  # or py.test for Python versions 3.5 and below
