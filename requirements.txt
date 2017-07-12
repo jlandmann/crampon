@@ -1,7 +1,6 @@
 numpy
 pandas
 geopandas
-ConfigObj
 #-e git+https://github.com/fmaussion/salem.git#egg=salem
 #-e git+https://github.com/OGGM/oggm.git#egg=oggm
 matplotlib
@@ -10,6 +9,12 @@ netCDF4
 pytest.cov
 scipy
 paramiko
-
-#nose
-#sphinx
+joblib
+logging
+six
+Pillow
+netCDF4
+shapely
+rasterio
+configobj
+xarray
