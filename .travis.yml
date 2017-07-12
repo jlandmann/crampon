@@ -1,3 +1,5 @@
+sudo: required
+dist: trusty
 
 # This is absolutely not finished and just copied from different sources
 notifications:
