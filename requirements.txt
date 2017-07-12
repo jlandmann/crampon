@@ -10,7 +10,6 @@ pytest.cov
 scipy
 paramiko
 joblib
-logging
 six
 Pillow
 netCDF4
