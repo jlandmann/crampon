@@ -52,8 +52,9 @@ class TestCirrusClient(unittest.TestCase):
 
     def test_sync_files(self):
 
-        miss, delete = self.client.sync_files('/data', TEST_DIR,
-                                              globpattern='./griddata/Product_Description/*ENG.pdf')
+        miss, delete = self.client.sync_files('/data/griddata', TEST_DIR,
+                                              globpattern='*Product_Descriptio'
+                                                          'n/*ENG.pdf')
 
         assert len(miss) == 1
         assert len(delete) == 0

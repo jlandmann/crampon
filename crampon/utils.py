@@ -121,11 +121,16 @@ class CirrusClient(pm.SSHClient):
             sys.exit()
 
         self.cr = cr
-        self.client = self.create_connect(cr['cirrus']['host'],
-                                          cr['cirrus']['user'],
-                                          cr['cirrus']['password'])
+
+        try:
+            self.client = self.create_connect(cr['cirrus']['host'],
+                                              cr['cirrus']['user'],
+                                              cr['cirrus']['password'])
+        except:
+            raise OSError('Are you in WSL VPN network?')
 
     def create_connect(self, host, user, password, port=22):
+        """"Establish SSH connection."""
         client = pm.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(pm.AutoAddPolicy())
@@ -133,6 +138,12 @@ class CirrusClient(pm.SSHClient):
         self.ssh_open = True
 
         return client
+
+    def _open_sftp(self):
+        """Open SFTP connection if not yet done."""
+        if not self.sftp_open:
+            self.sftp = self.client.open_sftp()
+            self.sftp_open = True
 
     def list_content(self, idir='.', options=''):
         """
@@ -156,7 +167,6 @@ class CirrusClient(pm.SSHClient):
 
         _, stdout, stderr = self.client.exec_command('ls {} {}'
                                                      .format(options, idir))
-
         stdout = stdout.read().splitlines()
 
         return stdout
@@ -180,21 +190,22 @@ class CirrusClient(pm.SSHClient):
         -------
 
         """
-        if not self.sftp_open:
-            self.sftp = self.client.open_sftp()
-            self.sftp_open = True
+        self._open_sftp()
 
         # Use posixpath for host (os.path.join joins in style of local OS)
         remotepaths = [posixpath.join(remotedir, r) for r in remotelist]
-        localpaths = [os.path.join(targetdir, f) for f in remotelist]
+
+        # If you don't delete the '/' the windows part will be cut off
+        remote_forjoin = [f[1:] if f[0] == '/' else f for f in remotelist]
+        localpaths = [os.path.join(targetdir, f) for f in remote_forjoin]
 
         for remotef, localf in zip(remotepaths, localpaths):
             if not os.path.exists(os.path.dirname(localf)):
                 os.makedirs(os.path.dirname(localf), exist_ok=True)
-            print(remotef)
             self.sftp.get(remotef, localf)
 
-    def sync_files(self, remotedir, localdir, globpattern='*', rm_local=False):
+    def sync_files(self, sourcedir, targetdir, globpattern='*',
+                   rm_local=False):
         """
         Synchronize a host machine with local content.
 
@@ -213,10 +224,10 @@ class CirrusClient(pm.SSHClient):
 
         Parameters
         ----------
-        remotedir: str
+        sourcedir: str
             Relative path (from home directory) to a remote destination which
             shall be synced recursively.
-        localdir: str
+        targetdir: str
             Absolute path to a local directory to be synced with remote
             directory.
         globpattern: str
@@ -232,53 +243,57 @@ class CirrusClient(pm.SSHClient):
             (paths to retrieved files, paths to deleted files)
         """
 
-        # Do some tricky and fake glob on host with stupid error catching
-        if not globpattern.startswith('./'):
-            globpattern = './' + globpattern
-        _, stdout, _ = self.client.exec_command('find . -path "{}" '
+        # Windows also accepts "/" as separator, so everything in POSIX style
+        sourcedir = sourcedir.replace("\\", '/')
+        targetdir = targetdir.replace("\\", '/')
+        globpattern = globpattern.replace("\\", '/')
+
+        # Determine the "top level sink" (top directory of files to be synced)
+        top_sink = posixpath.split(sourcedir)[-1]
+
+        # Do tricky and fake glob on host with stupid permission error catching
+        _, stdout, _ = self.client.exec_command('find {} -path "{}" '
                                                 '-print 2>/dev/null'
-                                                .format(globpattern))
+                                                .format(sourcedir,
+                                                        globpattern))
         remotelist = stdout.read().splitlines()
         remotelist = [r.decode("utf-8") for r in remotelist]
-        locallist = glob.glob(posixpath.join(localdir, globpattern))
+        locallist = glob.glob(posixpath.join(targetdir, top_sink, globpattern))
 
         print(remotelist)
         print(locallist)
 
-        # Problem: files under different paths can have same names!
-        remote_npaths = [os.path.normpath(p) for p in remotelist]
-        local_npaths = [os.path.normpath(p) for p in locallist]
-
         # copy everything needed from remote to local
-        missing = [p for p in remote_npaths if all(p not in x for x in
-                                                  local_npaths)]
+        missing = [p for p in remotelist if all(p not in x for x in
+                                                   locallist)]
         # there might be empty files from failed syncs
-        size_zero = [p for p in local_npaths if os.stat(p).st_size == 0]
+        size_zero = [p for p in locallist if os.path.isfile(p) and
+                     os.stat(p).st_size == 0]
         if size_zero:
-            missing.extend([p for p in remote_npaths if any(p in x for x in
-                                                           size_zero)])
+            missing.extend([p for p in remotelist if any(p in x for x in
+                                                         size_zero)])
 
-        # back to POSIX
-        missing = [p.replace('\\', '/') for p in missing]
-        self.get_files(remotedir, missing, localdir)
-
+        log.info('Synchronising starts for {} files...'.format(len(missing))
+                 .format(len(missing)))
+        self.get_files(sourcedir, missing, targetdir)
         log.info('{} remote files were retrieved during file sync.'
                  .format(len(missing)))
 
         # delete unnecessary stuff if desired
         surplus = []
         if rm_local:
-            available = glob.glob(os.path.join(localdir,
+            available = glob.glob(os.path.join(targetdir,
                                                os.path.normpath(globpattern).
                                                split('\\')[0] + '\\**'),
                                   recursive=True)
-            print(os.path.join(localdir,
+            print(os.path.join(targetdir,
                                                os.path.normpath(globpattern).
                                                split('\\')[0] + '\\**'))
             available = [p for p in available if os.path.isfile(p)]
             # THIS IS DANGEROUS!!!!!!!! If 'available' is too big, EVERYTHING in that list is deleted
-            surplus = [p for p in available if all(x not in p for x in
-                                             remote_npaths)]
+            #surplus = [p for p in available if all(x not in p for x in
+            #                                 remote_npaths)]
+            surplus = [p for p in available if all(x not in p for x in remotelist)]
             print(surplus)
             log.error('Keyword rm_local must not yet be used')
             raise('Keyword rm_local must not yet be used')
