@@ -16,7 +16,7 @@ import xarray as xr
 from configobj import ConfigObj, ConfigObjError
 import sys
 import glob
-from fnmatch import filter as fnfilter
+import fnmatch
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
@@ -340,11 +340,25 @@ class CirrusClient(pm.SSHClient):
 
 class MeteoTimeSeries(xr.Dataset):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, files, *args, **kwargs):
+        """
+        Class for handling Meteo data input.
+
+        Parameters
+        ----------
+        files: list
+            Paths of the netCDF files to be included.
+        args
+        kwargs
+        """
         xr.Dataset.__init__(self, *args, **kwargs)
 
-        # Pseudo: If not in cache, download whole series
+        self.files = files
 
+        if len(self.files) == 1:
+            self._ds = self.read_netcdf(files)
+        else:
+            self._ds = self.read_multiple_netcdfs(files)
 
     def update_with_verified(self):
         """
@@ -391,6 +405,111 @@ class MeteoTimeSeries(xr.Dataset):
         -------
 
         """
+
+    def cut_by_glacio_years(self, method='fixed'):
+        """
+        Evaluate the contained full glaciological years.
+
+        Parameters
+        ----------
+        method: str
+            'fixed' or 'file' or 'file_peryear: If fixed, the glacio years lasts
+            from October, 1st to September 30th. If 'file', a CSV declared in
+            'params.cfg' (to be implemented) gives the climatological beginning
+             and end of the glaciological year from empirical data.
+        Returns
+        -------
+        The MeteoTimeSeries, subsetted to contain only full glaciological years
+        """
+
+        if self._ds.time:
+            y
+            return self._ds.sel(time=slice('2000-06-01', '2000-06-10'))
+
+
+def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
+    """
+    Create a netCDF file with daily temperature, precipitation and and
+    elevation reference from given files.
+
+    The temporal extent of the file will be the inner or outer join of the time
+    series extent of the given input files .
+
+    Parameters
+    ----------
+    tfiles: list
+        Paths to temperature netCDF files.
+    prec: list
+        Paths to precipitation netCDF files.
+    hgt: str
+        Path to the elevation netCDF file.
+    outfile: str
+        Path to and name of the written file.
+
+    Returns
+    -------
+
+    """
+
+    temp = MeteoTimeSeries(tfiles)
+    prec = MeteoTimeSeries(pfiles)
+    hgt = xr.open_dataset(hfile)
+
+    # make it one
+    nc_ts = MeteoTimeSeries.merge(temp, prec, hgt)
+
+    # check that all needed variables and coordinates are there:
+
+
+    # Units
+    assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter',
+                                                        'metres', 'metre']
+    assert nc_ts._nc.variables['temp'].units.lower() in ['degc', 'degrees',
+                                                         'degree', 'c']
+    assert nc_ts._nc.variables['prcp'].units.lower() in ['kg m-2', 'l m-2',
+                                                         'mm', 'millimeters',
+                                                         'millimeter']
+    # Fill NAs
+    nc_ts.resample('D', 'time')
+
+    nc_ts.to_netcdf(outfile)
+
+
+def read_netcdf(self, path, tfunc=None):
+    # use a context manager, to ensure the file gets closed after use
+    with xr.open_dataset(path) as ds:
+        # transform_func should do some sort of selection or
+        # aggregation
+        if tfunc is not None:
+            ds = tfunc(ds)
+        # load all data from the transformed dataset, to ensure we can
+        # use it after closing each original file
+        ds.load()
+        return ds
+
+def read_multiple_netcdfs(self, files, dim='time', tfunc=None):
+    """
+    Read several netCDF files at once. Requires dask module.
+
+    Changed from:  http://xarray.pydata.org/en/stable/io.html#id7
+
+    Parameters
+    ----------
+    files: list
+        List with paths to the files to be read.
+    dim: str
+        Dimension along which to concatenate the files.
+    tfunc: function
+        Transformation function for the data, e.g. 'lambda ds: ds.mean()'
+
+    Returns
+    -------
+
+    """
+    paths = sorted(glob.glob(files))
+    datasets = [self.read_netcdf(p, tfunc) for p in paths]
+    combined = xr.concat(datasets, dim)
+    return combined
 
 '''
 @entity_task(log, writes=['meteo'])
