@@ -192,12 +192,15 @@ class CirrusClient(pm.SSHClient):
         """
         self._open_sftp()
 
+        top_sink = posixpath.split(remotedir)[-1]
+
         # Use posixpath for host (os.path.join joins in style of local OS)
         remotepaths = [posixpath.join(remotedir, r) for r in remotelist]
 
         # If you don't delete the '/' the windows part will be cut off
         remote_forjoin = [f[1:] if f[0] == '/' else f for f in remotelist]
-        localpaths = [os.path.join(targetdir, f) for f in remote_forjoin]
+        localpaths = [os.path.join(targetdir, top_sink, f) for f in
+                      remote_forjoin]
 
         for remotef, localf in zip(remotepaths, localpaths):
             if not os.path.exists(os.path.dirname(localf)):
@@ -217,10 +220,12 @@ class CirrusClient(pm.SSHClient):
         "rules" (e.g. the top dir of globpattern may not be the file itself )
 
         This is a supercheap version of rsync which works via SFTP.
+        It doesn't even consider checksums, hashs or so.
         Probably it makes sense to replace this by:
         https://stackoverflow.com/questions/16497166/
         rsync-over-ssh-using-channel-created-by-paramiko-in-python, THE PROBLEM
         IS ONLY THE WINDOWS SYSTEMS
+        or this one is better:https://blog.liw.fi/posts/rsync-in-python/
 
         Parameters
         ----------
@@ -249,7 +254,7 @@ class CirrusClient(pm.SSHClient):
         globpattern = globpattern.replace("\\", '/')
 
         # Determine the "top level sink" (top directory of files to be synced)
-        top_sink = posixpath.split(sourcedir)[-1]
+        top_sink = posixpath.basename(sourcedir)
 
         # Do tricky and fake glob on host with stupid permission error catching
         _, stdout, _ = self.client.exec_command('find {} -path "{}" '
@@ -258,20 +263,32 @@ class CirrusClient(pm.SSHClient):
                                                         globpattern))
         remotelist = stdout.read().splitlines()
         remotelist = [r.decode("utf-8") for r in remotelist]
-        locallist = glob.glob(posixpath.join(targetdir, top_sink, globpattern))
 
-        print(remotelist)
-        print(locallist)
+        locallist = glob.glob(posixpath.join(targetdir, top_sink, globpattern))
+        locallist = [l.replace("\\", '/') for l in locallist]  # IMPORTANT
 
         # copy everything needed from remote to local
-        missing = [p for p in remotelist if all(p not in x for x in
-                                                   locallist)]
+        # LOCAL
+        avail_loc = fnmatch.filter(locallist, globpattern)
+        start_loc = posixpath.join(targetdir, top_sink)
+        avail_loc_rel = [posixpath.relpath(p, start=start_loc) for p in
+                         avail_loc]
+
+        # REMOTE
+        start_host = sourcedir
+        avail_host_rel = [posixpath.relpath(p, start=start_host) for p in
+                          remotelist]
+
+        missing = list(set(avail_host_rel).difference(avail_loc_rel))
+
         # there might be empty files from failed syncs
-        size_zero = [p for p in locallist if os.path.isfile(p) and
+        size_zero = [p for p in avail_loc if os.path.isfile(p) and
                      os.stat(p).st_size == 0]
         if size_zero:
-            missing.extend([p for p in remotelist if any(p in x for x in
-                                                         size_zero)])
+            size_zero_rel = [posixpath.relpath(p, start=start_loc) for p in
+                             size_zero]
+            # Extend, but only files which are also on the host:
+            missing.extend([p for p in size_zero_rel if p in avail_host_rel])
 
         log.info('Synchronising starts for {} files...'.format(len(missing))
                  .format(len(missing)))
@@ -279,6 +296,7 @@ class CirrusClient(pm.SSHClient):
         log.info('{} remote files were retrieved during file sync.'
                  .format(len(missing)))
 
+        #### DO NOT YET USE
         # delete unnecessary stuff if desired
         surplus = []
         if rm_local:
@@ -296,7 +314,7 @@ class CirrusClient(pm.SSHClient):
             surplus = [p for p in available if all(x not in p for x in remotelist)]
             print(surplus)
             log.error('Keyword rm_local must not yet be used')
-            raise('Keyword rm_local must not yet be used')
+            raise NotImplementedError('Keyword rm_local must not yet be used')
 
             '''
             if surplus:
@@ -448,3 +466,5 @@ def process_meteosuisse_data(gdir):
 
 if __name__ == '__main__':
     cirrus = CirrusClient()
+    a, b = cirrus.sync_files('/data/griddata', 'c:\\users\\johannes\\desktop',
+                      globpattern='*/daily/TabsD*/netcdf/*')

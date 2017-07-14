@@ -48,7 +48,8 @@ class TestCirrusClient(unittest.TestCase):
     def test_get_files(self):
         self.client.get_files('/data', ['./CIRRUS USER GUIDE.pdf'], TEST_DIR)
 
-        assert os.path.exists(os.path.join(TEST_DIR, 'CIRRUS USER GUIDE.pdf'))
+        assert os.path.exists(os.path.join(TEST_DIR,
+                                           'data/CIRRUS USER GUIDE.pdf'))
 
     def test_sync_files(self):
 
