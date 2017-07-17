@@ -14,18 +14,13 @@ import logging
 import paramiko as pm
 import xarray as xr
 from configobj import ConfigObj, ConfigObjError
+import dask
 import sys
 import glob
 import fnmatch
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
-""" include e.g.:_urlretrieve, progress_urlretrieve, empty_cache, \
-expand_path, SuperClassMeta, mkdir, query_yes_no, haversine, interp_nans,
-md, mad, rmsd, rel_err, corrcoef, nicenumber, signchange, year_to_date, \
-date_to_year, monthly_timseries, joblib_read_climate, pipe_log, \
-glacier_characteristics, DisableLogger, entity_task, global_task, \
-GlacierDirectory, log"""
 # Locals
 import crampon.cfg as cfg
 
@@ -78,8 +73,8 @@ def leap_year(year, calendar='standard'):
     if (calendar in calendar_opts) and (year % 4 == 0):
         leap = True
         if ((calendar == 'proleptic_gregorian') and
-            (year % 100 == 0) and
-            (year % 400 != 0)):
+           (year % 100 == 0) and
+           (year % 400 != 0)):
             leap = False
         elif ((calendar in ['standard', 'gregorian']) and
               (year % 100 == 0) and (year % 400 != 0) and
@@ -296,7 +291,7 @@ class CirrusClient(pm.SSHClient):
         log.info('{} remote files were retrieved during file sync.'
                  .format(len(missing)))
 
-        #### DO NOT YET USE
+        # DO NOT YET USE
         # delete unnecessary stuff if desired
         surplus = []
         if rm_local:
@@ -304,14 +299,13 @@ class CirrusClient(pm.SSHClient):
                                                os.path.normpath(globpattern).
                                                split('\\')[0] + '\\**'),
                                   recursive=True)
-            print(os.path.join(targetdir,
-                                               os.path.normpath(globpattern).
-                                               split('\\')[0] + '\\**'))
             available = [p for p in available if os.path.isfile(p)]
-            # THIS IS DANGEROUS!!!!!!!! If 'available' is too big, EVERYTHING in that list is deleted
+            # THIS IS DANGEROUS!!!!!!!! If 'available' is too big, EVERYTHING
+            # in that list is deleted
             #surplus = [p for p in available if all(x not in p for x in
             #                                 remote_npaths)]
-            surplus = [p for p in available if all(x not in p for x in remotelist)]
+            surplus = [p for p in available if all(x not in p for x in
+                                                   remotelist)]
             print(surplus)
             log.error('Keyword rm_local must not yet be used')
             raise NotImplementedError('Keyword rm_local must not yet be used')
@@ -338,27 +332,13 @@ class CirrusClient(pm.SSHClient):
             self.ssh_open = False
 
 
-class MeteoTimeSeries(xr.Dataset):
-
-    def __init__(self, files, *args, **kwargs):
+@xr.register_dataset_accessor('crampon')
+class MeteoTSAccessor(object):
+    def __init__(self, xarray_obj):
         """
-        Class for handling Meteo data input.
-
-        Parameters
-        ----------
-        files: list
-            Paths of the netCDF files to be included.
-        args
-        kwargs
+        Class for handling Meteo time series, building upon xarray.
         """
-        xr.Dataset.__init__(self, *args, **kwargs)
-
-        self.files = files
-
-        if len(self.files) == 1:
-            self._ds = self.read_netcdf(files)
-        else:
-            self._ds = self.read_multiple_netcdfs(files)
+        self._obj = xarray_obj
 
     def update_with_verified(self):
         """
@@ -380,31 +360,36 @@ class MeteoTimeSeries(xr.Dataset):
         """
         raise NotImplementedError()
 
-    def check_time_continuity(self):
+    def check_time_continuity(self, freq='D', **kwargs):
         """
         Checks the time continuity of the time series.
         
         If there are missing time steps, fill them with NaN via the 
         xr.Dataset.resample method.
+
+        Parameters
+        ----------
+        freq:
+            A pandas offset alias (http://pandas.pydata.org/pandas-docs/stable/
+            timeseries.html#offset-aliases). Default: 'D' (daily). If None, the
+            frequency will be inferred from the data itself (experimental!)
+        **kwargs:
+            Keywords accepted by xarray.Dataset.resample()
+
         
         Returns
         -------
-
+        Resampled xarray.Dataset.
         """
-        # Pseudo:
-        # If self.time misses a time step => resample with netcdf time unit
 
-    def digest_input(self, file):
-        """
-        Take a file and append it to the current series (copy of update_with_*?)
-        Parameters
-        ----------
-        file
+        if not freq:
+            freq = pd.infer_freq(self._obj.time.values)
 
-        Returns
-        -------
+        resampled = self._obj.resample(freq, dim='time', **kwargs)
+        diff = len(resampled.time.values) - len(self._obj.time.values)
+        log.info('{} time steps were added during resampling.'.format(diff))
 
-        """
+        return resampled
 
     def cut_by_glacio_years(self, method='fixed'):
         """
@@ -413,18 +398,56 @@ class MeteoTimeSeries(xr.Dataset):
         Parameters
         ----------
         method: str
-            'fixed' or 'file' or 'file_peryear: If fixed, the glacio years lasts
-            from October, 1st to September 30th. If 'file', a CSV declared in
-            'params.cfg' (to be implemented) gives the climatological beginning
-             and end of the glaciological year from empirical data.
+            'fixed' or 'file' or 'file_peryear: If fixed, the glacio years
+            lasts from October, 1st to September 30th. If 'file', a CSV
+            declared in 'params.cfg' (to be implemented) gives the
+            climatological beginning and end of the glaciological year from
+            empirical data
+
         Returns
         -------
-        The MeteoTimeSeries, subsetted to contain only full glaciological years
+        The MeteoTimeSeries, subsetted to contain only full glaciological
+        years.
         """
 
-        if self._ds.time:
-            y
-            return self._ds.sel(time=slice('2000-06-01', '2000-06-10'))
+        if method == 'fixed':
+            starts = self._obj.sel(time=(self._obj['time.month'] == 10) &
+                                        (self._obj['time.day'] == 1))
+            ends = self._obj.sel(time=(self._obj['time.month'] == 9) &
+                                      (self._obj['time.day'] == 30))
+
+            if len(starts.time.values) == 0 or len(ends.time.values) == 0:
+                raise IndexError("Time series too short to cover even one "
+                          "glaciological year.")
+
+            glacio_start = starts.isel(time=[0]).time.values[0]
+            glacio_end = ends.isel(time=[-1]).time.values[0]
+
+            return self._obj.sel(time=slice(pd.to_datetime(glacio_start),
+                                            pd.to_datetime(glacio_end)))
+        else:
+            raise NotImplementedError('At the moment only the fixed method'
+                                      'is implemented.')
+
+    def postprocess_cirrus(self):
+        """
+        Do some postprocessing for erroneous/inconsistent Cirrus data.
+
+        Returns
+        -------
+
+        """
+        # Pseudo/to do:
+        # Adjust variable name/units
+        # make miss value one value
+
+        if "REFERENCE_TS" in self._obj.coords:
+            self._obj.rename({"REFERENCE_TS": "time"}, inplace=True)
+
+        if "crs" in self._obj.data_vars:
+            self._obj = self._obj.drop(['crs'])
+
+        return self._obj
 
 
 def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
@@ -439,9 +462,9 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
     ----------
     tfiles: list
         Paths to temperature netCDF files.
-    prec: list
+    pfiles: list
         Paths to precipitation netCDF files.
-    hgt: str
+    hfile: str
         Path to the elevation netCDF file.
     outfile: str
         Path to and name of the written file.
@@ -451,15 +474,14 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
 
     """
 
-    temp = MeteoTimeSeries(tfiles)
-    prec = MeteoTimeSeries(pfiles)
-    hgt = xr.open_dataset(hfile)
+    temp = read_multiple_netcdfs(tfiles)
+    prec = read_multiple_netcdfs(pfiles)
+    hgt = read_netcdf(hfile)
 
     # make it one
-    nc_ts = MeteoTimeSeries.merge(temp, prec, hgt)
+    nc_ts = xr.merge(temp, prec, hgt)
 
     # check that all needed variables and coordinates are there:
-
 
     # Units
     assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter',
@@ -475,19 +497,25 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
     nc_ts.to_netcdf(outfile)
 
 
-def read_netcdf(self, path, tfunc=None):
+def read_netcdf(path, tfunc=None):
     # use a context manager, to ensure the file gets closed after use
     with xr.open_dataset(path) as ds:
+
+        # some extra stuff
+        ds = ds.crampon.postprocess_cirrus()
+
         # transform_func should do some sort of selection or
         # aggregation
         if tfunc is not None:
             ds = tfunc(ds)
+
         # load all data from the transformed dataset, to ensure we can
         # use it after closing each original file
         ds.load()
         return ds
 
-def read_multiple_netcdfs(self, files, dim='time', tfunc=None):
+
+def read_multiple_netcdfs(files, dim='time', tfunc=None):
     """
     Read several netCDF files at once. Requires dask module.
 
@@ -506,8 +534,10 @@ def read_multiple_netcdfs(self, files, dim='time', tfunc=None):
     -------
 
     """
-    paths = sorted(glob.glob(files))
-    datasets = [self.read_netcdf(p, tfunc) for p in paths]
+
+    paths = sorted(files)
+    datasets = [read_netcdf(p, tfunc) for p in paths]
+
     combined = xr.concat(datasets, dim)
     return combined
 
@@ -584,6 +614,13 @@ def process_meteosuisse_data(gdir):
 '''
 
 if __name__ == '__main__':
-    cirrus = CirrusClient()
-    a, b = cirrus.sync_files('/data/griddata', 'c:\\users\\johannes\\desktop',
-                      globpattern='*/daily/TabsD*/netcdf/*')
+    #cirrus = CirrusClient()
+    #a, b = cirrus.sync_files('/data/griddata', 'c:\\users\\johannes\\desktop',
+    #                  globpattern='*/daily/TabsD*/netcdf/*')
+
+    flist = glob.glob('C:\\Users\\Johannes\\Desktop\\griddata\\verified\\daily\\TabsD_daily_mean_temperature\\netcdf\\*2015*.nc')
+    flist.extend(glob.glob('C:\\Users\\Johannes\\Desktop\\griddata\\verified\\daily\\TabsD_daily_mean_temperature\\netcdf\\*2016*.nc'))
+    abc = read_multiple_netcdfs(flist)
+    abc.crampon
+    abc.crampon.check_time_continuity()
+    defg = abc.crampon.cut_by_glacio_years()
