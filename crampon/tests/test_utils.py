@@ -83,5 +83,36 @@ class TestMiscFuncs(unittest.TestCase):
         self.assertFalse(a)
 
 
+class TestMeteoTSAccessor(unittest.TestCase):
+
+    def setUp(self):
+        self.mtsa = utils.read_multiple_netcdfs()
+        self.mtsa.crampon
+
+    def tearDown(self):
+
+        if os.path.exists(TEST_DIR):
+            shutil.rmtree(TEST_DIR)
+
+    def test_ensure_time_continuity(self):
+        self.mtsa.crampon.ensure_time_continuity()
+
+    def test_cut_by_glacio_years(self):
+        mtsa_cut = self.mtsa.crampon.cut_by_glacio_years()
+
+        begin = mtsa_cut.time[0]
+        end = mtsa_cut.time[1]
+
+        self.assertEqual(begin.month, 10)
+        self.assertEqual(begin.day, 1)
+        self.assertEqual(end.month, 9)
+        self.assertEqual(end.day, 30)
+
+
+
+
+
+
+
 
 
