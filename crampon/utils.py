@@ -18,6 +18,8 @@ import dask
 import sys
 import glob
 import fnmatch
+import netCDF4
+from scipy import stats
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
 from oggm.utils import *  # easiest way to make utils accessible
@@ -26,7 +28,7 @@ import crampon.cfg as cfg
 
 
 # I should introduce/alter:
-"""utils.joblib_read_climate, get_crampon_demo_file, in general: get_files"""
+"""get_crampon_demo_file, in general: get_files"""
 
 # Module logger
 log = logging.getLogger(__name__)
@@ -359,9 +361,9 @@ class MeteoTSAccessor(object):
         """
         raise NotImplementedError()
 
-    def check_time_continuity(self, freq='D', **kwargs):
+    def ensure_time_continuity(self, freq='D', **kwargs):
         """
-        Checks the time continuity of the time series.
+        Ensure the time continuity of the time series.
         
         If there are missing time steps, fill them with NaN via the 
         xr.Dataset.resample method.
@@ -438,7 +440,6 @@ class MeteoTSAccessor(object):
         """
         # Pseudo/to do:
         # Adjust variable name/units
-        # make miss value one value
 
         if "REFERENCE_TS" in self._obj.coords:
             self._obj.rename({"REFERENCE_TS": "time"}, inplace=True)
@@ -500,7 +501,7 @@ def read_netcdf(path, tfunc=None):
     # use a context manager, to ensure the file gets closed after use
     with xr.open_dataset(path) as ds:
 
-        # some extra stuff
+        # some extra stuff - this is actually stupid and should go away!
         ds = ds.crampon.postprocess_cirrus()
 
         # transform_func should do some sort of selection or
@@ -540,53 +541,67 @@ def read_multiple_netcdfs(files, dim='time', tfunc=None):
     combined = xr.concat(datasets, dim)
     return combined
 
+
+@MEMORY.cache
+def joblib_read_climate(ncpath, ilon, ilat, default_grad, minmax_grad,
+                        use_grad=100):
+    """
+    This is a cracked version of the OGGM function with some extras.
+
+    Parameters
+    ----------
+    ncpath: str
+        Path to the netCDF file in OGGM suitable format.
+    ilon: int
+        Index of the minimum longitude of the netCDF
+    ilat: int
+        Index of the minimum latitude of the netCDF
+    default_grad: float
+        Default temperature gradient (K/m).
+    minmax_grad: tuple
+        Min/Max bounds of the local gradient, in case the grid kernel search
+        deliver strange values.
+    use_grad: float
+        Window edge width of surrounding cells used to determine the local
+        temperature gradient. If ``None``, the ``default_grad`` is used.
+
+    Returns
+    -------
+    iprcp, itemp, igrad, ihgt
+    """
+
+    # read the file and data
+    with netCDF4.Dataset(ncpath, mode='r') as nc:
+        temp = nc.variables['temp']
+        prcp = nc.variables['prcp']
+        hgt = nc.variables['hgt']
+        igrad = np.zeros(len(nc.dimensions['time'])) + default_grad ####
+        ttemp = temp[:, ilat-1:ilat+2, ilon-1:ilon+2]    ######
+        itemp = ttemp[:, 1, 1]                         ########
+        thgt = hgt[ilat-1:ilat+2, ilon-1:ilon+2]        #######
+        ihgt = thgt[1, 1]                               #######
+        thgt = thgt.flatten()                           #######
+        iprcp = prcp[:, ilat, ilon]                     #######
+
+    # Now the gradient
+    if use_grad:
+        for t, loct in enumerate(ttemp):
+            slope, _, _, p_val, _ = stats.linregress(thgt,
+                                                     loct.flatten())
+            igrad[t] = slope if (p_val < 0.01) else default_grad
+
+        # apply the boundaries, in case the gradient goes wild
+        igrad = np.clip(igrad, minmax_grad[0], minmax_grad[1])
+
+    return iprcp, itemp, igrad, ihgt
+
 '''
 @entity_task(log, writes=['meteo'])
 def process_meteosuisse_data(gdir):
-    """Processes and writes the climate data from a user-defined climate file.
-
-    The input file must have a specific format (see
-    oggm-sample-data/test-files/histalp_merged_hef.nc for an example).
-
-    Uses caching for faster retrieval.
-
-    This is the way OGGM does it for the Alps (HISTALP).
-    """
-
-    if not (('climate_file' in cfg.PATHS) and
-                os.path.exists(cfg.PATHS['climate_file'])):
-        raise IOError('Custom climate file not found')
 
     # read the file
     fpath = cfg.PATHS['climate_file']
     nc_ts = salem.GeoNetcdf(fpath)
-
-    # set temporal subset for the ts data (hydro years)
-    yrs = nc_ts.time.year
-    y0, y1 = yrs[0], yrs[-1]
-    if pd.infer_freq(nc_ts.time) == 'MS':  # month start frequency
-        nc_ts.set_period(t0='{}-10-01'.format(y0), t1='{}-09-01'.format(y1))
-        time = nc_ts.time
-        ny, r = divmod(len(time), 12)
-        if r != 0:
-            raise ValueError('Climate data should be N full years exclusively')
-    elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
-        nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
-        time = nc_ts.time
-        ny, r = divmod(len(time), 12)
-        if r != 0:
-            raise ValueError('Climate data should be N full years exclusively')
-    elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
-        pass  # doesn't matter if it's entire years or not
-    else:
-        raise NotImplementedError('Climate data frequency not yet understood')
-
-    # Units
-    assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter']
-    assert nc_ts._nc.variables['temp'].units.lower() in ['degC', 'degrees',
-                                                         'degree']
-    assert nc_ts._nc.variables['prcp'].units.lower() in ['kg m-2', 'l m-2',
-                                                         'mm']
 
     # geoloc
     lon = nc_ts._nc.variables['lon'][:]
@@ -621,5 +636,5 @@ if __name__ == '__main__':
     flist.extend(glob.glob('C:\\Users\\Johannes\\Desktop\\griddata\\verified\\daily\\TabsD_daily_mean_temperature\\netcdf\\*2016*.nc'))
     abc = read_multiple_netcdfs(flist)
     abc.crampon
-    abc.crampon.check_time_continuity()
+    abc.crampon.ensure_time_continuity()
     defg = abc.crampon.cut_by_glacio_years()
