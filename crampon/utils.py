@@ -73,8 +73,7 @@ def leap_year(year, calendar='standard'):
     if (calendar in calendar_opts) and (year % 4 == 0):
         leap = True
         if ((calendar == 'proleptic_gregorian') and
-           (year % 100 == 0) and
-           (year % 400 != 0)):
+           (year % 100 == 0) and (year % 400 != 0)):
             leap = False
         elif ((calendar in ['standard', 'gregorian']) and
               (year % 100 == 0) and (year % 400 != 0) and
@@ -452,7 +451,7 @@ class MeteoTSAccessor(object):
 
 def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
     """
-    Create a netCDF file with daily temperature, precipitation and and
+    Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
 
     The temporal extent of the file will be the inner or outer join of the time

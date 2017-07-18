@@ -38,12 +38,12 @@ class TestCirrusClient(unittest.TestCase):
             shutil.rmtree(TEST_DIR)
 
     def test_create_connect(self):
-        assert isinstance(self.client, utils.CirrusClient)
+        self.assertIsInstance(self.client, utils.CirrusClient)
 
     def test_list_content(self):
         content =  self.client.list_content('/data/*.pdf')
 
-        assert content == [b'/data/CIRRUS USER GUIDE.pdf']
+        self.assertEqual(content, [b'/data/CIRRUS USER GUIDE.pdf'])
 
     def test_get_files(self):
         self.client.get_files('/data', ['./CIRRUS USER GUIDE.pdf'], TEST_DIR)
@@ -57,5 +57,31 @@ class TestCirrusClient(unittest.TestCase):
                                               globpattern='*Product_Descriptio'
                                                           'n/*ENG.pdf')
 
-        assert len(miss) == 1
-        assert len(delete) == 0
+        self.assertEqual(len(miss), 1)
+        self.assertEqual(len(delete), 0)
+
+
+class TestMiscFuncs(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    def tearDown(self):
+
+        if os.path.exists(TEST_DIR):
+            shutil.rmtree(TEST_DIR)
+
+    def test_leap_years(self):
+
+        a = utils.leap_year(1600, calendar='julian')
+        self.assertTrue(a)
+
+        a = utils.leap_year(1600, calendar='standard')
+        self.assertTrue(a)
+
+        a = utils.leap_year(1300, calendar='gregorian')
+        self.assertFalse(a)
+
+
+
+
