@@ -2,16 +2,11 @@
 
 from __future__ import division
 
-import netCDF4 as nc
 from glob import glob
-import os
-import salem
 import crampon.cfg as cfg
-import numpy as np
 from crampon.core.models.massbalance import PastMassBalanceModel
 from crampon import utils
 from crampon.utils import date_to_year, GlacierDirectory
-import crampon.utils
 from oggm.core.preprocessing.climate import *
 import itertools
 import scipy.optimize as optimize
@@ -29,17 +24,6 @@ log = logging.getLogger(__name__)
 
 # To (re)write:
 # mb_climate_on_height, _get_ref_glaciers, _get_optimal_scaling_factor
-
-"""
-# Parameters to be kicked out later on
-testprec_dir = os.path.join(os.getcwd(), 'data\\test\\prec')
-testtemp_dir = os.path.join(os.getcwd(), 'data\\test\\temp')
-shape_dir = os.path.join(os.getcwd(), 'data\\test\\shp')
-aletsch_shp = shape_dir + '\\Aletsch\\G008032E46504N.shp'
-
-testtemp = glob(testtemp_dir+'\\*.nc')[0]
-testprec = glob(testtemp_dir+'\\*.nc')[0]
-"""
 
 
 class MeteoSuisseGrid(object):
@@ -154,35 +138,29 @@ class MeteoSuisseGrid(object):
         Merged MeteoSuisseGrid.
         """
 
+
 # This writes 'climate_monthly' in the original version (doesn't fit anymore)
-@entity_task(log, writes=[])
-def process_custom_climate_data(gdir):
+@entity_task(log)
+def process_custom_climate_data_crampon(gdir):
     """Processes and writes the climate data from a user-defined climate file.
 
-    The input file must have a specific format (see
-    oggm-sample-data/test-files/histalp_merged_hef.nc for an example).
-
-    Uses caching for faster retrieval.
+    This function is strongly related to the OGGM function. The input file must
+     have a specific format
+     (see oggm-sample-data/test-files/histalp_merged_hef.nc for an example).
 
     The modifications to the original function allow a more flexible handling
     of the climate file, e.g. with a daily frequency.
+
+    uses caching for faster retrieval.
     """
 
     if not (('climate_file' in cfg.PATHS) and
-                os.path.exists(cfg.PATHS['climate_file'])):
+            os.path.exists(cfg.PATHS['climate_file'])):
         raise IOError('Custom climate file not found')
 
     # read the file
     fpath = cfg.PATHS['climate_file']
     nc_ts = salem.GeoNetcdf(fpath)
-
-    # Units
-    assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter']
-    assert nc_ts._nc.variables['temp'].units.lower() in ['degc', 'degrees',
-                                                         'degree']
-    assert nc_ts._nc.variables['prcp'].units.lower() in ['kg m-2', 'l m-2',
-                                                         'mm', 'millimeters',
-                                                         'millimeter']
 
     # geoloc
     lon = nc_ts._nc.variables['lon'][:]
@@ -193,12 +171,13 @@ def process_custom_climate_data(gdir):
     def_grad = cfg.PARAMS['temp_default_gradient']
     g_minmax = cfg.PARAMS['temp_local_gradient_bounds']
 
+    # get closest grid cell and index
     ilon = np.argmin(np.abs(lon - gdir.cenlon))
     ilat = np.argmin(np.abs(lat - gdir.cenlat))
     ref_pix_lon = lon[ilon]
     ref_pix_lat = lat[ilat]
 
-    # Can stay as is in OGGM (no time-dependent operation)
+    # Some special things added in the crampon function
     iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon,
                                                           ilat, def_grad,
                                                           g_minmax,
@@ -228,9 +207,15 @@ def process_custom_climate_data(gdir):
         # the last hydro/glacio year is needed
         if not '{}-09-30'.format(y1) in nc_ts.time:
             y1 = yrs[-2]
-        gdir.write_daily_climate_file(time, iprcp, itemp, igrad, ihgt,
-                                        # FUNCTION WRITE_DAILY_CLIMATE FILE MUST BE ADDED TO GDIR
-                                        ref_pix_lon, ref_pix_lat)
+        # Ok, this is NO ERROR: we can use the function
+        # ``write_monthly_climate_file`` also to produce a daily climate file:
+        # there is no reference to the time in the function! We should just
+        # change the ``file_name`` keyword!
+        gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
+                                        ref_pix_lon, ref_pix_lat,
+                                        file_name='climate_daily',
+                                        time_unit=nc_ts._nc.variables['time']
+                                        .units)
     else:
         raise NotImplementedError('Climate data frequency not yet understood')
 
@@ -458,6 +443,9 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
 
         return mb, err
 
+
+# IMPORTANT: overwrite OGGM functions with same name:
+process_custom_climate_data = process_custom_climate_data_crampon
 
 if __name__ == '__main__':
     # Initialize CRAMPON (and OGGM, hidden in cfg.py), IMPORTANT!
