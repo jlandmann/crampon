@@ -29,4 +29,4 @@ except ImportError:
     pass
 
 # API
-from oggm.utils import entity_task, divide_task, global_task
+from crampon.utils import GlacierDirectory, entity_task, divide_task, global_task
