@@ -79,11 +79,15 @@ CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
 # OGGM changed it to -1., let's first see what Fabi writes in his paper
 CPARAMS['temp_melt'] = 0.
 
+# Our data are quite good, so we want to use the local gradient (5x5 window)
+CPARAMS['temp_use_local_gradient'] = 5
+
 
 def initialize(file=None):
     """Read the configuration file containing the run's parameters."""
 
     global IS_INITIALIZED
+    global BASENAMES
     global PARAMS
     global PATHS
     global CONTINUE_ON_ERROR
@@ -116,7 +120,7 @@ def initialize(file=None):
     oggmcfg.PATHS['working_dir'] = cp['working_dir']
     if not oggmcfg.PATHS['working_dir']:
         oggmcfg.PATHS['working_dir'] = os.path.join(os.path.expanduser('~'),
-                                            'OGGM_WORKING_DIRECTORY')
+                                                    'OGGM_WORKING_DIRECTORY')
 
     # Paths
     oggm_static_paths()
@@ -147,7 +151,7 @@ def initialize(file=None):
     oggmcfg.PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
 
     # Climate
-    oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_bool(
+    oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_int(
         'temp_use_local_gradient')
     k = 'temp_local_gradient_bounds'
     oggmcfg.PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
@@ -176,8 +180,9 @@ def initialize(file=None):
     _d = os.path.join(CACHE_DIR, 'oggm-sample-data-master', 'rgi_meta')
     oggmcfg.RGI_REG_NAMES = pd.read_csv(os.path.join(_d, 'rgi_regions.csv'),
                                 index_col=0)
-    oggmcfg.RGI_SUBREG_NAMES = pd.read_csv(os.path.join(_d, 'rgi_subregions.csv'),
-                                   index_col=0)
+    oggmcfg.RGI_SUBREG_NAMES = pd.read_csv(os.path.join(_d,
+                                                        'rgi_subregions.csv'),
+                                           index_col=0)
 
     # Delete non-floats
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
