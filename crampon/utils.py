@@ -22,7 +22,7 @@ import netCDF4
 from scipy import stats
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
-from oggm.utils import *  # easiest way to make utils accessible
+from oggm.utils import *
 # Locals
 import crampon.cfg as cfg
 
@@ -543,8 +543,8 @@ def read_multiple_netcdfs(files, dim='time', tfunc=None):
 
 
 @MEMORY.cache
-def joblib_read_climate(ncpath, ilon, ilat, default_grad, minmax_grad,
-                        use_grad=100):
+def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
+                                use_grad):
     """
     This is a cracked version of the OGGM function with some extras.
 
@@ -553,79 +553,61 @@ def joblib_read_climate(ncpath, ilon, ilat, default_grad, minmax_grad,
     ncpath: str
         Path to the netCDF file in OGGM suitable format.
     ilon: int
-        Index of the minimum longitude of the netCDF
+        Index of a longitude in the netCDF.
     ilat: int
-        Index of the minimum latitude of the netCDF
+        Index of a latitude in the netCDF.
     default_grad: float
         Default temperature gradient (K/m).
     minmax_grad: tuple
         Min/Max bounds of the local gradient, in case the grid kernel search
         deliver strange values.
-    use_grad: float
+    use_grad: int
         Window edge width of surrounding cells used to determine the local
-        temperature gradient. If ``None``, the ``default_grad`` is used.
+        temperature gradient. Must be an odd number. If 0,
+        the ``default_grad`` is used.
 
     Returns
     -------
-    iprcp, itemp, igrad, ihgt
+    iprcp, itemp, igrad, ihgt:
+    Precipitation, temperature, temperature gradient and elevation
+    at given latitude/longitude indices.
     """
+
+    # check for oddness or zero
+    if not (divmod(use_grad, 2)[1] == 1 or use_grad == 0):
+        raise ValueError('Window edge width must be odd number or zero.')
 
     # read the file and data
     with netCDF4.Dataset(ncpath, mode='r') as nc:
         temp = nc.variables['temp']
         prcp = nc.variables['prcp']
         hgt = nc.variables['hgt']
-        igrad = np.zeros(len(nc.dimensions['time'])) + default_grad ####
-        ttemp = temp[:, ilat-1:ilat+2, ilon-1:ilon+2]    ######
-        itemp = ttemp[:, 1, 1]                         ########
-        thgt = hgt[ilat-1:ilat+2, ilon-1:ilon+2]        #######
-        ihgt = thgt[1, 1]                               #######
-        thgt = thgt.flatten()                           #######
-        iprcp = prcp[:, ilat, ilon]                     #######
+        igrad = np.zeros(len(nc.dimensions['time'])) + default_grad
+        iprcp = prcp[:, ilat, ilon]
+        itemp = temp[:, ilat, ilon]
+        ihgt = hgt[ilat, ilon]
 
-    # Now the gradient
-    if use_grad:
-        for t, loct in enumerate(ttemp):
-            slope, _, _, p_val, _ = stats.linregress(thgt,
-                                                     loct.flatten())
-            igrad[t] = slope if (p_val < 0.01) else default_grad
+        if use_grad != 0:
+            # some min/max constants for the window
+            minw = divmod(use_grad, 2)[0]
+            maxw = divmod(use_grad, 2)[0] + 1
 
-        # apply the boundaries, in case the gradient goes wild
-        igrad = np.clip(igrad, minmax_grad[0], minmax_grad[1])
+            ttemp = temp[:, ilat-minw:ilat+maxw, ilon-minw:ilon+maxw]
+            thgt = hgt[ilat-minw:ilat+maxw, ilon-minw:ilon+maxw]
+            thgt = thgt.flatten()
+
+            for t, loct in enumerate(ttemp):
+                slope, _, _, p_val, _ = stats.linregress(thgt,
+                                                         loct.flatten())
+                igrad[t] = slope if (p_val < 0.01) else default_grad
+
+            # apply the boundaries, in case the gradient goes wild
+            igrad = np.clip(igrad, minmax_grad[0], minmax_grad[1])
 
     return iprcp, itemp, igrad, ihgt
 
-'''
-@entity_task(log, writes=['meteo'])
-def process_meteosuisse_data(gdir):
-
-    # read the file
-    fpath = cfg.PATHS['climate_file']
-    nc_ts = salem.GeoNetcdf(fpath)
-
-    # geoloc
-    lon = nc_ts._nc.variables['lon'][:]
-    lat = nc_ts._nc.variables['lat'][:]
-
-    # Gradient defaults
-    use_grad = cfg.PARAMS['temp_use_local_gradient']
-    def_grad = cfg.PARAMS['temp_default_gradient']
-    g_minmax = cfg.PARAMS['temp_local_gradient_bounds']
-
-    ilon = np.argmin(np.abs(lon - gdir.cenlon))
-    ilat = np.argmin(np.abs(lat - gdir.cenlat))
-    ref_pix_lon = lon[ilon]
-    ref_pix_lat = lat[ilat]
-    iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon,
-                                                          ilat, def_grad,
-                                                          g_minmax,
-                                                          use_grad)
-    gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
-                                    ref_pix_lon, ref_pix_lat)
-    # metadata
-    out = {'climate_source': fpath, 'hydro_yr_0': y0+1, 'hydro_yr_1': y1}
-    gdir.write_pickle(out, 'climate_info')
-'''
+# IMPORTANT: overwrite OGGM functions with same name
+joblib_read_climate = joblib_read_climate_crampon
 
 if __name__ == '__main__':
     #cirrus = CirrusClient()
