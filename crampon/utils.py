@@ -447,6 +447,12 @@ class MeteoTSAccessor(object):
         if "crs" in self._obj.data_vars:
             self._obj = self._obj.drop(['crs'])
 
+        if 'dummy' in self._obj.coords:
+            self._obj = self._obj.drop(['dummy'])
+
+        if 'latitude_longitude' in self._obj.coords:
+            self._obj = self._obj.drop(['latitude_longitude'])
+
         return self._obj
 
 
