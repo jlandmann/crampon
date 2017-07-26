@@ -98,7 +98,8 @@ def initialize(file=None):
     global RGI_SUBREG_NAMES
 
     # This is necessary as OGGM still refers to its own initialisation
-    oggminitialize(file=file)
+    #oggminitialize(file=file)
+    oggminitialize()
     import oggm.cfg as oggmcfg
 
     # Add the CRAMPON-specific keys to the dicts
@@ -196,7 +197,7 @@ def initialize(file=None):
            'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
            'tstar_search_window', 'use_bias_for_run', 'run_period',
            'prcp_scaling_factor', 'use_intersects', 'filter_min_slope',
-           'auto_skip_task']
+           'auto_skip_task', 'correct_for_neg_flux']
     for k in ltr:
         cp.pop(k, None)
 
