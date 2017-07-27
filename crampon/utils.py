@@ -386,7 +386,12 @@ class MeteoTSAccessor(object):
         if not freq:
             freq = pd.infer_freq(self._obj.time.values)
 
-        resampled = self._obj.resample(freq, dim='time', **kwargs)
+        try:
+            resampled = self._obj.resample(freq, dim='time', **kwargs)
+        # a TO DO in xarray: if not monotonic, the code throws and error
+        except ValueError:
+            self._obj = self._obj.sortby('time')
+            resampled = self._obj.resample(freq, dim='time', **kwargs)
         diff = len(resampled.time.values) - len(self._obj.time.values)
         log.info('{} time steps were added during resampling.'.format(diff))
 
@@ -441,17 +446,32 @@ class MeteoTSAccessor(object):
         # Pseudo/to do:
         # Adjust variable name/units
 
+        # they changed the name of time coordinate....uffa!
         if "REFERENCE_TS" in self._obj.coords:
             self._obj.rename({"REFERENCE_TS": "time"}, inplace=True)
 
+        # whatever coordinate that is
         if "crs" in self._obj.data_vars:
             self._obj = self._obj.drop(['crs'])
 
+        # whatever coordinate that is
         if 'dummy' in self._obj.coords:
             self._obj = self._obj.drop(['dummy'])
 
+        # whatever coordinate that is
         if 'latitude_longitude' in self._obj.coords:
             self._obj = self._obj.drop(['latitude_longitude'])
+
+        # this is the case for the operational files
+        if 'x' in self._obj.coords:
+            self._obj = self._obj.rename({'x': 'lon'})
+
+        # this is the case for the operational files
+        if 'y' in self._obj.coords:
+            self._obj = self._obj.rename({'y': 'lat'})
+
+        # Latitude can be switched after 2014
+        self._obj = self._obj.sortby('lat')
 
         return self._obj
 
@@ -503,13 +523,13 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
     nc_ts.to_netcdf(outfile)
 
 
-def read_netcdf(path, tfunc=None):
+def read_netcdf(path, chunks=None, tfunc=None):
     # use a context manager, to ensure the file gets closed after use
-    with xr.open_dataset(path) as ds:
-
+    with xr.open_dataset(path, cache=False) as ds:
         # some extra stuff - this is actually stupid and should go away!
         ds = ds.crampon.postprocess_cirrus()
 
+        ds = ds.chunk(chunks=chunks)
         # transform_func should do some sort of selection or
         # aggregation
         if tfunc is not None:
@@ -521,7 +541,7 @@ def read_netcdf(path, tfunc=None):
         return ds
 
 
-def read_multiple_netcdfs(files, dim='time', tfunc=None):
+def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     """
     Read several netCDF files at once. Requires dask module.
 
@@ -535,14 +555,16 @@ def read_multiple_netcdfs(files, dim='time', tfunc=None):
         Dimension along which to concatenate the files.
     tfunc: function
         Transformation function for the data, e.g. 'lambda ds: ds.mean()'
+    chunks: dict
+        Chunk sizes as can be specified to xarray.open_dataset.
 
     Returns
     -------
-
+    A concatenation of the input files as xarray.Dataset.
     """
 
     paths = sorted(files)
-    datasets = [read_netcdf(p, tfunc) for p in paths]
+    datasets = [read_netcdf(p, chunks, tfunc) for p in paths]
 
     combined = xr.concat(datasets, dim)
     return combined
@@ -614,6 +636,31 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
 
 # IMPORTANT: overwrite OGGM functions with same name
 joblib_read_climate = joblib_read_climate_crampon
+
+
+def _cut_with_CH_glac(xr_ds):
+    """
+    Preliminary version that cuts an xarray.Dataset to Swiss glacier shapes.
+
+    At the moment this is just a rectangle clip, but more work is on the way:
+    https://github.com/pydata/xarray/issues/501
+
+    Parameters
+    ----------
+    xr_ds: xarray.Dataset
+        The Dataset to be clipped.
+
+    Returns
+    -------
+    The clipped xarray.Dataset.
+    """
+
+    xr_ds = xr_ds.where(xr_ds.lat >= 45.8521, drop=True)
+    xr_ds = xr_ds.where(xr_ds.lat <= 47.2603, drop=True)
+    xr_ds = xr_ds.where(xr_ds.lon >= 6.79963, drop=True)
+    xr_ds = xr_ds.where(xr_ds.lon <= 10.4279, drop=True)
+
+    return xr_ds
 
 if __name__ == '__main__':
     #cirrus = CirrusClient()
