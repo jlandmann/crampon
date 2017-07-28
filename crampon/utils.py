@@ -341,15 +341,48 @@ class MeteoTSAccessor(object):
         """
         self._obj = xarray_obj
 
-    def update_with_verified(self):
+    def update_with_verified(self, ver_path):
         """
         Updates the time series with verified MeteoSwiss data.
+
+        Parameters
+        ----------
+        ver_path: str
+            Path to the file with verified data (in netCDF format).
         
         Returns
         -------
-
+        Path to the updated netcdf file.
         """
-        raise NotImplementedError()
+
+        # includes postprocessing
+        ver = read_netcdf(ver_path, chunks={'time': 50},
+                          tfunc=_cut_with_CH_glac)
+
+        # xarray not yet able to do this, as far as I see (combine_first), so:
+        isect = pd.DatetimeIndex(self._obj.time.values).intersection(
+            ver.time.values).unique().sort_values()
+
+        # cut out the part in the old file which should be replaced
+        istart_old = self._obj.indexes['time'].get_loc(isect[0])
+        iend_old = self._obj.indexes['time'].get_loc(isect[-1]) + 1
+        begin_old = self._obj.isel(time=slice(None, istart_old))
+        end_old = self._obj.isel(time=slice(iend_old, None))
+
+        # cut out the part in the new file which should be inserted
+        istart_new = ver.indexes['time'].get_loc(isect[0])
+        iend_new = ver.indexes['time'].get_loc(isect[-1]) + 1
+        slice_new = ver.isel(time=slice(istart_new, iend_new))
+
+        # concatenate should do it
+        concat = xr.concat([begin_old, slice_new, end_old], dim='time')
+
+        # attach attribute 'last date verified' to the netcdf
+        # the date itself iw not allowed, to convert to str
+        concat = concat.assign_attrs({'last_verified':
+                                          str(slice_new.time.values[-1])})
+
+        return concat
 
     def update_with_operational(self):
         """
@@ -461,17 +494,131 @@ class MeteoTSAccessor(object):
         # whatever coordinate that is
         if 'latitude_longitude' in self._obj.coords:
             self._obj = self._obj.drop(['latitude_longitude'])
+        if 'latitude_longitude' in self._obj.variables:
+            self._obj = self._obj.drop(['latitude_longitude'])
+
+        if 'longitude_latitude' in self._obj.coords:
+            self._obj = self._obj.drop(['longitude_latitude'])
+        if 'longitude_latitude' in self._obj.variables:
+            self._obj = self._obj.drop(['longitude_latitude'])
 
         # this is the case for the operational files
         if 'x' in self._obj.coords:
-            self._obj = self._obj.rename({'x': 'lon'})
+            self._obj.rename({'x': 'lon'}, inplace=True)
 
         # this is the case for the operational files
         if 'y' in self._obj.coords:
-            self._obj = self._obj.rename({'y': 'lat'})
+            self._obj.rename({'y': 'lat'}, inplace=True)
 
         # Latitude can be switched after 2014
         self._obj = self._obj.sortby('lat')
+
+        # make R variable names the same so that we don't get in troubles
+        if 'RprelimD' in self._obj.variables:
+            self._obj.rename({'RprelimD': 'RD'}, inplace=True)
+        if 'RhiresD' in self._obj.coords:
+            self._obj.rename({'RhiresD': 'RD'}, inplace=True)
+
+        # THIS IS ABSOLUTELY TEMPORARY AND SHOULD BE REPLACED
+        # THE REASON IS A SLIGHT PRECISION PROBLEM IN THE INPUT DATA, CHANGING
+        # AT THE 2014/2015 TRANSITION => WE STANDARDIZE THE COORDINATES BY HAND
+        lats = np.array([45.75, 45.77083333, 45.79166667, 45.8125,
+                         45.83333333, 45.85416667, 45.875, 45.89583333,
+                         45.91666667, 45.9375, 45.95833333, 45.97916667,
+                         46., 46.02083333, 46.04166667, 46.0625,
+                         46.08333333, 46.10416667, 46.125, 46.14583333,
+                         46.16666667, 46.1875, 46.20833333, 46.22916667,
+                         46.25, 46.27083333, 46.29166667, 46.3125,
+                         46.33333333, 46.35416667, 46.375, 46.39583333,
+                         46.41666667, 46.4375, 46.45833333, 46.47916667,
+                         46.5, 46.52083333, 46.54166667, 46.5625,
+                         46.58333333, 46.60416667, 46.625, 46.64583333,
+                         46.66666667, 46.6875, 46.70833333, 46.72916667,
+                         46.75, 46.77083333, 46.79166667, 46.8125,
+                         46.83333333, 46.85416667, 46.875, 46.89583333,
+                         46.91666667, 46.9375, 46.95833333, 46.97916667,
+                         47., 47.02083333, 47.04166667, 47.0625,
+                         47.08333333, 47.10416667, 47.125, 47.14583333,
+                         47.16666667, 47.1875, 47.20833333, 47.22916667,
+                         47.25, 47.27083333, 47.29166667, 47.3125,
+                         47.33333333, 47.35416667, 47.375, 47.39583333,
+                         47.41666667, 47.4375, 47.45833333, 47.47916667,
+                         47.5, 47.52083333, 47.54166667, 47.5625,
+                         47.58333333, 47.60416667, 47.625, 47.64583333,
+                         47.66666667, 47.6875, 47.70833333, 47.72916667,
+                         47.75, 47.77083333, 47.79166667, 47.8125,
+                         47.83333333, 47.85416667, 47.875])
+
+        lons = np.array([5.75, 5.77083333, 5.79166667, 5.8125,
+                         5.83333333, 5.85416667, 5.875, 5.89583333,
+                         5.91666667, 5.9375, 5.95833333, 5.97916667,
+                         6., 6.02083333, 6.04166667, 6.0625,
+                         6.08333333, 6.10416667, 6.125, 6.14583333,
+                         6.16666667, 6.1875, 6.20833333, 6.22916667,
+                         6.25, 6.27083333, 6.29166667, 6.3125,
+                         6.33333333, 6.35416667, 6.375, 6.39583333,
+                         6.41666667, 6.4375, 6.45833333, 6.47916667,
+                         6.5, 6.52083333, 6.54166667, 6.5625,
+                         6.58333333, 6.60416667, 6.625, 6.64583333,
+                         6.66666667, 6.6875, 6.70833333, 6.72916667,
+                         6.75, 6.77083333, 6.79166667, 6.8125,
+                         6.83333333, 6.85416667, 6.875, 6.89583333,
+                         6.91666667, 6.9375, 6.95833333, 6.97916667,
+                         7., 7.02083333, 7.04166667, 7.0625,
+                         7.08333333, 7.10416667, 7.125, 7.14583333,
+                         7.16666667, 7.1875, 7.20833333, 7.22916667,
+                         7.25, 7.27083333, 7.29166667, 7.3125,
+                         7.33333333, 7.35416667, 7.375, 7.39583333,
+                         7.41666667, 7.4375, 7.45833333, 7.47916667,
+                         7.5, 7.52083333, 7.54166667, 7.5625,
+                         7.58333333, 7.60416667, 7.625, 7.64583333,
+                         7.66666667, 7.6875, 7.70833333, 7.72916667,
+                         7.75, 7.77083333, 7.79166667, 7.8125,
+                         7.83333333, 7.85416667, 7.875, 7.89583333,
+                         7.91666667, 7.9375, 7.95833333, 7.97916667,
+                         8., 8.02083333, 8.04166667, 8.0625,
+                         8.08333333, 8.10416667, 8.125, 8.14583333,
+                         8.16666667, 8.1875, 8.20833333, 8.22916667,
+                         8.25, 8.27083333, 8.29166667, 8.3125,
+                         8.33333333, 8.35416667, 8.375, 8.39583333,
+                         8.41666667, 8.4375, 8.45833333, 8.47916667,
+                         8.5, 8.52083333, 8.54166667, 8.5625,
+                         8.58333333, 8.60416667, 8.625, 8.64583333,
+                         8.66666667, 8.6875, 8.70833333, 8.72916667,
+                         8.75, 8.77083333, 8.79166667, 8.8125,
+                         8.83333333, 8.85416667, 8.875, 8.89583333,
+                         8.91666667, 8.9375, 8.95833333, 8.97916667,
+                         9., 9.02083333, 9.04166667, 9.0625,
+                         9.08333333, 9.10416667, 9.125, 9.14583333,
+                         9.16666667, 9.1875, 9.20833333, 9.22916667,
+                         9.25, 9.27083333, 9.29166667, 9.3125,
+                         9.33333333, 9.35416667, 9.375, 9.39583333,
+                         9.41666667, 9.4375, 9.45833333, 9.47916667,
+                         9.5, 9.52083333, 9.54166667, 9.5625,
+                         9.58333333, 9.60416667, 9.625, 9.64583333,
+                         9.66666667, 9.6875, 9.70833333, 9.72916667,
+                         9.75, 9.77083333, 9.79166667, 9.8125,
+                         9.83333333, 9.85416667, 9.875, 9.89583333,
+                         9.91666667, 9.9375, 9.95833333, 9.97916667,
+                         10., 10.02083333, 10.04166667, 10.0625,
+                         10.08333333, 10.10416667, 10.125, 10.14583333,
+                         10.16666667, 10.1875, 10.20833333, 10.22916667,
+                         10.25, 10.27083333, 10.29166667, 10.3125,
+                         10.33333333, 10.35416667, 10.375, 10.39583333,
+                         10.41666667, 10.4375, 10.45833333, 10.47916667,
+                         10.5, 10.52083333, 10.54166667, 10.5625,
+                         10.58333333, 10.60416667, 10.625, 10.64583333,
+                         10.66666667, 10.6875, 10.70833333, 10.72916667,
+                         10.75])
+
+        try:
+            self._obj.coords['lat'] = lats
+        except ValueError:
+            pass
+        try:
+            self._obj.coords['lon'] = lons
+        except ValueError:
+            pass
 
         return self._obj
 
@@ -481,6 +628,7 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
     Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
 
+    The file format will be as OGGM likes it.
     The temporal extent of the file will be the inner or outer join of the time
     series extent of the given input files .
 
@@ -520,6 +668,8 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
     # Fill NAs
     nc_ts.resample('D', 'time')
 
+    # ensure it's compressed when exporting
+    nc_ts.encoding['zlib'] = True
     nc_ts.to_netcdf(outfile)
 
 
@@ -529,12 +679,13 @@ def read_netcdf(path, chunks=None, tfunc=None):
         # some extra stuff - this is actually stupid and should go away!
         ds = ds.crampon.postprocess_cirrus()
 
+        print(ds.dims)
         ds = ds.chunk(chunks=chunks)
         # transform_func should do some sort of selection or
         # aggregation
         if tfunc is not None:
             ds = tfunc(ds)
-
+        print(ds.dims)
         # load all data from the transformed dataset, to ensure we can
         # use it after closing each original file
         ds.load()
