@@ -88,8 +88,7 @@ log.info('Number of glaciers: {}'.format(len(rgidf)))
 if __name__ == '__main__':
 
     # get the needed climatology
-    #for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
-    for var, mode in product(['R'], ['verified', 'operational']):
+    for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
         cirrus = utils.CirrusClient()
         a, b = cirrus.sync_files('/data/griddata',
                                  'c:\\users\\johannes\\documents\\crampon\\'
@@ -100,17 +99,30 @@ if __name__ == '__main__':
         flist = glob.glob(
             'c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\griddata\\{}\\daily\\{}*\\netcdf\\*.nc'.format(mode, var))
 
+        # We do this instead of using open_mfdataset, as we need a lot of
+        # preprocessing
         log.info('Concatenating {} {} {} files...'.format(len(flist), var, mode))
         sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
                                           tfunc=utils._cut_with_CH_glac)
         log.info('Ensuring time continuity...')
         sda.crampon.ensure_time_continuity()
         sda.encoding['zlib'] = True
+        print(sda.dims, 'end')
         sda.to_netcdf('c:\\users\\johannes\\desktop\\{}_{}_all.nc'
                       .format(var, mode))
 
+    # update operational with verified
+    for var in ['TabsD', 'R']:
+        v_op = 'c:\\users\\johannes\\desktop\\{}_operational_all.nc'.format(var)
+        v_ve = 'c:\\users\\johannes\\desktop\\{}_verified_all.nc'.format(var)
+
+        data = utils.read_netcdf(v_op, chunks={'time': 50})
+        data = data.crampon.update_with_verified(v_ve)
+
+        data.to_netcdf('c:\\users\\johannes\\desktop\\{}_op_ver.nc'.format(var))
+
     # combine both
-    tfiles = glob.glob('c:\\users\\johannes\\d*.nc'.format('TabsD'))
+    tfiles = glob.glob('c:\\users\\johannes\\desktop\\*.nc'.format('TabsD'))
     pfiles = glob.glob('c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\griddata\\verified\\daily\\{}*\\netcdf\\*.nc'.format('R'))
     hfile = glob.glob('c:\\users\\johannes\\documents\\crampon\\data\\test\\hgt.nc')
     outfile = 'c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\climate_all.nc'
