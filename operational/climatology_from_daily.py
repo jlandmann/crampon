@@ -35,7 +35,6 @@ cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
 
 # Local paths (where to write output and where to download input)
 PLOTS_DIR = os.path.join(cfg.PATHS['working_dir'], 'plots')
-print(PLOTS_DIR)
 
 # Currently OGGM wants some directories to exist
 # (maybe I'll change this but it can also catch errors in the user config)
@@ -66,7 +65,7 @@ problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
                         'RGI50-11.B4616-0',   # 'bottleneck' polygons
                         'RGI50-11.02848']  # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
 rgidf = rgidf[~rgidf.RGIId.isin(problem_glaciers_sgi)]
-rgidf = rgidf.head(50)
+rgidf = rgidf.head(5)
 #rgidf = rgidf[rgidf.Area >= 0.01]
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.00638'])] # just to have one REFMB glacier
 
@@ -87,6 +86,7 @@ log.info('Number of glaciers: {}'.format(len(rgidf)))
 # necessary to make multiprocessing work on Windows
 if __name__ == '__main__':
 
+
     # get the needed climatology
     for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
         cirrus = utils.CirrusClient()
@@ -105,9 +105,8 @@ if __name__ == '__main__':
         sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
                                           tfunc=utils._cut_with_CH_glac)
         log.info('Ensuring time continuity...')
-        sda.crampon.ensure_time_continuity()
+        sda = sda.crampon.ensure_time_continuity()
         sda.encoding['zlib'] = True
-        print(sda.dims, 'end')
         sda.to_netcdf('c:\\users\\johannes\\desktop\\{}_{}_all.nc'
                       .format(var, mode))
 
@@ -122,14 +121,14 @@ if __name__ == '__main__':
         data.to_netcdf('c:\\users\\johannes\\desktop\\{}_op_ver.nc'.format(var))
 
     # combine both
-    tfiles = glob.glob('c:\\users\\johannes\\desktop\\*.nc'.format('TabsD'))
-    pfiles = glob.glob('c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\griddata\\verified\\daily\\{}*\\netcdf\\*.nc'.format('R'))
-    hfile = glob.glob('c:\\users\\johannes\\documents\\crampon\\data\\test\\hgt.nc')
+    tfile = glob.glob('c:\\users\\johannes\\desktop\\*{}*_op_ver.nc'.format('TabsD'))[0]
+    pfile = glob.glob('c:\\users\\johannes\\desktop\\*{}*_op_ver.nc'.format('R'))[0]
+    hfile = glob.glob('c:\\users\\johannes\\documents\\crampon\\data\\test\\hgt.nc')[0]
     outfile = 'c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\climate_all.nc'
 
     cfg.PATHS['climate_file'] = outfile
 
-    utils.daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile)
+    utils.daily_climate_from_netcdf(tfile, pfile, hfile, outfile)
 
     # Go - initialize working directories
     gdirs = workflow.init_glacier_regions(rgidf, reset=True, force=True)
@@ -150,25 +149,21 @@ if __name__ == '__main__':
     for task in task_list:
             execute_entity_task(task, gdirs)
 
-    # Climate related task
-    tasks.compute_ref_t_stars(gdirs)
-    tasks.distribute_t_stars(gdirs)
-
+    result = xr.Dataset({'MB': (['time', 'z', 'n'],  []),},
+                         coords={'experiment': (['n'], []),
+                                 'height': (['z'], []),
+                                 'time': climate_file.time})
     for g in gdirs:
-        # Necessary for inversion input
-        tasks.prepare_for_inversion(g, add_debug_var=True)
 
         mu_star = cali[cali.rgi_id == g.rgi_id].mu_star.values[0]
         prcp_fac = cali[cali.rgi_id == g.rgi_id].prcp_fac.values[0]
 
-        try:
-            past_model = DailyMassBalanceModel(g, mu_star=mu_star,
-                                               prcp_fac=prcp_fac)
-        except OSError:
-            log.error('local mustar for {} does not exist'.format(g.rgi_id))
-            continue
+        past_model = DailyMassBalanceModel(g, mu_star=mu_star,
+                                           prcp_fac=prcp_fac, bias=0.)
+
         majid = g.read_pickle('major_divide', div_id=0)
-        cl = g.read_pickle('inversion_input', div_id=majid)[-1]
+        maj_fl = g.read_pickle('inversion_flowlines', div_id=majid)[-1]
+        maj_hgt = maj_fl.surface_h
 
         mb = []
         for date in past_model.tspan_in:
@@ -178,7 +173,7 @@ if __name__ == '__main__':
                 continue
 
             # Get the mass balance and convert to m per year
-            tmp = past_model.get_daily_mb(cl['hgt'], date=date) * \
+            tmp = past_model.get_daily_mb(maj_hgt, date=date) * \
                   cfg.SEC_IN_DAY * cfg.RHO / 1000.
             mb.append(tmp)
 
@@ -251,7 +246,7 @@ if __name__ == '__main__':
         ax.set_ylabel('Mass Balance (m we)')
         ax.set_xlim(1, 365)
         start, end = ax.get_xlim()
-        ax.xaxis.set_ticks(np.roll(cfg.DAYS_IN_MONTH, 3))
+        ax.xaxis.set_ticks([0]+np.cumsum(np.roll(cfg.DAYS_IN_MONTH, 3))[:-1])
         # start with November, bcz we set ticks at end:
         ax.set_xticklabels([m for m in 'NDJFMAMJJASO'])
         ax.grid(True, which='both', alpha=0.5)
