@@ -352,47 +352,49 @@ class MeteoTSAccessor(object):
         
         Returns
         -------
-        Path to the updated netcdf file.
+        Updated xarray.Dataset.
         """
 
         # includes postprocessing
         ver = read_netcdf(ver_path, chunks={'time': 50},
                           tfunc=_cut_with_CH_glac)
 
-        # xarray not yet able to do this, as far as I see (combine_first), so:
-        isect = pd.DatetimeIndex(self._obj.time.values).intersection(
-            ver.time.values).unique().sort_values()
-
-        # cut out the part in the old file which should be replaced
-        istart_old = self._obj.indexes['time'].get_loc(isect[0])
-        iend_old = self._obj.indexes['time'].get_loc(isect[-1]) + 1
-        begin_old = self._obj.isel(time=slice(None, istart_old))
-        end_old = self._obj.isel(time=slice(iend_old, None))
-
-        # cut out the part in the new file which should be inserted
-        istart_new = ver.indexes['time'].get_loc(isect[0])
-        iend_new = ver.indexes['time'].get_loc(isect[-1]) + 1
-        slice_new = ver.isel(time=slice(istart_new, iend_new))
-
-        # concatenate should do it
-        concat = xr.concat([begin_old, slice_new, end_old], dim='time')
+        # this does outer joins, too
+        comb = ver.combine_first(self._obj)
 
         # attach attribute 'last date verified' to the netcdf
-        # the date itself iw not allowed, to convert to str
-        concat = concat.assign_attrs({'last_verified':
-                                          str(slice_new.time.values[-1])})
+        # the date itself is not allowed, so convert to str
+        comb.assign_attrs({'last_verified': str(ver.time.values[-1])},
+                          inplace=True)
 
-        return concat
+        return comb
 
-    def update_with_operational(self):
+    def update_with_operational(self, op_path):
         """
         Updates the time series with operational MeteoSwiss data.
-        
+
+        The difference to self.update_with_verified is that no attribute is
+        attached and the order in xr.combine_first: values of self._obj are
+        prioritized.
+
+        Parameters
+        ----------
+        op_path:
+            Path to file with operational MeteoSwiss data.
+
         Returns
         -------
-
+        Updated xarray.Dataset.
         """
-        raise NotImplementedError()
+
+        # includes postprocessing
+        op = read_netcdf(op_path, chunks={'time': 50},
+                          tfunc=_cut_with_CH_glac)
+
+        # this does outer joins, too
+        comb = self._obj.combine_first(op)
+
+        return comb
 
     def ensure_time_continuity(self, freq='D', **kwargs):
         """
@@ -420,13 +422,18 @@ class MeteoTSAccessor(object):
             freq = pd.infer_freq(self._obj.time.values)
 
         try:
-            resampled = self._obj.resample(freq, dim='time', **kwargs)
+            resampled = self._obj.resample(freq, dim='time', keep_attrs=True,
+                                           **kwargs)
         # a TO DO in xarray: if not monotonic, the code throws and error
         except ValueError:
             self._obj = self._obj.sortby('time')
-            resampled = self._obj.resample(freq, dim='time', **kwargs)
-        diff = len(resampled.time.values) - len(self._obj.time.values)
-        log.info('{} time steps were added during resampling.'.format(diff))
+            resampled = self._obj.resample(freq, dim='time', keep_attrs=True,
+                                           **kwargs)
+        diff_a = len(set(resampled.time.values) - set(self._obj.time.values))
+        diff_r = len(set(self._obj.time.values) - set(resampled.time.values))
+
+        log.info('{} time steps were added, {} removed during resampling.'
+                 .format(diff_a, diff_r))
 
         return resampled
 
@@ -516,7 +523,7 @@ class MeteoTSAccessor(object):
         # make R variable names the same so that we don't get in troubles
         if 'RprelimD' in self._obj.variables:
             self._obj.rename({'RprelimD': 'RD'}, inplace=True)
-        if 'RhiresD' in self._obj.coords:
+        if 'RhiresD' in self._obj.variables:
             self._obj.rename({'RhiresD': 'RD'}, inplace=True)
 
         # THIS IS ABSOLUTELY TEMPORARY AND SHOULD BE REPLACED
@@ -623,7 +630,7 @@ class MeteoTSAccessor(object):
         return self._obj
 
 
-def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
+def daily_climate_from_netcdf(tfile, pfile, hfile, outfile):
     """
     Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
@@ -634,10 +641,10 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
 
     Parameters
     ----------
-    tfiles: list
-        Paths to temperature netCDF files.
-    pfiles: list
-        Paths to precipitation netCDF files.
+    tfile: str
+        Path to temperature netCDF file.
+    pfile: list
+        Path to precipitation netCDF file.
     hfile: str
         Path to the elevation netCDF file.
     outfile: str
@@ -648,25 +655,21 @@ def daily_climate_from_netcdf(tfiles, pfiles, hfile, outfile):
 
     """
 
-    temp = read_multiple_netcdfs(tfiles)
-    prec = read_multiple_netcdfs(pfiles)
+    temp = read_netcdf(tfile, chunks={'time': 50})
+    prec = read_netcdf(pfile, chunks={'time': 50})
     hgt = read_netcdf(hfile)
+    _, hgt = xr.align(temp, hgt, join='left')
+
+    # Rename variables as OGGM likes it
+    if 'TabsD' in temp.variables:
+        temp.rename({'TabsD': 'temp'}, inplace=True)
+    if 'RD' in prec.variables:
+        prec.rename({'RD': 'prcp'}, inplace=True)
 
     # make it one
-    nc_ts = xr.merge(temp, prec, hgt)
+    nc_ts = xr.merge([temp, prec, hgt])
 
-    # check that all needed variables and coordinates are there:
-
-    # Units
-    assert nc_ts._nc.variables['hgt'].units.lower() in ['m', 'meters', 'meter',
-                                                        'metres', 'metre']
-    assert nc_ts._nc.variables['temp'].units.lower() in ['degc', 'degrees',
-                                                         'degree', 'c']
-    assert nc_ts._nc.variables['prcp'].units.lower() in ['kg m-2', 'l m-2',
-                                                         'mm', 'millimeters',
-                                                         'millimeter']
-    # Fill NAs
-    nc_ts.resample('D', 'time')
+    # Units cannot be checked anymore at this place (lost in xarray...)
 
     # ensure it's compressed when exporting
     nc_ts.encoding['zlib'] = True
@@ -679,13 +682,12 @@ def read_netcdf(path, chunks=None, tfunc=None):
         # some extra stuff - this is actually stupid and should go away!
         ds = ds.crampon.postprocess_cirrus()
 
-        print(ds.dims)
         ds = ds.chunk(chunks=chunks)
         # transform_func should do some sort of selection or
         # aggregation
         if tfunc is not None:
             ds = tfunc(ds)
-        print(ds.dims)
+
         # load all data from the transformed dataset, to ensure we can
         # use it after closing each original file
         ds.load()
