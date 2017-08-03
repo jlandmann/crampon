@@ -2,19 +2,22 @@
 
 from __future__ import division
 
+import os
 from glob import glob
 import crampon.cfg as cfg
-from crampon.core.models.massbalance import PastMassBalanceModel
+from crampon.core.models.massbalance import DailyMassBalanceModel
 from crampon import utils
 from crampon.utils import date_to_year, GlacierDirectory
-from oggm.core.preprocessing.climate import *
+#from oggm.core.preprocessing.climate import *
 import itertools
 import scipy.optimize as optimize
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 from crampon import entity_task
 import logging
+from itertools import product
 
 # temporary
 from crampon.workflow import execute_entity_task
@@ -227,6 +230,72 @@ def process_custom_climate_data_crampon(gdir):
            'hydro_yr_1': y1, 'end_date': end_date}
     gdir.write_pickle(out, 'climate_info')
 
+
+def climate_file_from_scratch(write_to=os.path.expanduser('documents\\crampon\\data\\bigdata'),
+                              hfile='c:\\users\\johannes\\documents\\crampon\\data\\test\\hgt.nc'):
+    """
+    Compile the climate file needed for any CRAMPON calculations.
+
+    The file will contain an up to date meteorological time series from all
+    currently available files on Cirrus.
+
+    Parameters
+    ----------
+    write_to: str
+        Directory where the Cirrus files should be synchronized to and where
+        the processed/concatenated files should be written to.
+    hfile: str
+        Path to a netCDF file containing a DEM of the area (used for assembling
+        the file that OGGM likes. Needs to cover the same area in the same
+        extent ans resolution as the meteo files.
+
+    Returns
+    -------
+    outfile: str
+        The path to the compiled file.
+    """
+
+    for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
+        cirrus = utils.CirrusClient()
+        _, _ = cirrus.sync_files('/data/griddata', write_to
+                                 , globpattern='*{}/daily/{}*/netcdf/*'
+                                 .format(mode, var))
+
+        flist = glob.glob(os.path.join(write_to,
+                                       'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
+                                       .format(mode, var)))
+
+        # Instead of using open_mfdataset, as we need a lot of preprocessing
+        log.info('Concatenating {} {} {} files...'.format(len(flist), var, mode))
+        sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
+                                          tfunc=utils._cut_with_CH_glac)
+        log.info('Ensuring time continuity...')
+        sda = sda.crampon.ensure_time_continuity()
+        sda.encoding['zlib'] = True
+        sda.to_netcdf(os.path.join(write_to, '{}_{}_all.nc'.format(var,
+                                                                   mode)))
+
+    # update operational with verified
+    for var in ['TabsD', 'R']:
+        v_op = os.path.join(write_to, '{}_operational_all.nc'.format(var))
+        v_ve = os.path.join(write_to, '{}_verified_all.nc'.format(var))
+
+        data = utils.read_netcdf(v_op, chunks={'time': 50})
+        data = data.crampon.update_with_verified(v_ve)
+
+        data.to_netcdf(os.path.join(write_to, '{}_op_ver.nc'.format(var)))
+
+    # combine both
+    tfile = glob.glob(os.path.join(write_to, '*{}*_op_ver.nc'
+                                   .format('TabsD')))[0]
+    pfile = glob.glob(os.path.join(write_to, '*{}*_op_ver.nc'
+                                   .format('R')))[0]
+    outfile = os.path.join(write_to, 'climate_all.nc')
+
+    utils.daily_climate_from_netcdf(tfile, pfile, hfile, outfile)
+
+    return outfile
+
 '''
 def past_mb_anytime(gdir, cali_params, ym_prod, cl, insitu):
     """
@@ -261,7 +330,7 @@ def past_mb_anytime(gdir, cali_params, ym_prod, cl, insitu):
 def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
                        prcp_fac_rg=None, recurs=0, err_thresh=5.):
     """
-    Get mustar from a volume change.
+    Get mustar from an elevation change.
     
     Parameters
     ----------
@@ -306,7 +375,8 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
     ##### HERE SHOULD GO A PROCEDURE TO ACCOUNT FOR UNCERTAINTIES IN DEM DATES
 
     majid = gdir.read_pickle('major_divide', div_id=0)
-    cl = gdir.read_pickle('inversion_input', div_id=majid)[-1]
+    maj_fl = gdir.read_pickle('inversion_flowlines', div_id=majid)[-1]
+    maj_hgt = maj_fl.surface_h
 
     mb = np.ones((len(mustar_rg), len(prcp_fac_rg)))
     i = 0
@@ -323,23 +393,22 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
     #                                            args=(gdir, ym_prod, cl, insitu_ally))
 
     for (mi, mustar), (pi, prcp_fac) in p_comb:
-        past_model = PastMassBalanceModel(gdir, mu_star=mustar,
-                                          prcp_fac=prcp_fac)
+        day_model = DailyMassBalanceModel(gdir, mu_star=mustar,
+                                           prcp_fac=prcp_fac, bias=0.)
 
         mb_monthly = []
-        for y, m in ym_prod:
-            ym = date_to_year(y, m)
-            # Get the mass balance and convert to m of ice per year
+        for date in day_model.tspan_in:
+
             try:
-                tmp = past_model.get_monthly_mb(cl['hgt'], ym) * \
-                      cfg.SEC_IN_MONTHS[m - 1] * cfg.RHO / 1000.
+            # Get the mass balance and convert to m per day
+                tmp = day_model.get_daily_mb(maj_hgt, date=date) * \
+                      cfg.SEC_IN_DAY * cfg.RHO / 1000.
             # It happens that e.g. RGI50-11.00638 has the 1st DEM date before
             #  the Meteo time series begins (OGGM problem!?)
             except IndexError:
                 if i == 0:
-                    print('Skipped year/month {},{} for glacier {}'.format(y,
-                                                                           m,
-                                                                           gdir.rgi_id))
+                    print('Skipped date {} for glacier {}'.format(date,
+                                                                  gdir.rgi_id))
                 continue
             mb_monthly.append(sum(tmp))
         mb[mi][pi] = sum(mb_monthly)
@@ -392,6 +461,7 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
     """
 
     # Error greater than thresholt
+    """
     if (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100 > err_thresh and recurs == 0:
         print('Error too big ({}\%) for {}'.format((np.sqrt([err[min_ind]][0])
                                                     / insitu_ally)[0] * 100,
@@ -409,39 +479,40 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
         return mb, err
 
     else:
-        # Take up to 50 values close to minimum as long as they are smaller
-        # than error threshold
-        N = 50
-        n_lowest_val = err[np.unravel_index(err.argsort(axis=None),
-                                            err.shape)][:N]
+    """
+    # Take up to 50 values close to minimum as long as they are smaller
+    # than error threshold
+    N = 50
+    n_lowest_val = err[np.unravel_index(err.argsort(axis=None),
+                                        err.shape)][:N]
 
-        # Indices for lowest mustasr and precipitation
-        n_lowest_m = np.unravel_index(err.argsort(axis=None), err.shape)[0][:N]
-        n_lowest_p = np.unravel_index(err.argsort(axis=None), err.shape)[1][:N]
+    # Indices for lowest mustasr and precipitation
+    n_lowest_m = np.unravel_index(err.argsort(axis=None), err.shape)[0][:N]
+    n_lowest_p = np.unravel_index(err.argsort(axis=None), err.shape)[1][:N]
 
-        n_lowest_val = np.where(np.abs(np.sqrt(n_lowest_val) / insitu_ally * 100) <= err_thresh)
-        print(err[n_lowest_m, n_lowest_p])
-        print(mustar_rg[n_lowest_m], prcp_fac_rg[n_lowest_p])
+    n_lowest_val = np.where(np.abs(np.sqrt(n_lowest_val) / insitu_ally * 100) <= err_thresh)
+    print(err[n_lowest_m, n_lowest_p])
+    print(mustar_rg[n_lowest_m], prcp_fac_rg[n_lowest_p])
 
-        print(mustar_rg[min_ind[0]], prcp_fac_rg[min_ind[1]])
-        print('Error in Percent:{}'.format(
-            (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100))
+    print(mustar_rg[min_ind[0]], prcp_fac_rg[min_ind[1]])
+    print('Error in Percent:{}'.format(
+        (np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100))
 
-        for div_id in [0] + list(gdir.divide_ids):
-            # Scalars in a small dataframe for later
-            df = pd.DataFrame()
-            df['rgi_id'] = [gdir.rgi_id] * len(n_lowest_m)
-            df['t_star'] = [None] * len(n_lowest_m)
-            df['mu_star'] = mustar_rg[n_lowest_m]#[mustar_rg[min_ind[0]]][0]
-            df['prcp_fac'] = prcp_fac_rg[n_lowest_p]#[prcp_fac_rg[min_ind[1]]][0]
-            df['bias'] = np.sqrt(err[n_lowest_m, n_lowest_p]) #[err[min_ind]][0]
-            df['err_perc'] = np.abs((np.sqrt([err[n_lowest_m, n_lowest_p]]) / insitu_ally)[0] * 100) #(np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100
-            #  drop lines where error too big
-            df = df[df.err_perc <= err_thresh]
-            df.to_csv(gdir.dir+'\\mustar_from_mauro.csv',
-                      index=False)
+    for div_id in [0] + list(gdir.divide_ids):
+        # Scalars in a small dataframe for later
+        df = pd.DataFrame()
+        df['rgi_id'] = [gdir.rgi_id] * len(n_lowest_m)
+        df['t_star'] = [None] * len(n_lowest_m)
+        df['mu_star'] = mustar_rg[n_lowest_m]#[mustar_rg[min_ind[0]]][0]
+        df['prcp_fac'] = prcp_fac_rg[n_lowest_p]#[prcp_fac_rg[min_ind[1]]][0]
+        df['bias'] = np.sqrt(err[n_lowest_m, n_lowest_p]) #[err[min_ind]][0]
+        df['err_perc'] = np.abs((np.sqrt([err[n_lowest_m, n_lowest_p]]) / insitu_ally)[0] * 100) #(np.sqrt([err[min_ind]][0]) / insitu_ally)[0] * 100
+        #  drop lines where error too big
+        df = df[df.err_perc <= err_thresh]
+        df.to_csv(gdir.dir+'\\mustar_from_mauro.csv',
+                  index=False)
 
-        return mb, err
+    return mb, err
 
 
 # IMPORTANT: overwrite OGGM functions with same name:
@@ -451,12 +522,6 @@ if __name__ == '__main__':
     # Initialize CRAMPON (and OGGM, hidden in cfg.py), IMPORTANT!
     cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
                         'CH_params.cfg')
-
-    # Some changes in cfg
-    # Added from CRAMPON:
-    _doc = 'CSV output from the calibration on custom mass balance data with ' \
-           'mustar, bias and error'
-    cfg.BASENAMES['mustar_from_mauro'] = ('mustar_from_mauro.csv', _doc)
 
     # for testglaciers
     #gdirs = [GlacierDirectory(i) for i in
@@ -496,10 +561,11 @@ if __name__ == '__main__':
     deltah = deltah[['RGIId', 'THICKNESS_', 'BgnDate', 'REFERENCE_']]
 
     # set ranges and steps for calibration parameters
-    mrg_step = 0.25
+    mrg_step = 1.
     prg_step = 0.1
     mrg = np.arange(0., 80. + mrg_step, mrg_step)
     prg = np.arange(0.05, 2.5 + prg_step, prg_step)
+    prg = [2.5]
 
 
     for gdir in gdirs:
@@ -525,8 +591,8 @@ if __name__ == '__main__':
     #    continue
     '''
 
-    #execute_entity_task(mustar_from_deltah, gdirs, deltah_df=deltah,
-    #                    mustar_rg=mrg, prcp_fac_rg=prg)
+    execute_entity_task(mustar_from_deltah, gdirs, deltah_df=deltah,
+                        mustar_rg=mrg, prcp_fac_rg=prg)
 
 
     '''
