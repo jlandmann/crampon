@@ -75,12 +75,19 @@ CBASENAMES['mustar_from_mauro'] = ('mustar_from_mauro.csv', _doc)
 _doc = 'The daily climate timeseries for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
+_doc = 'The daily mass balance timeseries for this glacier, stored in a ' \
+       'pickle file.'
+CBASENAMES['mb_daily'] = ('mb_daily.pkl', _doc)
+
 
 # OGGM changed it to -1., let's first see what Fabi writes in his paper
 CPARAMS['temp_melt'] = 0.
 
 # Our data are quite good, so we want to use the local gradient (5x5 window)
 CPARAMS['temp_use_local_gradient'] = 5
+
+CPATHS['climate_dir'] = os.path.expanduser('documents\\crampon\\data\\bigdata')
+CPATHS['hfile'] = os.path.expanduser('documents\\crampon\\data\\test\\hgt.nc')
 
 
 def initialize(file=None):
