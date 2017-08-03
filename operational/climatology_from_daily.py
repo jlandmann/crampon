@@ -63,141 +63,143 @@ problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
                          'RGI50-11.A14I03-3', 'RGI50-11.A14G14-0',
                         'RGI50-11.A54I17n-0', 'RGI50-11.A14F13-4',
                         'RGI50-11.B4616-0',   # 'bottleneck' polygons
-                        'RGI50-11.02848']  # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
+                        'RGI50-11.02848',  # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
+                        'RGI50-11.01382']  # AssertionError in initialize flowlines : assert len(hgts) >= 5
+
 rgidf = rgidf[~rgidf.RGIId.isin(problem_glaciers_sgi)]
-rgidf = rgidf.head(5)
-#rgidf = rgidf[rgidf.Area >= 0.01]
+rgidf = rgidf[rgidf.Area >= 0.01]
+rgidf = rgidf.head(50)
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.00638'])] # just to have one REFMB glacier
 
-# Run parameters
-cfg.PARAMS['d1'] = 4
-cfg.PARAMS['dmax'] = 100
-cfg.PARAMS['border'] = 120
-cfg.PARAMS['invert_with_sliding'] = False
-cfg.PARAMS['min_slope'] = 2
-cfg.PARAMS['max_shape_param'] = 0.006
-cfg.PARAMS['max_thick_to_width_ratio'] = 0.5
-cfg.PARAMS['temp_use_local_gradient'] = True
-cfg.PARAMS['optimize_thick'] = True
-cfg.PARAMS['force_one_flowline'] = ['RGI50-11.01270']
 
 log.info('Number of glaciers: {}'.format(len(rgidf)))
 
 # necessary to make multiprocessing work on Windows
 if __name__ == '__main__':
-
-
-    # get the needed climatology
-    for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
-        cirrus = utils.CirrusClient()
-        a, b = cirrus.sync_files('/data/griddata',
-                                 'c:\\users\\johannes\\documents\\crampon\\'
-                                 'data\\bigdata', globpattern='*{}/daily/{}*/'
-                                                              'netcdf/*'
-                                 .format(mode, var))
-
-        flist = glob.glob(
-            'c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\griddata\\{}\\daily\\{}*\\netcdf\\*.nc'.format(mode, var))
-
-        # We do this instead of using open_mfdataset, as we need a lot of
-        # preprocessing
-        log.info('Concatenating {} {} {} files...'.format(len(flist), var, mode))
-        sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
-                                          tfunc=utils._cut_with_CH_glac)
-        log.info('Ensuring time continuity...')
-        sda = sda.crampon.ensure_time_continuity()
-        sda.encoding['zlib'] = True
-        sda.to_netcdf('c:\\users\\johannes\\desktop\\{}_{}_all.nc'
-                      .format(var, mode))
-
-    # update operational with verified
-    for var in ['TabsD', 'R']:
-        v_op = 'c:\\users\\johannes\\desktop\\{}_operational_all.nc'.format(var)
-        v_ve = 'c:\\users\\johannes\\desktop\\{}_verified_all.nc'.format(var)
-
-        data = utils.read_netcdf(v_op, chunks={'time': 50})
-        data = data.crampon.update_with_verified(v_ve)
-
-        data.to_netcdf('c:\\users\\johannes\\desktop\\{}_op_ver.nc'.format(var))
-
-    # combine both
-    tfile = glob.glob('c:\\users\\johannes\\desktop\\*{}*_op_ver.nc'.format('TabsD'))[0]
-    pfile = glob.glob('c:\\users\\johannes\\desktop\\*{}*_op_ver.nc'.format('R'))[0]
-    hfile = glob.glob('c:\\users\\johannes\\documents\\crampon\\data\\test\\hgt.nc')[0]
+    """
+    
+    """
     outfile = 'c:\\users\\johannes\\documents\\crampon\\data\\bigdata\\climate_all.nc'
 
     cfg.PATHS['climate_file'] = outfile
 
-    utils.daily_climate_from_netcdf(tfile, pfile, hfile, outfile)
-
     # Go - initialize working directories
-    gdirs = workflow.init_glacier_regions(rgidf, reset=True, force=True)
+    gdirs = workflow.init_glacier_regions(rgidf, reset=False, force=False)
 
     # Preprocessing tasks
     task_list = [
-        tasks.glacier_masks,
-        tasks.compute_centerlines,
-        tasks.compute_downstream_lines,
-        tasks.catchment_area,
-        tasks.initialize_flowlines,
-        tasks.catchment_width_geom,
-        tasks.catchment_width_correction,
-        tasks.process_custom_climate_data,
-        #tasks.mu_candidates
+        #tasks.glacier_masks,
+        #tasks.compute_centerlines,
+        #tasks.compute_downstream_lines,
+        #tasks.catchment_area,
+        #tasks.initialize_flowlines,
+        #tasks.catchment_width_geom,
+        #tasks.catchment_width_correction,
+        #tasks.process_custom_climate_data,
 
     ]
     for task in task_list:
             execute_entity_task(task, gdirs)
 
-    result = xr.Dataset({'MB': (['time', 'z', 'n'],  []),},
-                         coords={'experiment': (['n'], []),
-                                 'height': (['z'], []),
-                                 'time': climate_file.time})
     for g in gdirs:
 
         mu_star = cali[cali.rgi_id == g.rgi_id].mu_star.values[0]
         prcp_fac = cali[cali.rgi_id == g.rgi_id].prcp_fac.values[0]
 
-        past_model = DailyMassBalanceModel(g, mu_star=mu_star,
+        prcp_fac = 2.5
+        print(mu_star, prcp_fac)
+
+        day_model = DailyMassBalanceModel(g, mu_star=mu_star,
                                            prcp_fac=prcp_fac, bias=0.)
 
         majid = g.read_pickle('major_divide', div_id=0)
         maj_fl = g.read_pickle('inversion_flowlines', div_id=majid)[-1]
         maj_hgt = maj_fl.surface_h
 
+        # number of experiments (list!)
+        exp = [1]
+
         mb = []
-        for date in past_model.tspan_in:
+        for date in day_model.tspan_in:
 
-            # for the first: Skip the 29th of Feb
-            if date.month == 2 and date.day == 29:
-                continue
-
-            # Get the mass balance and convert to m per year
-            tmp = past_model.get_daily_mb(maj_hgt, date=date) * \
+            # Get the mass balance and convert to m per day
+            tmp = day_model.get_daily_mb(maj_hgt, date=date) * \
                   cfg.SEC_IN_DAY * cfg.RHO / 1000.
             mb.append(tmp)
 
-        # mb_tstar = tstar_model.get_annual_mb(z) * cfg.SEC_IN_YEAR *
-        # cfg.RHO / 1000.
-        # mb_2003 = hist_model.get_annual_mb(z, 2003) * cfg.SEC_IN_YEAR *
-        #  cfg.RHO / 1000.
-
         # Average MB over all glacier heights
-        mb_avg = [np.nanmean(i) for i in mb]
+        #mb_avg = [np.nanmean(i) for i in mb]
+
+        # make a Dataset out of it
+        mb_ds = xr.Dataset({'MB': (['time', 'z', 'n'],
+                                   np.atleast_3d(mb))},
+                           coords={'n': (['n'], exp),
+                                   'z': (['z'], maj_hgt),
+                                   'time': pd.to_datetime(day_model.tspan_in)})
+        # mean over all heights
+        mb_ds = mb_ds.mean(dim='z')
+
+        # save intermediate results
+        g.write_pickle(mb_ds, 'mb_daily')
+
 
         # Multi-year daily data
-        mb_yday = []
-        for i in np.arange(365):
-            mb_yday.append(mb_avg[i::365])
+        #mb_yday = []
+        #for i in np.arange(365):
+        #    mb_yday.append(mb_avg[i::365])
+        # Begin day of the glaciological year and the days needed to be rolled
+        bgday_glacio = 274
+        bgday_tspan = day_model.tspan_in[0].timetuple().tm_yday
+        rolld = bgday_tspan - bgday_glacio
 
-        # No need to roll the data: ALREADY IN GLACIO YEARS!!
-        mb_ymon_cs = np.nancumsum(mb_yday, axis=0)
+        # GroupBy object (by glacio years)
+        gyear_groups = mb_ds.roll(time=rolld).groupby(mb_ds.time.dt.year)
+        # CumSums starting on bgday_glacio
+
+        ###### BUG?????
+        #Now (after applying cumsum) the real 01-10 is 01-01!!!!!
+        mb_yday_cs = gyear_groups.apply(lambda x: x.cumsum(dim='time',
+                                                           skipna=True))
+        # Quantiles by day of glaciological year (starting with "JAN-01"!)
+        quant = mb_yday_cs.groupby(mb_yday_cs.time.dt.dayofyear)\
+            .apply(lambda x: x.quantile([0.1, 0.25, 0.5, 0.75, 0.9]))
+        # no need roll them again
+        quantr = quant
+
+        # CumSums
+        #mb_ymon_cs = np.nancumsum(mb_yday, axis=0)
 
         # OGGM standard plots
         if PLOTS_DIR == '':
             exit()
         utils.mkdir(PLOTS_DIR)
         bname = os.path.join(PLOTS_DIR, g.rgi_id + '_')
+
+        ################################################
+        # test
+        fig, ax = plt.subplots(figsize=(10, 5))
+        xvals = np.arange(0, 366)
+        # plot median
+        ax.plot(xvals, quantr.MB.values[:, 2], c='b', label='Median')
+        # plot IQR
+        ax.fill_between(xvals, quantr.MB.values[:, 1], quantr.MB.values[:, 3],
+                        facecolor='cornflowerblue', alpha=0.5)
+        # plot 10th to 90th pctl
+        ax.fill_between(xvals, quantr.MB.values[:, 0], quantr.MB.values[:, 4],
+                        facecolor='cornflowerblue', alpha=0.3)
+        ax.set_xlabel('Days')
+        ax.set_ylabel('Cumulative Mass Balance (m we)')
+        ax.set_xlim(xvals.min(), xvals.max())
+        ax.xaxis.set_ticks([0] + np.cumsum(np.roll(cfg.DAYS_IN_MONTH, 3))[:-1])
+        ax.set_xticklabels([m for m in '0NDJFMAMJJAS'])
+        ax.grid(True, which='both', alpha=0.5)
+        plt.title('Multi-year Daily Cumulative MB Distribution of ' +
+                  g.rgi_id + '(' + g.name + ')')
+        legend = plt.legend()
+        plt.setp(legend.get_title())
+        plt.savefig(bname + 'test_new.png')
+        plt.close()
+        ##################################################
 
         """
         graphics.plot_googlemap(g)
@@ -215,7 +217,7 @@ if __name__ == '__main__':
         graphics.plot_catchment_areas(g)
         plt.savefig(bname + 'catchment_areas.png')
         plt.close()
-        """
+        
 
         # MB time series (line plot)
         plt.figure(figsize=(8, 5))
@@ -299,3 +301,4 @@ execute_entity_task(tasks.volume_inversion, gdirs)
 
 
 '''
+"""
