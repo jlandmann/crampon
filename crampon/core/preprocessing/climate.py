@@ -18,6 +18,7 @@ import geopandas as gpd
 from crampon import entity_task
 import logging
 from itertools import product
+import salem
 
 # temporary
 from crampon.workflow import execute_entity_task
@@ -231,8 +232,8 @@ def process_custom_climate_data_crampon(gdir):
     gdir.write_pickle(out, 'climate_info')
 
 
-def climate_file_from_scratch(write_to=os.path.expanduser('documents\\crampon\\data\\bigdata'),
-                              hfile='c:\\users\\johannes\\documents\\crampon\\data\\test\\hgt.nc'):
+def climate_file_from_scratch(write_to=os.path.expanduser('~\\documents\\crampon\\data\\bigdata'),
+                              hfile='C:\\Users\\Johannes\\Documents\\crampon\\data\\test\\hgt.nc'):
     """
     Compile the climate file needed for any CRAMPON calculations.
 
@@ -257,23 +258,26 @@ def climate_file_from_scratch(write_to=os.path.expanduser('documents\\crampon\\d
 
     for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
         cirrus = utils.CirrusClient()
-        _, _ = cirrus.sync_files('/data/griddata', write_to
+        r, _ = cirrus.sync_files('/data/griddata', write_to
                                  , globpattern='*{}/daily/{}*/netcdf/*'
                                  .format(mode, var))
 
-        flist = glob.glob(os.path.join(write_to,
-                                       'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
-                                       .format(mode, var)))
+        # if at least one file was retrieved, assemble everything new
+        if len(r) > 0:
+            flist = glob(os.path.join(write_to,
+                                      'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
+                                      .format(mode, var)))
 
-        # Instead of using open_mfdataset, as we need a lot of preprocessing
-        log.info('Concatenating {} {} {} files...'.format(len(flist), var, mode))
-        sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
-                                          tfunc=utils._cut_with_CH_glac)
-        log.info('Ensuring time continuity...')
-        sda = sda.crampon.ensure_time_continuity()
-        sda.encoding['zlib'] = True
-        sda.to_netcdf(os.path.join(write_to, '{}_{}_all.nc'.format(var,
-                                                                   mode)))
+            # Instead of using open_mfdataset (we need a lot of preprocessing)
+            log.info('Concatenating {} {} {} files...'
+                     .format(len(flist), var, mode))
+            sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
+                                              tfunc=utils._cut_with_CH_glac)
+            log.info('Ensuring time continuity...')
+            sda = sda.crampon.ensure_time_continuity()
+            sda.encoding['zlib'] = True
+            sda.to_netcdf(os.path.join(write_to, '{}_{}_all.nc'.format(var,
+                                                                       mode)))
 
     # update operational with verified
     for var in ['TabsD', 'R']:
@@ -286,44 +290,97 @@ def climate_file_from_scratch(write_to=os.path.expanduser('documents\\crampon\\d
         data.to_netcdf(os.path.join(write_to, '{}_op_ver.nc'.format(var)))
 
     # combine both
-    tfile = glob.glob(os.path.join(write_to, '*{}*_op_ver.nc'
-                                   .format('TabsD')))[0]
-    pfile = glob.glob(os.path.join(write_to, '*{}*_op_ver.nc'
-                                   .format('R')))[0]
+    tfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TabsD')))[0]
+    pfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('R')))[0]
     outfile = os.path.join(write_to, 'climate_all.nc')
 
+    log.info('Combining TEMP, PRCP and HGT...')
     utils.daily_climate_from_netcdf(tfile, pfile, hfile, outfile)
+    log.info('Done combining TEMP, PRCP and HGT.')
 
     return outfile
 
-'''
-def past_mb_anytime(gdir, cali_params, ym_prod, cl, insitu):
+
+def past_mb_anytime(cali_params, gdir, date_begin, date_end, maj_fl, insitu):
     """
     
     Parameters
     ----------
     gdir
-    ym_prod
-    cl
+    date_begin
+    date_end
+    maj_fl
     insitu
 
     Returns
     -------
 
     """
-    mustar, prcp_fac = cali_params
-    past_model = PastMassBalanceModel(gdir, mu_star=mustar, prcp_fac=prcp_fac)
 
-    mb_monthly = []
-    for y, m in ym_prod:
-        ym = date_to_year(y, m)
-        # Get the mass balance and convert to m per year
-        tmp = past_model.get_monthly_mb(cl['hgt'], ym) * \
-              cfg.SEC_IN_MONTHS[m-1] * cfg.RHO / 1000.
-        mb_monthly.append(sum(tmp))
-    mb = (sum(mb_monthly))
-    return np.abs(np.subtract(np.ones_like(mb)*insitu, mb))
-'''
+    mustar, prcp_fac = cali_params
+    print('Calling anytime with mustar={} and prcp_fac={}'.format(mustar,
+                                                                  prcp_fac))
+
+    maj_hgt = maj_fl.surface_h
+    maj_wdt = maj_fl.widths
+    day_model = DailyMassBalanceModel(gdir, mu_star=mustar,
+                                           prcp_fac=prcp_fac, bias=0.)
+
+    mb_daily = []
+    # a temporary solution:
+    for date in pd.date_range(start=date_begin, end=date_end, freq='D'):
+        try:
+        # Get the mass balance in m w.e. per day
+             tmp = day_model.get_daily_specific_mb(heights=maj_hgt,
+                                                   widths=maj_wdt, date=date)
+        # It happens that e.g. RGI50-11.00638 has the 1st DEM date before
+        #  the Meteo time series begins (OGGM problem!?)
+        except IndexError:
+            if i == 0:
+                print('Skipped date {} for glacier {}'.format(date,
+                                                              gdir.rgi_id))
+            continue
+        #mb_daily.append(sum(tmp))
+        mb_daily.append(tmp)
+    mb = sum(mb_daily)
+    err = np.abs(np.subtract(np.ones_like(mb)*insitu, mb)) ** 2
+    print('err = {}'.format(err))
+    return err
+
+def easy_cali(cali_params, gdir, date_begin, date_end, maj_fl, insitu):
+
+    mustar, prcp_fac = cali_params
+    print('Calling anytime with mustar={} and prcp_fac={}'.format(mustar,
+                                                                  prcp_fac))
+
+    maj_hgt = maj_fl.surface_h
+    maj_wdt = maj_fl.widths
+    day_model = DailyMassBalanceModel(gdir, mu_star=mustar,
+                                      prcp_fac=prcp_fac, bias=0.)
+
+    drange = pd.date_range(date_begin, date_end, freq='D')
+    ix = pd.DatetimeIndex(day_model.tspan_in).get_loc(drange)
+
+    # Read timeseries
+    itemp = day_model.temp[ix] + day_model.temp_bias
+    iprcp = day_model.prcp[ix]
+    igrad = day_model.grad[ix]
+
+    # For each height pixel:
+    # Compute temp and tempformelt (temperature above melting threshold)
+    npix = len(maj_fl.surface_h)
+    temp = np.ones(npix) * itemp + igrad * (maj_fl.surface_h - day_model.ref_hgt)
+    tempformelt = temp - day_model.t_melt
+    tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
+
+    # Compute solid precipitation from total precipitation
+    prcpsol = np.ones(npix) * iprcp
+    fac = 1 - (temp - day_model.t_solid) / (day_model.t_liq - day_model.t_solid)
+    prcpsol *= np.clip(fac, 0, 1)
+
+    mb_day = prcpsol - day_model.mu_star * tempformelt - \
+             day_model.bias
+    return mb_day / SEC_IN_DAY / cfg.RHO
 
 
 #@entity_task(log, writes=['mustar_from_mauro'])
@@ -362,29 +419,53 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
                                     enumerate(prcp_fac_rg)))
 
     # the column names are odd, but due to the 13 char limitation in SHPs
-    ybeg = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id].REFERENCE_.iloc[0])[:4])
-    yend = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id].BgnDate.iloc[0])[:4])
-
-    # thickness change in meters of ice
-    insitu_ally = deltah_df[deltah_df.RGIId == gdir.rgi_id]['THICKNESS_'].iloc[0] \
-                  / 1000.
-    ym_prod = list(itertools.product([ybeg], [9, 10, 11, 12])) +\
-              list(itertools.product(np.arange(ybeg + 1, yend),
-                                     np.arange(1, 13))) + \
-              list(itertools.product([yend], [1, 2, 3, 4, 5, 6, 7, 8]))
+    #try:
+    #    ybeg = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id]
+    #                   .REFERENCE_.iloc[0])[:4])
+    #    yend = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id]
+    #                   .BgnDate.iloc[0])[:4])
+    #except KeyError:
+    #    ybeg = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id]
+    #                   .year1.iloc[0]))
+    #    yend = int(str(deltah_df[deltah_df.RGIId == gdir.rgi_id]
+    #                   .year2.iloc[0]))
+    ybeg = 1981
+    yend = 2009
+    # MB is in m w.e. => change to
+    #insitu_ally = (deltah_df[deltah_df.RGIId == gdir.rgi_id]['THICKNESS_'].iloc[0] \
+    #              / 1000.)*0.85
     ##### HERE SHOULD GO A PROCEDURE TO ACCOUNT FOR UNCERTAINTIES IN DEM DATES
+    insitu_ally = -30.968
 
     majid = gdir.read_pickle('major_divide', div_id=0)
-    maj_fl = gdir.read_pickle('inversion_flowlines', div_id=majid)[-1]
-    maj_hgt = maj_fl.surface_h
+    try:
+        maj_fl = gdir.read_pickle('inversion_flowlines', div_id=majid)[-1]
+    except:
+        maj_fl = gdir.read_pickle('inversion_flowlines', div_id=0)[-1]
+
 
     mb = np.ones((len(mustar_rg), len(prcp_fac_rg)))
     i = 0
-    #result_minimize = optimize.minimize(past_mb_anytime,
-    #                                    [(np.mean(mustar_rg),
-    #                                     np.mean(prcp_fac_rg))],
-    #                                    args=(gdir, ym_prod, cl, insitu_ally),
-    #                                    bounds=((None, None), (None, None)))
+    log.info('Starting opt for {}'.format(gdir.rgi_id))
+    rranges = (slice(np.min(mustar_rg), np.max(mustar_rg), mustar_rg[1] -
+                     mustar_rg[0]),
+               slice(np.min(prcp_fac_rg), np.max(prcp_fac_rg), prcp_fac_rg[1] -
+                     prcp_fac_rg[0]))
+    pars = (gdir, str(ybeg)+'-09-01', str(yend)+'-08-31', maj_fl, insitu_ally)
+    result_brute = optimize.brute(past_mb_anytime, rranges, args=pars,
+                                  full_output=True)
+    #result_minimize = optimize.minimize(past_mb_anytime, [np.mean(mustar_rg), np.mean(prcp_fac_rg)],
+    #                                    args=pars,
+    #                                    bounds=((5., 15.), (0.1, 3.)),
+    #                                    tol=1e-6, options={'disp': True})
+    #result_minimize = optimize.minimize(past_mb_anytime, np.array(np.mean(prcp_fac_rg)),
+    #                                    args=(np.mean(mustar_rg), gdir, str(ybeg) + '-09-01',
+    #                                          str(yend) + '-08-31', maj_hgt,
+    #                                          insitu_ally),
+    #                                    bounds=[(0.01, 3.)])  # ,
+    # tol=1e-6, options={'disp': True})
+    log.info('Finished opt for {}'.format(gdir.rgi_id))
+    #print(result_minimize)
     #result_de = optimize.differential_evolution(past_mb_anytime,
     #                                            [(np.min(mustar_rg),
     #                                              np.max(mustar_rg)),
@@ -392,15 +473,18 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
     #                                              np.max(prcp_fac_rg))],
     #                                            args=(gdir, ym_prod, cl, insitu_ally))
 
+    """
     for (mi, mustar), (pi, prcp_fac) in p_comb:
+
+
         day_model = DailyMassBalanceModel(gdir, mu_star=mustar,
                                            prcp_fac=prcp_fac, bias=0.)
 
         mb_monthly = []
-        for date in day_model.tspan_in:
-
+        # a temporary solution:
+        for date in pd.date_range(start=str(ybeg)+'-09-01', end=str(yend)+'-08-31', freq='D'):
             try:
-            # Get the mass balance and convert to m per day
+            # Get the mass balance and convert to m w.e. per day
                 tmp = day_model.get_daily_mb(maj_hgt, date=date) * \
                       cfg.SEC_IN_DAY * cfg.RHO / 1000.
             # It happens that e.g. RGI50-11.00638 has the 1st DEM date before
@@ -410,6 +494,7 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
                     print('Skipped date {} for glacier {}'.format(date,
                                                                   gdir.rgi_id))
                 continue
+            #print('append for date {}'.format(date))
             mb_monthly.append(sum(tmp))
         mb[mi][pi] = sum(mb_monthly)
 
@@ -426,7 +511,7 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
     # interval of mustar and prcp_fac
     min_ind = np.where(err == err.min())
 
-    """
+    
     # Ineffective, as whole range is calculated again
     if (min_ind[0] == 0 or min_ind[1] == 0) and recurs == 0:
         #new_mrg = np.append(mustar_rg - np.abs(np.max(mustar_rg)), mustar_rg) # the range becomes negative, this makes no sense!!!
@@ -479,7 +564,7 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
         return mb, err
 
     else:
-    """
+    
     # Take up to 50 values close to minimum as long as they are smaller
     # than error threshold
     N = 50
@@ -511,8 +596,12 @@ def mustar_from_deltah(gdir, deltah_df, mustar_rg=None,
         df = df[df.err_perc <= err_thresh]
         df.to_csv(gdir.dir+'\\mustar_from_mauro.csv',
                   index=False)
-
-    return mb, err
+    """
+    log.info('Cali done for {}'.format(gdir.rgi_id))
+    #return mb, err
+    #return result_minimize.x[0], result_minimize.x[1]
+    with open('c:\\users\\johannes\\desktop\\test.csv', 'a') as f:
+        f.write('{},{},{}'.format(gdir.rgi_id, result_brute[0][0], result_brute[0][1]))
 
 
 # IMPORTANT: overwrite OGGM functions with same name:
@@ -538,22 +627,37 @@ if __name__ == '__main__':
                             'RGI50-11.A14I03-3', 'RGI50-11.A14G14-0',
                             'RGI50-11.A54I17n-0', 'RGI50-11.A14F13-4',
                             'RGI50-11.B4616-0',  # 'bottleneck' polygons
-                            'RGI50-11.02848']  # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
-
+                            'RGI50-11.02848',
+                            # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
+                            'RGI50-11.01382',
+                            # AssertionError in initialize flowlines : assert len(hgts) >= 5
+                            'RGI50-11.01621',
+                            # ValueError: start points must all be within the costs array
+                            'RGI50-11.01805',
+                            # gets stuck at initialize_flowlines
+                            'RGI50-11.B3511n', 'RGI50-11.B3603',
+                            'RGI50-11.C3509n',
+                            'RGI50-11.A10G14-0', 'RGI50-11.B9521n-0',
+                            'RGI50-11.02431-1', 'RGI50-11.A51G14-1',
+                            'RGI50-11.A51H05-0', 'RGI50-11.02815-1',
+                            'RGI50-11.01853-0', 'RGI50-11.01853-0',
+                            'RGI50-11.B1610n-1', 'RGI50-11.A54L20-15',
+                            'RGI50-11.01051-0', 'RGI50-11.A13J03-0',
+                            'RGI50-11.01787-1', 'RGI50-11.B7412-1',
+                            'RGI50-11.B9521n-1']  # too close to border
     # for all calculated glaciers
     gdirs = []
     for i in glob('C:\\Users\\Johannes\\Documents\\modelruns\\CH\\per_glacier\\RGI50-11\\*\\R*\\'):
+        if not 'RGI50-11.B4504' in i:
+            continue
         if any([j in i for j in problem_glaciers_sgi]):
             continue
-
         try:
             gdirs.append(GlacierDirectory(i.split('\\')[-2]))
         except:
             print(i)
             continue
 
-    # remove
-    gdirs = gdirs[:2]
     ################
 
     deltav_file = 'C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disguise_entities_old_and_new.shp'
@@ -561,35 +665,39 @@ if __name__ == '__main__':
     deltah = deltah[['RGIId', 'THICKNESS_', 'BgnDate', 'REFERENCE_']]
 
     # set ranges and steps for calibration parameters
-    mrg_step = 1.
-    prg_step = 0.1
-    mrg = np.arange(0., 80. + mrg_step, mrg_step)
-    prg = np.arange(0.05, 2.5 + prg_step, prg_step)
-    prg = [2.5]
+    mrg_step = 0.1
+    prg_step = 0.05
+    mrg = np.arange(5., 13. + mrg_step, mrg_step)
+    prg = np.arange(1.87, 1.87 + prg_step, prg_step)
+    #prg = [2.5]
 
 
-    for gdir in gdirs:
+    #for gdir in gdirs:
         # read from OGGM
         #tdf = pd.read_csv(gdir.get_filepath('local_mustar'))
         #oggm_mustar = tdf.mu_star.iloc[0]
         #oggm_prcp_fac = tdf.prcp_fac.iloc[0]
 
-        mb, err = mustar_from_deltah(gdir=gdir, mustar_rg=mrg,
-                                     deltah_df=deltah, prcp_fac_rg=prg)
+        #if gdir.rgi_id in ['RGI50-11.00536-0', 'RGI50-11.00539-0', 'RGI50-11.00539-1']:
+        #    continue
+     #   mu_star, prcp_fac = mustar_from_deltah(gdir=gdir, mustar_rg=mrg,
+     #                               deltah_df=deltah, prcp_fac_rg=prg)
+      #  log.info('Found {} and {} for {}'.format(mu_star, prcp_fac, gdir.rgi_id))
     '''
         # if already calibrated, then skip
         if os.path.exists(gdir.dir + '\\mustar_from_mauro.csv'):
             gdirs.remove(gdir)
 
-
-    #try:
-    #    mb, err = mustar_from_deltah(gdir=gdir, deltah=deltah,
-    #                                 mustar_rg=mrg, prcp_fac_rg=prg)
-    #except (FileNotFoundError, ValueError) as ex:
-    #    print('{} for {}'.format(ex, gdir.dir))
-    #    errorlist.append([ex, gdir.dir])
-    #    continue
+    
+    try:
+        mb, err = mustar_from_deltah(gdir=gdir, deltah=deltah,
+                                     mustar_rg=mrg, prcp_fac_rg=prg)
+    except (FileNotFoundError, ValueError) as ex:
+        print('{} for {}'.format(ex, gdir.dir))
+        #errorlist.append([ex, gdir.dir])
+        #continue
     '''
+
 
     execute_entity_task(mustar_from_deltah, gdirs, deltah_df=deltah,
                         mustar_rg=mrg, prcp_fac_rg=prg)
