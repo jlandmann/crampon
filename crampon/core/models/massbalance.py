@@ -87,6 +87,36 @@ class DailyMassBalanceModel(MassBalanceModel):
         fac = 1 - (temp - self.t_solid) / (self.t_liq - self.t_solid)
         prcpsol *= np.clip(fac, 0, 1)
 
+        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
         mb_day = prcpsol - self.mu_star * tempformelt - \
                  self.bias
-        return mb_day / SEC_IN_DAY / cfg.RHO
+
+        # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
+        abc = mb_day / SEC_IN_DAY / cfg.RHO
+        return abc
+
+    def get_daily_specific_mb(self, heights, widths, date=None):
+        """Specific mb for a given date and geometry (m w.e. d-1)
+
+        Parameters
+        ----------
+        heights: ndarray
+            the altitudes at which the mass-balance will be computed
+        widths: ndarray
+            the widths of the flowline (necessary for the weighted average)
+        date: float, optional
+            the time (in the "floating year" convention)
+        Returns
+        -------
+        the specific mass-balance (units: mm w.e. d-1)
+        """
+        if len(np.atleast_1d(date)) > 1:
+            out = [self.get_daily_specific_mb(heights, widths, date=d)
+                   for d in date]
+            return np.asarray(out)
+
+        # m w.e. d-1
+        mbs = self.get_daily_mb(heights, date=date) * SEC_IN_DAY * cfg.RHO / 1000.
+        mbs_wavg = np.average(mbs, weights=widths)
+        return mbs_wavg
+
