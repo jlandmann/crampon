@@ -13,7 +13,12 @@ import numpy as np
 import logging
 import paramiko as pm
 import xarray as xr
+import rasterio
+from rasterio.merge import merge as merge_tool
+import geopandas as gpd
+import datetime
 from configobj import ConfigObj, ConfigObjError
+from itertools import product
 import dask
 import sys
 import glob
@@ -722,7 +727,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     combined = xr.concat(datasets, dim)
     return combined
 
-
+# we cannot write it to cache until we have e.g. a date in the climate_all filename
 @MEMORY.cache
 def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
                                 use_grad):
@@ -808,12 +813,127 @@ def _cut_with_CH_glac(xr_ds):
     The clipped xarray.Dataset.
     """
 
-    xr_ds = xr_ds.where(xr_ds.lat >= 45.8521, drop=True)
+    xr_ds = xr_ds.where(xr_ds.lat >= 45.7321, drop=True)
     xr_ds = xr_ds.where(xr_ds.lat <= 47.2603, drop=True)
     xr_ds = xr_ds.where(xr_ds.lon >= 6.79963, drop=True)
     xr_ds = xr_ds.where(xr_ds.lon <= 10.4279, drop=True)
 
     return xr_ds
+
+
+def attach_ginzler_zone(gdf, worksheet):
+    """
+    Returns the zone numbers of C. Ginzler's zone system for DEM tiles.
+
+    Parameters
+    ----------
+    gdf: geopandas.GeoDataFrame
+        Dataframe containing the polygons that request a zone intersection.
+
+    worksheet: str
+        Path to Christian Ginzler's worksheet with the zone numbers.
+
+    Returns
+    -------
+    The GeoDataFrame with column 'zone' listing the intersecting zone numbers.
+    """
+
+    w_gdf = gpd.read_file(worksheet)
+
+    for k, row in gdf.iterrows():
+        res_is = gpd.overlay(row, w_gdf, how='intersection')
+        gdf['zone'] = res_is.CLNR.values
+
+    return gdf
+
+
+def dem_differencing_results(shapedf, dem_dir):
+
+    # get the network drive shit correctly
+    os.system(r'net use \\speedy10.wsl.ch\Data_14\_PROJEKTE\Swiss_Glacier /user:wsl\ ')
+    dem_list = glob.glob(os.path.join(dem_dir, '*.tif'))
+    broke_month = ['ADS_103221_672000_165000_2011_0_0_86_50.tif']
+    dem_list = [x for x in dem_list if not broke_month in x]
+
+    # make an empty pd.DataFrame for each glacier ID with columns for every
+    # possible subtraction time span
+    dates = [datetime.datetime(int(os.path.basename(x).split('_')[4]), int(os.path.basename(x).split('_')[5]),
+                               int(os.path.basename(x).split('_')[6])) for x in dem_list]
+    dates_unique = np.unique(dates)
+    years_unique = sorted(np.unique([x.year for x in dates_unique]), reverse=True)
+    combos = []
+    for i, y in enumerate(years_unique):
+        try:
+            for j in range(3, len(years_unique)):
+                combos.append((y, years_unique[i + j]))
+        except IndexError:
+            continue
+    deltacols = ['deltah_{}_{}'.format(i,j) for i,j in combos]
+
+    res_df = pd.DataFrame(index=shapedf.RGIId.values,
+                          columns=years_unique+deltacols)
+    res_df.fillna()
+
+    ws = r'\\speedy10.wsl.ch\Data_14\_PROJEKTE\Swiss_Glacier\GIS\Worksheet.shp'
+    shapedf = attach_ginzler_zone(shapedf, ws)
+    # ineffective, but better than storing everything in the cache
+    for _, row in shapedf:
+        cdems = []
+        for zone in row.zone:
+            cdems.extend([x for x in dem_list if 'ADS_{}'.format(zone) in x])
+
+        # check the common dates (all!) for all zones
+        cdates = [datetime.datetime(int(os.path.basename(x).split('_')[4]),
+                                    int(os.path.basename(x).split('_')[5]),
+                                    int(os.path.basename(x).split('_')[6])) for
+                  x in cdems]
+        for y in [d.year for d in cdates]:
+            same_year = [d for d in cdates if y == d.year]
+            if len(np.unique(same_year)) > 1:
+                cdates = [date for date in cdates if date.year != y]
+                cdems = [dem for dem in cdems if not '_{}_'.format(y) in dem]
+
+        riodems = dict()
+        for cd in cdates:
+            to_merge = [rasterio.open(s) for s in [c for c in cdems if '_{}_'
+                                     .format(cd.year) in c]]
+            merged, _ = merge_tool(to_merge)
+
+            # apply a glacier mask
+            out_image, out_transform = rasterio.mask.mask(merged, row.geometry,
+                                                            crop=True)
+            out_meta = merged.meta.copy()
+
+            isfinite = np.isfinite(out_image)
+            # check the number of NaNs on the glacier area
+            if np.sum(~isfinite) > (0.2 * out_image.shape[0] *
+                                        out_image.shape[1]):
+                log.info('DEM at {} was skipped due to missing values'.format(cd))
+                cdates.remove(cd)  # to be consistent
+            else:
+                riodems[cd] = merged
+
+        assert len([d.year for d in cdates]) == \
+               len(np.unique([d.year for d in cdates]))
+
+        # now for the subtraction and insertion
+        for i, d in enumerate(sorted(cdates, reverse=True)):
+            try:
+                for j in range(3, len(cdates)):
+                    dem_diff = np.subtract(riodems[d], riodems[sorted(cdates, reverse=True)[i + j]])
+                    mean_diff = np.nanmean(dem_diff)
+                    res_df.loc[res_df.RGIId==row.RGIId, d.year] = d
+                    res_df.loc[res_df.RGIId == row.RGIId, sorted(cdates, reverse=True)[i + j].year] = sorted(cdates, reverse=True)[i + j]
+                    res_df.loc[res_df.RGIId == row.RGIId, 'deltah_{}_{}'.format(d.year,sorted(cdates, reverse=True)[i + j].year)] = mean_diff
+
+            except IndexError:
+                continue
+
+
+    #       for each combination(?) in the list:
+    #            subtract the DEMs (new-old) and take the mean
+
+    return res_df
 
 if __name__ == '__main__':
     #cirrus = CirrusClient()
