@@ -10,6 +10,7 @@ from crampon.core.preprocessing.gis import glacier_masks
 from crampon.core.preprocessing.centerlines import compute_centerlines
 from crampon.core.preprocessing.centerlines import compute_downstream_lines
 from crampon.core.preprocessing.geometry import catchment_area
+from crampon.core.preprocessing.geometry import catchment_intersections
 from crampon.core.preprocessing.geometry import initialize_flowlines
 from crampon.core.preprocessing.geometry import catchment_width_geom
 from crampon.core.preprocessing.geometry import catchment_width_correction
