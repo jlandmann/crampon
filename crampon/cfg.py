@@ -86,8 +86,9 @@ CPARAMS['temp_melt'] = 0.
 # Our data are quite good, so we want to use the local gradient (5x5 window)
 CPARAMS['temp_use_local_gradient'] = 5
 
-CPATHS['climate_dir'] = os.path.expanduser('documents\\crampon\\data\\bigdata')
-CPATHS['hfile'] = os.path.expanduser('documents\\crampon\\data\\test\\hgt.nc')
+CPATHS['climate_dir'] = os.path.expanduser('~\\documents\\crampon\\data\\bigdata')
+CPATHS['hfile'] = os.path.expanduser('~\\documents\\crampon\\data\\test\\hgt.nc')
+CPATHS['worksheet'] = os.path.expanduser('~\\documents\\crampon\\data\\bigdata\\ginzler_ws.shp')
 
 
 def initialize(file=None):
@@ -196,7 +197,7 @@ def initialize(file=None):
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
            'glathida_rgi_links', 'grid_dx_method',
            'mp_processes', 'use_multiprocessing', 'use_divides',
-           'temp_use_local_gradient', 'temp_local_gradient_bounds',
+           'temp_local_gradient_bounds',
            'topo_interp', 'use_compression', 'bed_shape',
            'continue_on_error',
            'use_optimized_inversion_params', 'invert_with_sliding',
