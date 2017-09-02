@@ -783,8 +783,15 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
             thgt = thgt.flatten()
 
             for t, loct in enumerate(ttemp):
-                slope, _, _, p_val, _ = stats.linregress(thgt,
-                                                         loct.flatten())
+                # this happens a the grid edges:
+                if isinstance(loct, np.ma.masked_array):
+                    slope, _, _, p_val, _ = stats.linregress(
+                        np.ma.masked_array(thgt, loct.mask).compressed(),
+                        loct.flatten().compressed())
+                else:
+                    slope, _, _, p_val, _ = stats.linregress(thgt,
+                                                             loct.flatten())
+                # if the result is
                 igrad[t] = slope if (p_val < 0.01) else default_grad
 
             # apply the boundaries, in case the gradient goes wild
@@ -934,15 +941,3 @@ def dem_differencing_results(shapedf, dem_dir):
     #            subtract the DEMs (new-old) and take the mean
 
     return res_df
-
-if __name__ == '__main__':
-    #cirrus = CirrusClient()
-    #a, b = cirrus.sync_files('/data/griddata', 'c:\\users\\johannes\\desktop',
-    #                  globpattern='*/daily/TabsD*/netcdf/*')
-
-    flist = glob.glob('C:\\Users\\Johannes\\Desktop\\griddata\\verified\\daily\\TabsD_daily_mean_temperature\\netcdf\\*2015*.nc')
-    flist.extend(glob.glob('C:\\Users\\Johannes\\Desktop\\griddata\\verified\\daily\\TabsD_daily_mean_temperature\\netcdf\\*2016*.nc'))
-    abc = read_multiple_netcdfs(flist)
-    abc.crampon
-    abc.crampon.ensure_time_continuity()
-    defg = abc.crampon.cut_by_glacio_years()
