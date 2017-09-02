@@ -61,7 +61,8 @@ class DailyMassBalanceModel(MassBalanceModel):
             # Read timeseries
             self.temp = nc.variables['temp'][:]
             self.prcp = nc.variables['prcp'][:] * self.prcp_fac
-            self.grad = nc.variables['grad'][:]
+            self.tgrad = nc.variables['grad'][:]
+            self.pgrad = cfg.PARAMS['prcp_grad']
             self.ref_hgt = nc.ref_hgt
 
     def get_daily_mb(self, heights, date=None):
@@ -73,17 +74,18 @@ class DailyMassBalanceModel(MassBalanceModel):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         iprcp = self.prcp[ix]
-        igrad = self.grad[ix]
+        itgrad = self.tgrad[ix]
 
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
         npix = len(heights)
-        temp = np.ones(npix) * itemp + igrad * (heights - self.ref_hgt)
+        temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
         tempformelt = temp - self.t_melt
         tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
 
         # Compute solid precipitation from total precipitation
-        prcpsol = np.ones(npix) * iprcp
+        # the prec correction with the gradient does not exist OGGM
+        prcpsol = np.ones(npix) * iprcp + self.pgrad * (heights - self.ref_hgt)
         fac = 1 - (temp - self.t_solid) / (self.t_liq - self.t_solid)
         prcpsol *= np.clip(fac, 0, 1)
 
@@ -92,8 +94,8 @@ class DailyMassBalanceModel(MassBalanceModel):
                  self.bias
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
-        abc = mb_day / SEC_IN_DAY / cfg.RHO
-        return abc
+        icerate = mb_day / SEC_IN_DAY / cfg.RHO
+        return icerate
 
     def get_daily_specific_mb(self, heights, widths, date=None):
         """Specific mb for a given date and geometry (m w.e. d-1)
