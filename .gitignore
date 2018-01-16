@@ -97,7 +97,7 @@ ENV/
 .ropeproject
 
 # Big data
-data/bigdata/
+data/
 
 # credentials
 .credentials
