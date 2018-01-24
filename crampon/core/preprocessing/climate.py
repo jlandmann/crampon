@@ -160,7 +160,8 @@ def process_custom_climate_data_crampon(gdir):
 
     if not (('climate_file' in cfg.PATHS) and
             os.path.exists(cfg.PATHS['climate_file'])):
-        raise IOError('Custom climate file not found')
+        raise IOError('Custom climate file {} not found'
+                      .format(cfg.PATHS['climate_file']))
 
     # read the file
     fpath = cfg.PATHS['climate_file']
@@ -232,8 +233,8 @@ def process_custom_climate_data_crampon(gdir):
     gdir.write_pickle(out, 'climate_info')
 
 
-def climate_file_from_scratch(write_to=os.path.expanduser('~\\documents\\crampon\\data\\bigdata'),
-                              hfile='C:\\Users\\Johannes\\Documents\\crampon\\data\\test\\hgt.nc'):
+def climate_file_from_scratch(write_to=os.path.expanduser('~\\documents\\crampon\\data\\meteo'),
+                              hfile='C:\\Users\\Johannes\\Documents\\crampon\\data\\DEM\\hgt.nc'):
     """
     Compile the climate file needed for any CRAMPON calculations.
 
