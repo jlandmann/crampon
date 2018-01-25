@@ -56,6 +56,56 @@ def get_crampon_demo_file():
     raise NotImplementedError
 
 
+def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
+    """
+    Retry decorator calling the decorated function with an exponential backoff.
+
+    Amended from Python wiki [1]_ and calazan.com [2]_.
+
+    Parameters
+    ----------
+    exceptions: str or tuple
+        The exception to check. May be a tuple of exceptions to check. If just
+        `Exception` is provided, it will retry after any Exception.
+    tries: int
+        Number of times to try (not retry) before giving up. Default: 100.
+    delay: int or float
+        Initial delay between retries in seconds. Default: 60.
+    backoff: int or float
+        Backoff multiplier (e.g. value of 2 will double the delay
+        each retry). Default: 1 (no increase).
+    log_to: logging.logger
+        Logger to use. If None, print.
+
+    References
+    -------
+    .. [1] https://wiki.python.org/moin/PythonDecoratorLibrary#CA-901f7a51642f4dbe152097ab6cc66fef32bc555f_5
+    .. [2] https://www.calazan.com/retry-decorator-for-python-3/
+    """
+    def deco_retry(f):
+
+        @wraps(f)
+        def f_retry(*args, **kwargs):
+            mtries, mdelay = tries, delay
+            while mtries > 1:
+                try:
+                    return f(*args, **kwargs)
+                except exceptions as e:
+                    msg = '{}, Retrying in {} seconds...'.format(e, mdelay)
+                    if log_to:
+                        log_to.warning(msg)
+                    else:
+                        print(msg)
+                    time.sleep(mdelay)
+                    mtries -= 1
+                    mdelay *= backoff
+            return f(*args, **kwargs)
+
+        return f_retry  # true decorator
+
+    return deco_retry
+
+
 def leap_year(year, calendar='standard'):
     """
     Determine if year is a leap year.
