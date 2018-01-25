@@ -15,7 +15,9 @@ import paramiko as pm
 import xarray as xr
 import rasterio
 from rasterio.merge import merge as merge_tool
+from rasterio.mask import mask as riomask
 import geopandas as gpd
+import shapely
 import datetime
 from configobj import ConfigObj, ConfigObjError
 from itertools import product
@@ -137,6 +139,108 @@ def leap_year(year, calendar='standard'):
               (year < 1583)):
             leap = False
     return leap
+
+
+def closest_date(date, candidates):
+    """
+    Get closest date to the given one from a candidate list.
+
+    This function is the one suggested on stackoverflow [1]_.
+
+    Parameters
+    ----------
+    date: type allowing comparison, subtraction and abs, e.g. datetime.datetime
+        The date to which the closest partner shall be found.
+    candidates: list of same input types as for date
+        A list of candidates.
+
+    Returns
+    -------
+    closest: Same type as input date
+        The found closest date.
+
+    References
+    ----------
+    .. [1] https://stackoverflow.com/questions/32237862/find-the-closest-date-to-a-given-date
+    """
+    return min(candidates, key=lambda x: abs(x - date))
+
+
+def get_begin_last_flexyear(date, start_month=10, start_day=1):
+    """
+    Get the begin date of the most recent/current ("last") flexible
+    year since the given date.
+
+    Parameters
+    ----------
+    date: datetime.datetime
+        Date from which on the most recent begin of the hydrological
+        year shall be determined, e.g. today's date.
+    start_month: int
+        Begin month of the flexible year. Default: 10 (for hydrological
+        year)
+    start_day: int
+        Begin day of month for the flexible year. Default: 1
+
+    Returns
+    -------
+    begin: str
+        Begin date of the most recent/current flexible year.
+
+    Examples
+    --------
+    Find the beginning of the current mass budget year since
+    2018-01-24.
+
+    >>> get_begin_last_flexyear(datetime.datetime(2018,1,24))
+    datetime.datetime(2017, 10, 1, 0, 0)
+    >>> get_begin_last_flexyear(datetime.datetime(2017,11,30),
+    >>> start_month=9, start_day=15)
+    datetime.datetime(2017, 9, 15, 0, 0)
+    """
+
+    start_year = date.year if datetime.datetime(
+        date.year, start_month, start_day) <= date else date.year - 1
+    last_begin = datetime.datetime(start_year, start_month, start_day)
+
+    return last_begin
+
+
+def merge_rasters(to_merge, outpath=None, outformat="Gtiff"):
+    """
+    Merges rasters to a single one.
+
+    Parameters
+    ----------
+    to_merge: list or str
+        List of paths to the rasters to be merged.
+    outpath: str, optional
+        Path where to write the merged raster.
+    outformat: str, optional
+        Any format rasterio/GDAL has a driver for. Default: GeoTiff ('Gtiff').
+
+    Returns
+    -------
+    merged, profile: tuple of (numpy.ndarray, rasterio.Profile)
+        The merged raster and numpy array and its rasterio profile.
+    """
+    to_merge = [rasterio.open(s) for s in to_merge]
+    merged, output_transform = merge_tool(to_merge)
+
+    profile = to_merge[0].profile
+    if 'affine' in profile:
+        profile.pop('affine')
+    profile['transform'] = output_transform
+    profile['height'] = merged.shape[1]
+    profile['width'] = merged.shape[2]
+    profile['driver'] = outformat
+    if outpath:
+        with rasterio.open(outpath, 'w', **profile) as dst:
+            dst.write(merged)
+        for rf in to_merge:
+            rf.close()
+
+    return merged, profile
 
 
 class CirrusClient(pm.SSHClient):
