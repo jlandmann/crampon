@@ -5,6 +5,7 @@ Let's try schedule as the lightweight version of python-crontab....
 import schedule
 import time
 import xarray as xr
+import numpy as np
 import geopandas as gpd
 import datetime
 import logging
@@ -12,7 +13,8 @@ from joblib import Memory
 import crampon.cfg as cfg
 from crampon.core.preprocessing.climate import climate_file_from_scratch
 from crampon import tasks
-from crampon.utils import GlacierDirectory
+from crampon import utils
+from crampon.utils import GlacierDirectory, retry
 from crampon import tasks
 from crampon.workflow import execute_entity_task, init_glacier_regions
 
@@ -47,21 +49,41 @@ def hourly_tasks(gdirs):
     raise NotImplementedError()
 
 
+# retry for almost one day every half an hour, if fails
+@retry(Exception, tries=55, delay=1800, backoff=1, log_to=log)
 def daily_tasks(gdirs):
+    """
+    A collection of tasks to perform every day.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of crampon.GlacierDirectories to perform the tasks on.
+
+    Returns
+    -------
+    None
+    """
+
+    log.info('Starting daily tasks...')
 
     # This must be FIRST
     cfile = climate_file_from_scratch()
 
     # if no news, try later again
     cmeta = xr.open_dataset(cfile, drop_variables=['temp', 'prcp', 'hgt'])
-    if not cmeta.time.values[-1] == (datetime.datetime.now() -
-                                         datetime.timedelta(1)):
-        time.sleep(3600)
-        daily_tasks(gdirs)
+    yesterday_np64 = np.datetime64(datetime.datetime.today().date() -
+                                   datetime.timedelta(1))
 
-    # before we recalculate climate, we currently have to delete it from cache
-    MEMORY = Memory(cachedir=cfg.CACHE_DIR, verbose=0)
-    MEMORY.clear()
+    # if no new meteo data on server, retry later
+    if not cmeta.time.values[-1] == yesterday_np64:
+        # otherwise PermissionError in the next try:
+        cmeta.close()
+        # file from yesterday not yet on WSL server -> retry
+        raise FileNotFoundError
+
+    # before we recalculate climate, delete it from cache
+    utils.joblib_read_climate_crampon.clear()
     daily_entity_tasks = [
         tasks.process_custom_climate_data
     ]
@@ -71,10 +93,35 @@ def daily_tasks(gdirs):
 
 
 def weekly_tasks(gdirs):
+    """
+    A collection of tasks to perform every week.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of crampon.GlacierDirectories to perform the tasks on.
+
+    Returns
+    -------
+    None
+    """
     raise NotImplementedError()
 
 
 def monthly_tasks(gdirs):
+    """
+    A collection of tasks to perform every month.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of crampon.GlacierDirectories to perform the tasks on.
+
+    Returns
+    -------
+    None
+    """
+
     # update climate with verified data
     # recalculate the climatology
     # recalculate the current MB
@@ -97,6 +144,7 @@ if __name__ == '__main__':
                              'contain RGI-like columns.')
     args = parser.parse_args()
 
+    log.info('Starting initial setup tasks...')
     # Tasks that should be run at every start of the operational workflow
     # 1) initialize
     inifile = args.params
@@ -125,7 +173,7 @@ if __name__ == '__main__':
     # 4) make MB since beginning of the mass balance year
     # 5) make future MB
 
-    schedule.every().day.at("12:30").do(daily_tasks(gdirs)).tag('daily-tasks')
+    schedule.every().day.at("12:20").do(daily_tasks(gdirs)).tag('daily-tasks')
 
     while True:
         print('Finished setup tasks, switching to operational...')
