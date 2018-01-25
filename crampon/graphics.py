@@ -8,6 +8,9 @@ import os
 import geopandas as gpd
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
+import matplotlib
 from salem import get_demo_file, DataLevels, GoogleVisibleMap, Map
 import numpy as np
 from glob import glob
@@ -300,3 +303,118 @@ def plot_compare_cali(wdir=None, dev=5.):
     plt.xlabel(r'Temperature Sensitivity (${\mu}^{*}$)')
     plt.ylabel(r'Precipitation Correction Factor')
     plt.show()
+
+
+# this is for the custom legend entry to make the quantile colors visible
+class AnyObject(object):
+    pass
+
+
+class AnyObjectHandler(object):
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        x0, y0 = handlebox.xdescent, handlebox.ydescent
+        width, height = handlebox.width, handlebox.height
+        l1 = mlines.Line2D([x0, y0 + width],
+                           [0.5 * height, 0.5 * height],
+                           linestyle='-', color='b')
+        patch1 = mpatches.Rectangle([x0, y0 + 0.25 * height], width,
+                                    0.5 * height,
+                                    facecolor='cornflowerblue',
+                                    alpha=0.5,
+                                    transform=handlebox.get_transform())
+        patch2 = mpatches.Rectangle([x0, y0], width, height,
+                                    facecolor='cornflowerblue',
+                                    alpha=0.3,
+                                    transform=handlebox.get_transform())
+        handlebox.add_artist(l1)
+        handlebox.add_artist(patch1)
+        handlebox.add_artist(patch2)
+        return [l1, patch1, patch2]
+
+#@entity_task(log)
+def plot_cumsum_climatology_and_current(clim, current=None, leap=False, fs=17):
+    """
+    Make the standard plot containing the MB climatology in the background and
+    the current MB year on top.
+
+    In leap years, the plot has length 366, otherwise length 365 and DOY 366
+    is removed.
+
+    An option should be added that lets you choose the time span of the
+    climatology displayed in the background (added to filename and legend!)
+
+    Further and as soon as ensemble runs come into play
+
+    Parameters
+    ----------
+    clim: xarray.Dataset
+        The mass balance climatology
+    current: the current year's mass balance
+    leap: if year is leap or not
+    fs: font size
+
+    Returns
+    -------
+
+    """
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    if leap:
+        xvals = np.arange(366)
+    else:
+        xvals = np.arange(365)
+    # plot median
+    p1, = ax.plot(xvals, clim.MB.values[:, 2], c='b', label='Median')
+    # plot IQR
+    ax.fill_between(xvals, clim.MB.values[:, 1], clim.MB.values[:, 3],
+                    facecolor='cornflowerblue', alpha=0.5)
+    # plot 10th to 90th pctl
+    ax.fill_between(xvals, clim.MB.values[:, 0], clim.MB.values[:, 4],
+                    facecolor='cornflowerblue', alpha=0.3)
+    # plot MB of this glacio year up to now
+    mb_now_cs_pad = np.lib.pad(current, (0, len(xvals) - len(current)),
+                               'constant',
+                               constant_values=(np.nan, np.nan))
+    p4, = ax.plot(xvals, mb_now_cs_pad, c='orange')
+    ax.set_xlabel('Months', fontsize=16)
+    ax.set_ylabel('Cumulative Mass Balance (m we)', fontsize=fs)
+    ax.set_xlim(xvals.min(), xvals.max())
+    xtpos = np.append([0], np.cumsum(np.roll(cfg.DAYS_IN_MONTH, 3))[:-1])
+    plt.tick_params(axis='both', which='major', labelsize=fs)
+    ax.xaxis.set_ticks(xtpos)
+    ax.set_xticklabels([m for m in '0NDJFMAMJJAS'], fontsize=fs)
+    ax.grid(True, which='both', alpha=0.5)
+    plt.title('Daily Cumulative MB Distribution of {} ({})'
+              .format(clim.attrs['id'].split('.')[1],
+                      clim.attrs['name']), fontsize=fs)
+
+    #ax.set(xlabel='Months', ylabel='Cumulative Mass Balance (m we)', xlim=(xvals.min(), xvals.max()),
+    #       xticklabels=([m for m in '0NDJFMAMJJAS']), fs=fs)
+
+    ax.legend([AnyObject(), p4], ['Climatology Median, IQR, 10th/90th PCTL',
+                                  'Current MB year'],
+              handler_map={AnyObject: AnyObjectHandler()}, fontsize=fs, loc=0)
+    plt.tight_layout()
+
+
+def plot_cumsum_allyears(gdir):
+    # input must be  mb_daily.pkl
+    mb_ds = gdir.read_pickle('mb_daily')
+    mb_ds_cs = mb_ds.apply(lambda x: x.cumsum(dim='time', skipna=True))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(mb_ds_cs.MB.values)
+    ax.set_xlabel('Time', fontsize=16)
+    ax.set_ylabel('Cumulative Mass Balance (m we)', fontsize=16)
+    plt.title('Cumulative MB Distribution of ' +
+              mb_ds.attrs['id'].split('.')[1] + ' (' + mb_ds.attrs[
+                  'name'] + ')', fontsize=16)
+    xtpos = np.append([0], np.cumsum([np.count_nonzero(
+        [i.year for i in pd.DatetimeIndex(mb_ds.time.values)] == y) for y in
+                                      np.unique([t.year for t in
+                                                 pd.DatetimeIndex(
+                                                     mb_ds.time.values)])]))
+    plt.tick_params(axis='both', which='major', labelsize=16)
+    ax.xaxis.set_ticks(xtpos[::5])
+    ax.set_xticklabels([y for y in np.unique(
+        [t.year for t in pd.DatetimeIndex(mb_ds.time.values)])
+                        ][::5], fontsize=16)
