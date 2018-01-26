@@ -3,9 +3,15 @@ from __future__ import absolute_import, division
 from salem import Grid, wgs84
 import numpy as np
 import pyproj
+import logging
+import xarray as xr
+from crampon import entity_task
 import crampon.cfg as cfg
-from oggm.core.preprocessing.gis import gaussian_blur, _check_geometry,\
+from oggm.core.gis import gaussian_blur, _check_geometry,\
     _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks
+
+# Module logger
+log = logging.getLogger(__name__)
 
 
 # This could go to salem via a fork

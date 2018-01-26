@@ -15,7 +15,7 @@ from crampon import workflow
 from crampon import tasks
 from crampon.workflow import execute_entity_task
 from crampon import graphics, utils
-from oggm.core.models.massbalance import PastMassBalanceModel
+from oggm.core.massbalance import PastMassBalance
 import numpy as np
 
 # Logging options
@@ -53,12 +53,11 @@ if __name__ == '__main__':
     # Go - initialize working directories
     gdirs = workflow.init_glacier_regions(rgidf, reset=True, force=True)
 
-
     # Prepro tasks
     task_list = [
         tasks.glacier_masks,
         tasks.compute_centerlines,
-        tasks.compute_downstream_lines,
+        tasks.compute_downstream_line,
         tasks.catchment_area,
         tasks.initialize_flowlines,
         tasks.catchment_width_geom,
@@ -77,15 +76,15 @@ if __name__ == '__main__':
     for g in gdirs:
         # Necessary for inversion input
         tasks.prepare_for_inversion(g, add_debug_var=True)
-        past_model = PastMassBalanceModel(g)
+        past_model = PastMassBalance(g)
         majid = g.read_pickle('major_divide', div_id=0)
         cl = g.read_pickle('inversion_input', div_id=majid)[-1]
 
         mb = []
         for i, yr in enumerate(np.arange(1962, 2017)):
             for m in np.arange(12):
-                yrm = utils.date_to_year(yr, m + 1)
-                # Get the mass balance and convert to m per year
+                yrm = utils.date_to_floatyear(yr, m + 1)
+                # Get the mass balance and convert to m w.e. per year
                 tmp = past_model.get_monthly_mb(cl['hgt'], yrm) * \
                       cfg.SEC_IN_MONTHS[m] * cfg.RHO / 1000.
                 mb.append(tmp)

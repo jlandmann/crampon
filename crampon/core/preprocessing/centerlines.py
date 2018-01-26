@@ -1,1 +1,1 @@
-from oggm.core.preprocessing.centerlines import *
+from oggm.core.centerlines import *

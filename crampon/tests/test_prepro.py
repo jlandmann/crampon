@@ -21,7 +21,7 @@ import crampon.cfg as cfg
 from crampon.core.preprocessing import gis, climate
 #import crampon.cfg as cfg
 from oggm.utils import get_demo_file as get_oggm_demo_file
-from crampon.tests import is_slow, HAS_NEW_GDAL, requires_py3, RUN_PREPRO_TESTS
+from crampon.tests import is_slow, HAS_NEW_GDAL, RUN_PREPRO_TESTS
 
 
 # General settings
@@ -91,7 +91,7 @@ class TestClimate(unittest.TestCase):
     def test_distribute_climate_parallel_daily(self):
 
         cfg.PATHS['climate_file'] = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-                                                 'data\\bigdata\\TPH_M_merged_new_settunits+missval.nc')
+                                                 'data\\meteo\\TPH_M_merged_new_settunits+missval.nc')
         gries_file = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
                                   'data\\test\\shp\\Gries\\'
                                   'RGI50-11.01876.shp')

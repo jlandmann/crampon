@@ -7,7 +7,7 @@ from glob import glob
 import crampon.cfg as cfg
 from crampon.core.models.massbalance import DailyMassBalanceModel
 from crampon import utils
-from crampon.utils import date_to_year, GlacierDirectory
+from crampon.utils import GlacierDirectory
 #from oggm.core.preprocessing.climate import *
 import itertools
 import scipy.optimize as optimize

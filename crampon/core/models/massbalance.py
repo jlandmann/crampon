@@ -1,6 +1,6 @@
 from __future__ import division
 
-from oggm.core.models.massbalance import *
+from oggm.core.massbalance import *
 from crampon.cfg import SEC_IN_DAY
 from crampon.utils import SuperclassMeta, lazy_property
 

@@ -15,7 +15,7 @@ from crampon import workflow
 from crampon import tasks
 from crampon.workflow import execute_entity_task
 from crampon import graphics, utils
-from oggm.core.models.massbalance import PastMassBalanceModel
+from oggm.core.massbalance import PastMassBalance
 import numpy as np
 
 # Logging options
@@ -105,7 +105,7 @@ if __name__ == '__main__':
         # Necessary for inversion input
         tasks.prepare_for_inversion(g, add_debug_var=True)
         try:
-            past_model = PastMassBalanceModel(g)
+            past_model = PastMassBalance(g)
         except OSError:
             log.error('local mustar for {} does not exist'.format(g.rgi_id))
             continue

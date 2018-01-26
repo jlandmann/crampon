@@ -8,8 +8,8 @@ respective OGGM dictionaries.
 """
 from __future__ import absolute_import, division
 
-from oggm.cfg import PathOrderedDict, DocumentedDict, set_divides_db, \
-    set_intersects_db, pack_config, unpack_config, oggm_static_paths
+from oggm.cfg import PathOrderedDict, DocumentedDict, set_intersects_db, \
+    pack_config, unpack_config, oggm_static_paths
 from oggm.cfg import initialize as oggminitialize
 
 
@@ -44,8 +44,11 @@ CONFIG_FILE = os.path.join(os.path.expanduser('~'), '.oggm_config')
 IS_INITIALIZED = False
 CONTINUE_ON_ERROR = False
 CPARAMS = OrderedDict()
+PARAMS = OrderedDict()
 CPATHS = PathOrderedDict()
+PATHS = PathOrderedDict()
 CBASENAMES = DocumentedDict()
+BASENAMES = DocumentedDict()
 RGI_REG_NAMES = False
 RGI_SUBREG_NAMES = False
 LRUHANDLERS = OrderedDict()

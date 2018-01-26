@@ -8,7 +8,7 @@ import crampon.cfg as cfg
 import sys
 import socket
 import unittest
-from six.moves.urllib.request import urlopen
+from urllib.request import urlopen
 from six.moves.urllib.error import URLError
 from configobj import ConfigObj, ConfigObjError
 
@@ -100,7 +100,7 @@ if os.environ.get('OGGM_DOWNLOAD_TESTS') is not None:
 try:
     _ = urlopen('http://www.google.com', timeout=1)
     HAS_INTERNET = True
-except URLError:
+except:
     HAS_INTERNET = False
 
 # check if there is a credentials file (should be added to .gitignore)
