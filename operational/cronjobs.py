@@ -50,7 +50,7 @@ def hourly_tasks(gdirs):
 
 
 # retry for almost one day every half an hour, if fails
-@retry(Exception, tries=55, delay=1800, backoff=1, log_to=log)
+@retry(Exception, tries=45, delay=1800, backoff=1, log_to=log)
 def daily_tasks(gdirs):
     """
     A collection of tasks to perform every day.
@@ -80,6 +80,8 @@ def daily_tasks(gdirs):
         # otherwise PermissionError in the next try:
         cmeta.close()
         # file from yesterday not yet on WSL server -> retry
+        log.info('No new meteo files from yesterday ({}) on WSL server...'
+                 .format(yesterday_np64))
         raise FileNotFoundError
 
     # before we recalculate climate, delete it from cache
