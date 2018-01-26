@@ -218,7 +218,6 @@ def initialize(file=None):
 
     # Empty defaults
     from oggm.utils import get_demo_file
-    set_divides_db(get_demo_file('divides_alps.shp'))
     set_intersects_db(get_demo_file('rgi_intersect_oetztal.shp'))
     IS_INITIALIZED = True
 
