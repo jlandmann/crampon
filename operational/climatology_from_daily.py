@@ -51,11 +51,6 @@ glaciers = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
 rgidf = gpd.read_file(glaciers)
 #rgidf = rgidf[rgidf.RGIId == 'RGI50-11.00536']
 
-califile = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                        'data/results_prelim/'
-                        'mustar_from_mauro_first_attempt_brute.csv')
-cali = pd.read_csv(califile)
-
 # where problems occur
 problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
                          'RGI50-11.01509-0', 'RGI50-11.01538-0',
@@ -91,8 +86,6 @@ problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
                         'RGI50-11.C9205', 'RGI50-11.B9513',
                         'RGI50-11.B9521n-1', 'RGI50-11.B9523n']  # too close to border
 
-#ix = rgidf[rgidf['RGIId'] == 'RGI50-11.01621'].index.tolist()
-#rgidf = rgidf[rgidf.index>ix]
 rgidf = rgidf[~rgidf.RGIId.isin(problem_glaciers_sgi)]
 rgidf = rgidf.sort_values(by='Area', ascending=False)
 rgidf = rgidf[rgidf.Area >= 0.0105]
@@ -113,13 +106,13 @@ if __name__ == '__main__':
     task_list = [
         #tasks.glacier_masks,
         #tasks.compute_centerlines,
-        #tasks.compute_downstream_lines,
         #tasks.initialize_flowlines,
+        #tasks.compute_downstream_line,
         #tasks.catchment_area,
         #tasks.catchment_intersections,
         #tasks.catchment_width_geom,
         #tasks.catchment_width_correction,
-        #tasks.process_custom_climate_data,
+        tasks.process_custom_climate_data,
 
     ]
     for task in task_list:
@@ -127,23 +120,15 @@ if __name__ == '__main__':
 
     for g in gdirs:
 
-        #if not
-
-        # mustar= mm K-1 Monat-1 !!!!!
-        #mu_star = cali[cali.rgi_id == g.rgi_id].mu_star.values[0]
-        #prcp_fac = cali[cali.rgi_id == g.rgi_id].prcp_fac.values[0]
-
         # remove as soon as mustar is daily/calibration is correct!
-        prcp_fac = 1.87
-        mu_star = 5.41
+        prcp_fac = 1.4    # tuned manually to 1284 mm (mean winter balance)
+        mu_star = 8.0    # tuned manually to  -1001 mm (mean annual balance)
         print(mu_star, prcp_fac)
 
         day_model = DailyMassBalanceModel(g, mu_star=mu_star,
-                                           prcp_fac=prcp_fac, bias=0.)
+                                          prcp_fac=prcp_fac, bias=0.)
 
-        majid = g.read_pickle('major_divide', div_id=0)
-        maj_fl = g.read_pickle('inversion_flowlines', div_id=majid)[-1]
-        maj_hgt = maj_fl.surface_h
+        heights, widths = g.get_inversion_flowline_hw()
 
         # number of experiments (list!)
         exp = [1]
@@ -152,34 +137,20 @@ if __name__ == '__main__':
         for date in day_model.tspan_in:
 
             # Get the mass balance and convert to m per day
-            #tmp = day_model.get_daily_mb(maj_hgt, date=date) * \
-            #      cfg.SEC_IN_DAY * cfg.RHO / 1000.
-            tmp = day_model.get_daily_specific_mb(maj_hgt, maj_fl.widths, date=date)
+            tmp = day_model.get_daily_specific_mb(heights, widths, date=date)
             mb.append(tmp)
 
-        # Average MB over all glacier heights
-        #mb_avg = [np.nanmean(i) for i in mb]
-
-        # make a Dataset out of it
-        #mb_ds = xr.Dataset({'MB': (['time', 'z', 'n'],
-        #                           np.atleast_3d(mb))},
-        #                   coords={'n': (['n'], exp),
-        #                           'z': (['z'], maj_hgt),
-        #                           'time': pd.to_datetime(day_model.tspan_in)},
-        #                   attrs={'prcp_fac': prcp_fac,
-        #                          'mu_star': mu_star})
-        ## mean over all heights
-        #mb_ds = mb_ds.mean(dim='z')
         mb_ds = xr.Dataset({'MB': (['time', 'n'],
                                    np.atleast_2d(mb).T)},
                            coords={'n': (['n'], exp),
                                    'time': pd.to_datetime(day_model.tspan_in)},
                            attrs={'prcp_fac': prcp_fac,
-                                  'mu_star': mu_star})
+                                  'mu_star': mu_star,
+                                  'id': g.rgi_id,
+                                  'name': g.name})
 
         # save intermediate results
         g.write_pickle(mb_ds, 'mb_daily')
-
 
         # Multi-year daily data
         #mb_yday = []
@@ -196,16 +167,23 @@ if __name__ == '__main__':
 
         ###### BUG?????
         #Now (after applying cumsum) the real 01-10 is 01-01!!!!!
-        mb_yday_cs = gyear_groups.apply(lambda x: x.cumsum(dim='time',
-                                                           skipna=True))
+
+        def cumsum(x):
+            return x.cumsum(dim='time', skipna=True)
+        mb_yday_cs = gyear_groups.apply((lambda x: x.cumsum(dim='time',
+                                                           skipna=True)))
+
         # Quantiles by day of glaciological year (starting with "JAN-01"!)
-        quant = mb_yday_cs.groupby(mb_yday_cs.time.dt.dayofyear)\
+        def custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
+            return x.quantile(qs)
+
+        quant = mb_yday_cs.groupby(mb_yday_cs.time.dt.dayofyear) \
             .apply(lambda x: x.quantile([0.1, 0.25, 0.5, 0.75, 0.9]))
         # no need roll them again
-        quantr = quant
+        quantr = quant.copy()
 
-        # CumSums
-        #mb_ymon_cs = np.nancumsum(mb_yday, axis=0)
+        # insert attributes again...they get lost when grouping!?
+        quantr.attrs.update(mb_ds.attrs)
 
         # OGGM standard plots
         if PLOTS_DIR == '':
@@ -220,80 +198,23 @@ if __name__ == '__main__':
         yesterday = (datetime.datetime.now() - datetime.timedelta(2))
         yesterday_str = yesterday.strftime('%Y-%m-%d')
 
-        last_gyear_beg = yesterday.year if datetime.datetime(yesterday.year,
-                                                             10, 1) \
-                                           <= yesterday else yesterday.year - 1
-        for date in pd.date_range(start='2016-10-01', end=yesterday_str,
+        begin = utils.get_begin_last_flexyear(yesterday)
+        begin_str = begin.strftime('%Y-%m-%d')
+
+        for date in pd.date_range(start=begin_str, end=yesterday_str,
                                   freq='D'):
             date = date.to_pydatetime()
             # Get the mass balance and convert to m per day
-            tmp = day_model.get_daily_specific_mb(maj_hgt, maj_fl.widths,
+            tmp = day_model.get_daily_specific_mb(heights, widths,
                                                   date=date)
             mb_now.append(tmp)
         mb_now_cs = np.cumsum([i.mean() for i in mb_now])
+        g.write_pickle(mb_now_cs, 'mb_current')
 
-
-
-        import matplotlib.patches as mpatches
-        import matplotlib.lines as mlines
-        class AnyObject(object):
-            pass
-
-        class AnyObjectHandler(object):
-            def legend_artist(self, legend, orig_handle, fontsize, handlebox):
-                x0, y0 = handlebox.xdescent, handlebox.ydescent
-                width, height = handlebox.width, handlebox.height
-                l1 = mlines.Line2D([x0, y0 + width],
-                                   [0.5 * height, 0.5 * height],
-                                   linestyle='-', color='b')
-                patch1 = mpatches.Rectangle([x0, y0+0.25*height], width, 0.5*height,
-                                            facecolor='cornflowerblue',
-                                            alpha=0.5,
-                                            transform=handlebox.get_transform())
-                patch2 = mpatches.Rectangle([x0, y0], width, height,
-                                            facecolor='cornflowerblue',
-                                            alpha=0.3,
-                                           transform=handlebox.get_transform())
-                handlebox.add_artist(l1)
-                handlebox.add_artist(patch1)
-                handlebox.add_artist(patch2)
-                return [l1, patch1, patch2]
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-        fs = 17
-        xvals = np.arange(0, 366)
-        # plot median
-        p1, = ax.plot(xvals, quantr.MB.values[:, 2], c='b', label='Median')
-        # plot IQR
-        ax.fill_between(xvals, quantr.MB.values[:, 1], quantr.MB.values[:, 3],
-                        facecolor='cornflowerblue', alpha=0.5)
-        # plot 10th to 90th pctl
-        ax.fill_between(xvals, quantr.MB.values[:, 0], quantr.MB.values[:, 4],
-                        facecolor='cornflowerblue', alpha=0.3)
-        # plot MB of this glacio year up to now
-        mb_now_cs_pad = np.lib.pad(mb_now_cs, (0, len(xvals) - len(mb_now_cs)),
-                                   'constant',
-                                   constant_values=(np.nan, np.nan))
-        p4, = ax.plot(xvals, mb_now_cs_pad, c='orange')
-        ax.set_xlabel('Months', fontsize=16)
-        ax.set_ylabel('Cumulative Mass Balance (m we)', fontsize=fs)
-        ax.set_xlim(xvals.min(), xvals.max())
-        xtpos = np.append([0], np.cumsum(np.roll(cfg.DAYS_IN_MONTH, 3))[:-1])
-        plt.tick_params(axis='both', which='major', labelsize=fs)
-        ax.xaxis.set_ticks(xtpos)
-        ax.set_xticklabels([m for m in '0NDJFMAMJJAS'], fontsize=fs)
-        ax.grid(True, which='both', alpha=0.5)
-        plt.title('Daily Cumulative MB Distribution of ' +
-                  g.rgi_id.split('.')[1] + ' (' + g.name + ')', fontsize=fs)
-        legend = plt.legend([AnyObject(), p4], ['Climatology Median, IQR, 10th/90th PCTL', 'Current MB year'],
-           handler_map={AnyObject: AnyObjectHandler()}, fontsize=fs)
-        #plt.setp(legend.get_title())
-        plt.show()
-        #plt.savefig(bname + 'test_new.png')
-        #plt.close()
         ##################################################
 
-        """
+        graphics.plot_cumsum_climatology_and_current(quantr, current=mb_now_cs, leap=True)
+        plt.savefig(bname + 'test_new.png')
         graphics.plot_googlemap(g)
         plt.savefig(bname + 'googlemap.png')
         plt.close()
@@ -309,76 +230,6 @@ if __name__ == '__main__':
         graphics.plot_catchment_areas(g)
         plt.savefig(bname + 'catchment_areas.png')
         plt.close()
-        
-
-        # MB time series (line plot)
-        plt.figure(figsize=(8, 5))
-        plt.plot(past_model.tspan_in, mb_avg)
-        plt.xlabel('Years')
-        plt.ylabel('Daily MB (m we)')
-        plt.grid(which='both')
-        plt.title(g.rgi_id + ': ' + g.name)
-        plt.savefig(bname + 'past_MB.png')
-        plt.close()
-
-        # Climatology
-        fig, ax = plt.subplots(figsize=(10, 5))
-        #  plot median
-        ax.plot(np.arange(1, 366), [np.nanmedian(m) for m in mb_yday], c='b',
-                label='Median')
-        #  plot IQR
-        ax.fill_between(np.arange(1, 366),
-                        [np.nanpercentile(m, 25) for m in mb_yday],
-                        [np.nanpercentile(m, 75) for m in mb_yday],
-                        facecolor='cornflowerblue', alpha=0.5)
-        #  plot 10th to 90th pctl
-        ax.fill_between(np.arange(1, 366),
-                        [np.nanpercentile(m, 10) for m in mb_yday],
-                        [np.nanpercentile(m, 90) for m in mb_yday],
-                        facecolor='cornflowerblue', alpha=0.3)
-        ax.set_xlabel('Months')
-        ax.set_ylabel('Mass Balance (m we)')
-        ax.set_xlim(1, 365)
-        start, end = ax.get_xlim()
-        ax.xaxis.set_ticks([0]+np.cumsum(np.roll(cfg.DAYS_IN_MONTH, 3))[:-1])
-        # start with November, bcz we set ticks at end:
-        ax.set_xticklabels([m for m in 'NDJFMAMJJASO'])
-        ax.grid(True, which='both', alpha=0.5)
-        plt.title('Multi-year Daily MB Distribution of ' +
-                  g.rgi_id + '(' + g.name + ')')
-        legend = plt.legend()
-        plt.setp(legend.get_title())
-        fig.savefig(bname + 'Yday_MB.png')
-        plt.close()
-
-        # Climatology CumSum
-        fig, ax = plt.subplots(figsize=(10, 5))
-        #  plot median
-        ax.plot(np.arange(1, 366), [np.nanmedian(m) for m in mb_ymon_cs],
-                c='b', label='Median')
-        #  plot IQR
-        ax.fill_between(np.arange(1, 366),
-                        [np.nanpercentile(m, 25) for m in mb_ymon_cs],
-                        [np.nanpercentile(m, 75) for m in mb_ymon_cs],
-                        facecolor='cornflowerblue', alpha=0.5)
-        #  plot 10th to 90th pctl
-        ax.fill_between(np.arange(1, 366),
-                        [np.nanpercentile(m, 10) for m in mb_ymon_cs],
-                        [np.nanpercentile(m, 90) for m in mb_ymon_cs],
-                        facecolor='cornflowerblue', alpha=0.3)
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Cumulative Mass Balance (m we)')
-        ax.set_xlim(1, 12)
-        start, end = ax.get_xlim()
-        ax.xaxis.set_ticks(np.roll(cfg.DAYS_IN_MONTH, 3))
-        ax.set_xticklabels([m for m in 'NDJFMAMJJASO'])
-        ax.grid(True, which='both', alpha=0.5)
-        plt.title('Multi-year Daily Cumulative MB Distribution of ' +
-                  g.rgi_id + '(' + g.name + ')')
-        legend = plt.legend()
-        plt.setp(legend.get_title())
-        fig.savefig(bname + 'Yday_Cumul_MB.png')
-        plt.close()
 
     # Write out glacier statistics
     df = utils.glacier_characteristics(gdirs)
@@ -393,4 +244,3 @@ execute_entity_task(tasks.volume_inversion, gdirs)
 
 
 '''
-"""
