@@ -32,6 +32,7 @@ from functools import partial, wraps
 from oggm.utils import *
 # Locals
 import crampon.cfg as cfg
+from pathlib import Path
 
 
 # I should introduce/alter:
