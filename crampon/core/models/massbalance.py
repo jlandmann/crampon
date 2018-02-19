@@ -66,6 +66,39 @@ class DailyMassBalanceModel(MassBalanceModel):
             self.ref_hgt = nc.ref_hgt
 
     def get_daily_mb(self, heights, date=None):
+        """
+        Calculates the daily mass balance for given heights.
+
+        At the moment the mass balance equation is the simplest formulation:
+
+        MB(z) = PRCP_FAC * PRCP_SOL(z) - mustar * max(T(z) - Tmelt, 0)
+
+        where MB(z) is the mass balance at height z in mm w.e., PRCP_FAC is
+        the precipitation correction factor, PRCP_SOL(z) is the solid
+        precipitation at height z in mm w.e., mustar is the
+        temperature sensitivity of the glacier (mm w.e. K-1 d-1), T(z) is the
+        temperature and height z in (deg C) and Tmelt is the temperature
+        threshold where melt occurs (deg C).
+
+        The result of the model equation is thus a mass balance in mm w.e. d.1,
+        however, for context reasons (dynamical part of the model), the mass
+        balance is returned in m ice s-1, using the ice density as given in the
+        configuration file. ATTENTION, the mass balance given is not yet
+        weighted with the glacier geometry! For this, see method
+        `get_daily_specific_mb`.
+
+        Parameters
+        ----------
+        heights: ndarray
+            Heights at which mass balance should be calculated.
+        date: datetime.datetime
+            Date at which mass balance should be calculated.
+
+        Returns
+        -------
+        ndarray:
+            Glacier mass balance at the respective heights in m ice s-1.
+        """
 
         # index of the date of MB calculation
         ix = pd.DatetimeIndex(self.tspan_in).get_loc(date)
