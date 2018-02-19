@@ -152,38 +152,44 @@ if __name__ == '__main__':
         # save intermediate results
         g.write_pickle(mb_ds, 'mb_daily')
 
-        # Multi-year daily data
-        #mb_yday = []
-        #for i in np.arange(365):
-        #    mb_yday.append(mb_avg[i::365])
-        # Begin day of the glaciological year and the days needed to be rolled
-        bgday_glacio = 274
-        bgday_tspan = day_model.tspan_in[0].timetuple().tm_yday
-        rolld = bgday_tspan - bgday_glacio
+        bgmon_hydro = 10
+        bgday_hydro = 1
 
-        # GroupBy object (by glacio years)
-        gyear_groups = mb_ds.roll(time=rolld).groupby(mb_ds.time.dt.year)
-        # CumSums starting on bgday_glacio
 
-        ###### BUG?????
-        #Now (after applying cumsum) the real 01-10 is 01-01!!!!!
+        # Remove here beginning of file until first begin of hydro year
+        first_occ = mb_ds.sel(time=((mb_ds.time.dt.month == bgmon_hydro) &
+                                    (mb_ds.time.dt.day == bgday_hydro))).time[
+            0].values
 
-        def cumsum(x):
+        mb_ds = mb_ds.sel(time=slice(pd.to_datetime(first_occ), None))
+        hydro_years = xr.DataArray([t.year if ((t.month < bgmon_hydro) or
+                                               ((t.month == bgmon_hydro) &
+                                                (t.day < bgday_hydro)))
+                                    else (t.year + 1) for t in
+                                    mb_ds.indexes['time']],
+                                   dims='time', name='hydro_years',
+                                   coords={'time': mb_ds.time})
+        _, cts = np.unique(hydro_years, return_counts=True)
+        doys = [list(range(1, c + 1)) for c in cts]
+        doys = [i for sub in doys for i in sub]
+        hydro_doys = xr.DataArray(doys, dims='time', name='hydro_doys',
+                                   coords={'time': mb_ds.time})
+
+
+        def custom_cumsum(x):
             return x.cumsum(dim='time', skipna=True)
-        mb_yday_cs = gyear_groups.apply((lambda x: x.cumsum(dim='time',
-                                                           skipna=True)))
 
-        # Quantiles by day of glaciological year (starting with "JAN-01"!)
+
         def custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
             return x.quantile(qs)
 
-        quant = mb_yday_cs.groupby(mb_yday_cs.time.dt.dayofyear) \
-            .apply(lambda x: x.quantile([0.1, 0.25, 0.5, 0.75, 0.9]))
-        # no need roll them again
-        quantr = quant.copy()
+        mb_cumsum = mb_ds.groupby(hydro_years).apply(
+            lambda x: custom_cumsum(x))
+        quant = mb_cumsum.groupby(hydro_doys) \
+                .apply(lambda x: custom_quantiles(x))
 
         # insert attributes again...they get lost when grouping!?
-        quantr.attrs.update(mb_ds.attrs)
+        quant.attrs.update(mb_ds.attrs)
 
         # OGGM standard plots
         if PLOTS_DIR == '':
@@ -198,23 +204,33 @@ if __name__ == '__main__':
         yesterday = (datetime.datetime.now() - datetime.timedelta(2))
         yesterday_str = yesterday.strftime('%Y-%m-%d')
 
-        begin = utils.get_begin_last_flexyear(yesterday)
+        begin = utils.get_begin_last_flexyear(yesterday,
+                                              start_month=bgmon_hydro,
+                                              start_day=bgday_hydro)
         begin_str = begin.strftime('%Y-%m-%d')
 
-        for date in pd.date_range(start=begin_str, end=yesterday_str,
-                                  freq='D'):
+        curr_year_span = pd.date_range(start=begin_str, end=yesterday_str,
+                                     freq='D')
+        for date in curr_year_span:
             date = date.to_pydatetime()
             # Get the mass balance and convert to m per day
             tmp = day_model.get_daily_specific_mb(heights, widths,
                                                   date=date)
             mb_now.append(tmp)
-        mb_now_cs = np.cumsum([i.mean() for i in mb_now])
+
+        mb_now_cs_arr = np.cumsum([i.mean() for i in mb_now])
+        mb_now_cs = xr.Dataset({'MB': (['time', 'n'],
+                                       np.atleast_2d(mb_now_cs_arr).T)},
+                               coords={'n': (['n'], exp),
+                                       'time': pd.to_datetime(curr_year_span)},
+                               attrs={'prcp_fac': prcp_fac, 'mu_star': mu_star,
+                                      'id': g.rgi_id, 'name': g.name})
         g.write_pickle(mb_now_cs, 'mb_current')
 
         ##################################################
 
-        graphics.plot_cumsum_climatology_and_current(quantr, current=mb_now_cs, leap=True)
-        plt.savefig(bname + 'test_new.png')
+        graphics.plot_cumsum_climatology_and_current(quant, current=mb_now_cs)
+        plt.savefig(bname + 'test_new.png', dpi=1000)
         graphics.plot_googlemap(g)
         plt.savefig(bname + 'googlemap.png')
         plt.close()
@@ -235,12 +251,3 @@ if __name__ == '__main__':
     df = utils.glacier_characteristics(gdirs)
     fpath = os.path.join(cfg.PATHS['working_dir'], 'glacier_char.csv')
     df.to_csv(fpath)
-
-'''
-# Inversion
-execute_entity_task(tasks.prepare_for_inversion, gdirs)
-tasks.optimize_inversion_params(gdirs)
-execute_entity_task(tasks.volume_inversion, gdirs)
-
-
-'''

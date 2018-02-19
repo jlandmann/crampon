@@ -1,6 +1,7 @@
 from __future__ import division
 
 from crampon.utils import entity_task, global_task
+from crampon import utils
 import logging
 from matplotlib.ticker import NullFormatter
 from oggm.graphics import *
@@ -332,7 +333,7 @@ class AnyObjectHandler(object):
         return [l1, patch1, patch2]
 
 #@entity_task(log)
-def plot_cumsum_climatology_and_current(clim, current=None, leap=False, fs=17):
+def plot_cumsum_climatology_and_current(clim, current, fs=17):
     """
     Make the standard plot containing the MB climatology in the background and
     the current MB year on top.
@@ -349,9 +350,10 @@ def plot_cumsum_climatology_and_current(clim, current=None, leap=False, fs=17):
     ----------
     clim: xarray.Dataset
         The mass balance climatology
-    current: the current year's mass balance
-    leap: if year is leap or not
-    fs: font size
+    current: xarray.Dataset
+        The current year's mass balance
+    fs: int
+        font size
 
     Returns
     -------
@@ -359,10 +361,16 @@ def plot_cumsum_climatology_and_current(clim, current=None, leap=False, fs=17):
     """
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    if leap:
+    # currently no better solution to add one year
+    xtime = pd.date_range(pd.to_datetime(current.isel(time=0).time.values),
+                             periods=366)
+    if ((xtime.month == 2) & (xtime.day == 29)).any():
         xvals = np.arange(366)
     else:
+        xtime = xtime[:-1]
         xvals = np.arange(365)
+        clim = clim.sel(hydro_doys=slice(None, 365))
+
     # plot median
     p1, = ax.plot(xvals, clim.MB.values[:, 2], c='b', label='Median')
     # plot IQR
@@ -372,24 +380,34 @@ def plot_cumsum_climatology_and_current(clim, current=None, leap=False, fs=17):
     ax.fill_between(xvals, clim.MB.values[:, 0], clim.MB.values[:, 4],
                     facecolor='cornflowerblue', alpha=0.3)
     # plot MB of this glacio year up to now
-    mb_now_cs_pad = np.lib.pad(current, (0, len(xvals) - len(current)),
+    # TODO: as soon as we have more experiments, make errorbars or fill_between
+    mb_now_cs_pad = np.lib.pad(current.MB.values[:, 0], (0, len(xvals) -
+                                                         len(current.time)),
                                'constant',
                                constant_values=(np.nan, np.nan))
     p4, = ax.plot(xvals, mb_now_cs_pad, c='orange')
     ax.set_xlabel('Months', fontsize=16)
     ax.set_ylabel('Cumulative Mass Balance (m we)', fontsize=fs)
     ax.set_xlim(xvals.min(), xvals.max())
-    xtpos = np.append([0], np.cumsum(np.roll(cfg.DAYS_IN_MONTH, 3))[:-1])
     plt.tick_params(axis='both', which='major', labelsize=fs)
+    mbeg = xtime[np.where(xtime.day == 1)]
+    if xtime[0].day == 1:
+        xtpos_init = [0]
+        month_int = mbeg.month
+    else:
+        xtpos_init = [(xtime[0].replace(month=xtime[0].month+1, day=1) -
+                        xtime[0]).days]
+        month_int = mbeg.month
+    xtpos = np.cumsum(xtpos_init +
+                      [(mbeg[i]-mbeg[i-1]).days for i in range(1, len(mbeg))])
     ax.xaxis.set_ticks(xtpos)
-    ax.set_xticklabels([m for m in '0NDJFMAMJJAS'], fontsize=fs)
+    ax.xaxis.set_ticks(xvals, minor=True)
+    mstr = 'JFMAMJJAS0ND'
+    ax.set_xticklabels([mstr[i-1] for i in month_int], fontsize=fs)
     ax.grid(True, which='both', alpha=0.5)
     plt.title('Daily Cumulative MB Distribution of {} ({})'
               .format(clim.attrs['id'].split('.')[1],
                       clim.attrs['name']), fontsize=fs)
-
-    #ax.set(xlabel='Months', ylabel='Cumulative Mass Balance (m we)', xlim=(xvals.min(), xvals.max()),
-    #       xticklabels=([m for m in '0NDJFMAMJJAS']), fs=fs)
 
     ax.legend([AnyObject(), p4], ['Climatology Median, IQR, 10th/90th PCTL',
                                   'Current MB year'],
