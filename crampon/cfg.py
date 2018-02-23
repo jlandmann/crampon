@@ -9,7 +9,7 @@ respective OGGM dictionaries.
 from __future__ import absolute_import, division
 
 from oggm.cfg import PathOrderedDict, DocumentedDict, set_intersects_db, \
-    pack_config, unpack_config, oggm_static_paths
+    pack_config, unpack_config, oggm_static_paths, get_lru_handler
 from oggm.cfg import initialize as oggminitialize
 
 
@@ -45,6 +45,7 @@ IS_INITIALIZED = False
 CONTINUE_ON_ERROR = False
 CPARAMS = OrderedDict()
 PARAMS = OrderedDict()
+NAMES = OrderedDict()
 CPATHS = PathOrderedDict()
 PATHS = PathOrderedDict()
 CBASENAMES = DocumentedDict()
@@ -81,6 +82,27 @@ CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
 _doc = 'The daily mass balance timeseries for this glacier, stored in a ' \
        'pickle file.'
 CBASENAMES['mb_daily'] = ('mb_daily.pkl', _doc)
+_doc = 'The daily mass balance timeseries for this glacier in the current ' \
+       'budget year, stored in a pickle file.'
+CBASENAMES['mb_current'] = ('mb_current.pkl', _doc)
+_doc = 'A time series of all available DEMs for the glacier. Contains groups' \
+       ' for different resolutions.'
+CBASENAMES['homo_dem_ts'] = ('homo_dem_ts.nc', _doc)
+_doc = 'A time series of all available DEMs for the glacier, brought to the ' \
+       'minimum common resolution.'
+CBASENAMES['dem_ts'] = ('dem_ts.nc', _doc)
+_doc = 'Uncorrected geodetic mass balance calculations from the DEMs in ' \
+       'homo_dem_ts.nc. Contains groups for different resolutions.'
+CBASENAMES['gmb_uncorr'] = ('gmb_uncorr.nc', _doc)
+_doc = 'Corrected geodetic mass balance calculations from the DEMs in ' \
+       'dem_ts.nc. Corrected geodetic mass balances account for mass ' \
+       'conservative firn and snow densification processes. Contains groups ' \
+       'for different resolutions.'
+CBASENAMES['gmb_corr'] = ('gmb_corr.nc', _doc)
+_doc = 'The multitemporal glacier outlines in the local projection.'
+CBASENAMES['outlines_ts'] = ('outlines_ts.shp', _doc)
+_doc = 'A CSV with measured mass balances from the glaciological method.'
+CBASENAMES['glacio_method_mb'] = ('glacio_method_mb', _doc)
 
 
 # OGGM changed it to -1., let's first see what Fabi writes in his paper
@@ -88,10 +110,15 @@ CPARAMS['temp_melt'] = 0.
 
 # Our data are quite good, so we want to use the local gradient (5x5 window)
 CPARAMS['temp_use_local_gradient'] = 5
+CPARAMS['prcp_grad'] = +0.0003
+CPATHS['climate_dir'] = os.path.expanduser('~\\documents\\crampon\\data\\meteo')
+CPATHS['hfile'] = os.path.expanduser('~\\documents\\crampon\\data\\DEM\\hgt.nc')
+CPATHS['lfi_worksheet'] = os.path.expanduser('~\\documents\\crampon\\data\\meteo\\ginzler_ws.shp')
 
-CPATHS['climate_dir'] = os.path.expanduser('~\\documents\\crampon\\data\\bigdata')
-CPATHS['hfile'] = os.path.expanduser('~\\documents\\crampon\\data\\test\\hgt.nc')
-CPATHS['worksheet'] = os.path.expanduser('~\\documents\\crampon\\data\\bigdata\\ginzler_ws.shp')
+# some more standard names, for less hardcoding
+NAMES['DHM25'] = 'dhm25'
+NAMES['SWISSALTI2010'] = 'alti'
+NAMES['LFI'] = 'lfi'
 
 
 def initialize(file=None):
@@ -101,6 +128,7 @@ def initialize(file=None):
     global BASENAMES
     global PARAMS
     global PATHS
+    global NAMES
     global CONTINUE_ON_ERROR
     global N
     global A
@@ -139,6 +167,8 @@ def initialize(file=None):
 
     oggmcfg.PATHS['dem_file'] = cp['dem_file']
     oggmcfg.PATHS['climate_file'] = cp['climate_file']
+    oggmcfg.PATHS['lfi_dir'] = cp['lfi_dir']
+    oggmcfg.PATHS['dem_dir'] = cp['dem_dir']
     oggmcfg.PATHS['wgms_rgi_links'] = cp['wgms_rgi_links']
     oggmcfg.PATHS['glathida_rgi_links'] = cp['glathida_rgi_links']
     oggmcfg.PATHS['leclercq_rgi_links'] = cp['leclercq_rgi_links']
@@ -192,13 +222,13 @@ def initialize(file=None):
     _d = os.path.join(CACHE_DIR, 'oggm-sample-data-master', 'rgi_meta')
     oggmcfg.RGI_REG_NAMES = pd.read_csv(os.path.join(_d, 'rgi_regions.csv'),
                                 index_col=0)
-    oggmcfg.RGI_SUBREG_NAMES = pd.read_csv(os.path.join(_d,
-                                                        'rgi_subregions.csv'),
-                                           index_col=0)
+    #oggmcfg.RGI_SUBREG_NAMES = pd.read_csv(os.path.join(_d,
+    #                                                    'rgi_subregions.csv'),
+    #                                       index_col=0)
 
     # Delete non-floats
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
-           'glathida_rgi_links', 'grid_dx_method',
+           'glathida_rgi_links', 'lfi_dir', 'dem_dir', 'grid_dx_method',
            'mp_processes', 'use_multiprocessing', 'use_divides',
            'temp_local_gradient_bounds',
            'topo_interp', 'use_compression', 'bed_shape',
@@ -208,7 +238,7 @@ def initialize(file=None):
            'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
            'tstar_search_window', 'use_bias_for_run', 'run_period',
            'prcp_scaling_factor', 'use_intersects', 'filter_min_slope',
-           'auto_skip_task', 'correct_for_neg_flux']
+           'auto_skip_task', 'correct_for_neg_flux', 'problem_glaciers']
     for k in ltr:
         cp.pop(k, None)
 
@@ -229,5 +259,5 @@ def initialize(file=None):
     PATHS = oggmcfg.PATHS
     PARAMS = oggmcfg.PARAMS
 
-    # Always call this one!
+    # Always call this one! Creates tmp_dir etc.
     oggm_static_paths()
