@@ -465,7 +465,7 @@ class CirrusClient(pm.SSHClient):
             available = [p for p in available if os.path.isfile(p)]
             # THIS IS DANGEROUS!!!!!!!! If 'available' is too big, EVERYTHING
             # in that list is deleted
-            #surplus = [p for p in available if all(x not in p for x in
+            # surplus = [p for p in available if all(x not in p for x in
             #                                 remote_npaths)]
             surplus = [p for p in available if all(x not in p for x in
                                                    remotelist)]
@@ -550,8 +550,7 @@ class MeteoTSAccessor(object):
         """
 
         # includes postprocessing
-        op = read_netcdf(op_path, chunks={'time': 50},
-                          tfunc=_cut_with_CH_glac)
+        op = read_netcdf(op_path, chunks={'time': 50}, tfunc=_cut_with_CH_glac)
 
         # this does outer joins, too
         comb = self._obj.combine_first(op)
@@ -626,7 +625,7 @@ class MeteoTSAccessor(object):
 
             if len(starts.time.values) == 0 or len(ends.time.values) == 0:
                 raise IndexError("Time series too short to cover even one "
-                          "glaciological year.")
+                                 "glaciological year.")
 
             glacio_start = starts.isel(time=[0]).time.values[0]
             glacio_end = ends.isel(time=[-1]).time.values[0]
@@ -884,7 +883,8 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     combined = xr.concat(datasets, dim)
     return combined
 
-# we cannot write it to cache until we have e.g. a date in the climate_all filename
+
+# can't write it to cache until we have e.g. a date in the climate_all filename
 @MEMORY.cache
 def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
                                 use_grad):
@@ -903,7 +903,7 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
         Default temperature gradient (K/m).
     minmax_grad: tuple
         Min/Max bounds of the local gradient, in case the grid kernel search
-        deliver strange values.
+        delivers strange values.
     use_grad: int
         Window edge width of surrounding cells used to determine the local
         temperature gradient. Must be an odd number. If 0,
@@ -985,116 +985,337 @@ def _cut_with_CH_glac(xr_ds):
     return xr_ds
 
 
-def attach_ginzler_zone(gdf, worksheet):
+def make_swisstopo_worksheet(st_dir, in_epsg='21781', out_epsg='4326'):
     """
-    Returns the zone numbers of C. Ginzler's zone system for DEM tiles.
+    Creates a tile worksheet for the swisstopo tiles (DHM25/Swissalti3d).
+
+    Writes the output shapefile in WGS84 lat/lon (EPSG:4326)!
 
     Parameters
     ----------
-    gdf: geopandas.GeoDataFrame
-        Dataframe containing the polygons that request a zone intersection.
+    st_dir: str
+        Path to the directory where the swisstopo files are placed.
+    in_epsg: str
+        EPSG number of input ASCII grids as string.
+    out_epsg: str
+        EPSG number of output shapefile as string.
+    """
 
+    st_dir = Path(st_dir)
+
+    # tile to year mapper
+    mapper = pd.read_csv(str(st_dir.parent.joinpath(*['worksheets',
+                                                      '{}_tile_to_year.csv'
+                                                    .format(st_dir.stem)])))
+
+    crs = {'init': 'epsg:{}'.format(in_epsg)}
+    ws_gdf = gpd.GeoDataFrame({**{'geometry': []}, **dict()}, crs=crs)
+
+    # '.' as trick to find only files (any extension) in glob
+    for i, f in enumerate(st_dir.glob('*.*')):
+        # TODO: Replace by general raster bounds to extent polygon function?
+        raster = rasterio.open(str(f))
+        extent = raster.bounds
+        poly = shapely.geometry.polygon.Polygon(
+            [[extent[0], extent[3]],
+             [extent[2], extent[3]],
+             [extent[2], extent[1]],
+             [extent[0], extent[1]]])
+        ws_gdf.at[i, 'geometry'] = poly
+        zone = f.name[2:6]
+        ws_gdf.at[i, 'zone'] = zone
+        try:
+            ws_gdf.at[i, 'date'] = mapper[mapper.tile ==
+                                          int(zone)].year.values[0]
+        # TODO: This should not happen if the mapper was complete!
+        except IndexError:
+            pass
+
+    ws_gdf = ws_gdf.to_crs(epsg=out_epsg)
+
+    outpath = str(st_dir.parent.joinpath(*['worksheets', 'worksheet_{}.shp'
+                                         .format(st_dir.stem)]))
+    ws_gdf.to_file(outpath)
+
+
+def get_zones_from_worksheet(worksheet, id_col, gdir=None, shape=None,
+                            gpd_obj=None):
+    """
+    Return the zone numbers from a DEM tiles worksheet.
+
+    Parameters
+    ----------
     worksheet: str
-        Path to Christian Ginzler's worksheet with the zone numbers.
+        Path to the worksheet with the zone numbers.
+    id_col: str
+        Identifier (ID) column name in the worksheet
+    gdir: GlacierDirectory
+        GlacierDirectory object containing outlines.shp or outlines_ts.shp.
+    shape: str
+        Path to a shapefile.
+    gpd_obj: geopandas.GeoDataFrame or geopandas.Series
+        A GeoDataFrame oder GeoSeries instance.
 
     Returns
     -------
-    The GeoDataFrame with column 'zone' listing the intersecting zone numbers.
+    A list of zones giving the intersecting zone numbers.
     """
 
-    w_gdf = gpd.read_file(worksheet)
-
-    for k, row in gdf.iterrows():
-        res_is = gpd.overlay(row, w_gdf, how='intersection')
-        gdf['zone'] = res_is.CLNR.values
-
-    return gdf
-
-
-def dem_differencing_results(shapedf, dem_dir):
-
-    # get the network drive shit correctly
-    os.system(r'net use \\speedy10.wsl.ch\Data_14\_PROJEKTE\Swiss_Glacier /user:wsl\ ')
-    dem_list = glob.glob(os.path.join(dem_dir, '*.tif'))
-    broke_month = ['ADS_103221_672000_165000_2011_0_0_86_50.tif']
-    dem_list = [x for x in dem_list if not broke_month in x]
-
-    # make an empty pd.DataFrame for each glacier ID with columns for every
-    # possible subtraction time span
-    dates = [datetime.datetime(int(os.path.basename(x).split('_')[4]), int(os.path.basename(x).split('_')[5]),
-                               int(os.path.basename(x).split('_')[6])) for x in dem_list]
-    dates_unique = np.unique(dates)
-    years_unique = sorted(np.unique([x.year for x in dates_unique]), reverse=True)
-    combos = []
-    for i, y in enumerate(years_unique):
+    # Process either input to be GeoDataFrame in the end
+    if gdir is not None:
         try:
-            for j in range(3, len(years_unique)):
-                combos.append((y, years_unique[i + j]))
-        except IndexError:
+            gdf = gpd.read_file(gdir.get_filepath('outlines_ts'))
+        except OSError:  # no such file or directory
+            gdf = gpd.read_file(gdir.get_filepath('outlines'))
+    if shape is not None:
+        gdf = gpd.read_file(shape)
+    if gpd_obj is not None:
+        if isinstance(gpd_obj, gpd.GeoSeries):
+            gdf = gpd.GeoDataFrame({**{'geometry': gpd_obj.geometry},
+                                    **dict()}, index=[0])
+        else:
+            gdf = gpd_obj.copy()
+
+    # overlay only works when both input have the same CRS
+    w_gdf = gpd.read_file(worksheet)
+    w_gdf = w_gdf.to_crs(gdf.crs)
+
+    res_is = gpd.overlay(gdf, w_gdf, how='intersection')
+
+    # zones might be duplicates if the glacier shape is 'winding'
+    return np.unique(res_is[id_col].tolist())
+
+
+def mount_network_drive(path, user, log=None):
+    """
+    Mount a network drive.
+
+    If the network drive is already mounted, Windows will cause a
+    'Systemfehler 1219' which does not have any consequences. However, when
+    further errors occur (path/user wrong etc.) this will cause a silent fail.
+    An option to catch this silent error should be implemented.
+
+    Parameters
+    ----------
+    path: str
+        Path to the network drive.
+    user: str
+        User to establish connection.
+
+    Returns
+    -------
+
+    """
+    out = subprocess.call(r'net use {} {}'.format(path, user),
+                          stdout=subprocess.PIPE, shell=True)
+
+    if log and out == 0:
+        log.info('Network drive {} successfully connected'.format(path))
+    else:
+        raise ConnectionError('Network drive {} connection failed'
+                              .format(path))
+
+
+def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=1900,
+                             miss_val=np.nan):
+    """
+    Hard-coded function that reads DEMs into xarray.Datasets and adds metadata.
+
+    Opens files, names the variable correctly for merging, gets rid of the
+    'band' dimension, assign time coordinate and expands along this coordinate,
+    adds encoding and missing value specifications.
+
+    Parameters
+    ----------
+    to_merge: list
+        List of DEM paths to merge.
+    acq_dates: list of datetime.datetime
+        Datetime object delivering the acquisition date of the DEMs.
+    calendar_startyear: int
+        Year when the netCDF calendar should begin (e.g. 'Years since 1900').
+        Default: 1900
+    miss_val: float
+        Missing value. Default: -9999.0
+
+    Returns
+    -------
+    ds_final: xr.Dataset
+        The merged dataset of all input DEMs.
+    """
+    # open and assign name
+    xr_das = [xr.open_rasterio(tm, chunks=(50, 50)) for tm in to_merge]
+    xr_das = [t.rename('height') for t in xr_das]
+
+    # load and merge; overwrite is necessary, as some rasters cover same area
+    xr_das = [d.load() for d in xr_das]
+    merged = xr.merge(xr_das)
+
+    # coord/dim changes
+    merged = merged.squeeze(dim='band')
+    merged = merged.drop('band')
+    # Replaces -9999.0 with NaN: See here:
+    # https://github.com/pydata/xarray/issues/1749
+    merged = merged.where(merged != -9999.0)
+    merged = merged.assign_coords(time=acq_dates[0].year - calendar_startyear)
+    final_ds = merged.expand_dims('time')
+    # set EPSG:21781
+    final_ds.attrs['pyproj_srs'] = '+proj=somerc +lat_0=46.95240555555556 ' \
+                             '+lon_0=7.439583333333333 +k_0=1 +x_0=600000 ' \
+                             '+y_0=200000 +ellps=bessel ' \
+                             '+towgs84=674.374,15.056,405.346,0,0,0,0 ' \
+                             '+units=m +no_defs'
+    encoding = {'height': {'_FillValue': miss_val, 'units': 'meters', 'year':
+        acq_dates[0].year, 'standard_name': 'height_above_reference_ellipsoid'},
+                'time': {'units': 'years since {}-01-01 00:00:00'.format(
+                    calendar_startyear), 'calendar': 'standard'},
+                'zlib': True}
+    final_ds.encoding = encoding
+
+    return final_ds
+
+
+def get_local_dems(gdir):
+    """
+    Gather the locally saved DEMs.
+
+    At the moment, solutions for subfolders of cfg.PATHS['dem_dir'] (DHM25 and
+    SwissALTI3D) as well as the National Forest Inventory DEMs on the network
+    drive are implemented.
+    The transformation cod from Swiss coordinates to lat/lon comes from the
+    xarray webpage [1]_
+
+    Parameters
+    ----------
+    gdir: :py:class:`crampon.GlacierDirectory`
+        A GlacierDirectory instance.
+
+    Returns
+    -------
+    xr_list: list
+        A list of xr.Datasets containing the found DEMs.
+
+    References
+    ----------
+    .. [1] http://xarray.pydata.org/en/stable/auto_gallery/plot_rasterio.html#recipes-rasterio
+    """
+
+    tmpdir = cfg.PATHS['tmp_dir']
+    mkdir(tmpdir)
+
+    # get forest inventory DEMs (quite hard-coded for the LFI file names)
+    mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
+
+    # neither os nor pathlib works, so quick'n'dirty:
+    lfi_dem_list = glob.glob(cfg.PATHS['lfi_dir']+'\\TIFF\\*.tif')
+
+    if not lfi_dem_list:
+        raise FileNotFoundError('National Forest Inventory DEMs not found!')
+
+    # exactly one file name is broken:
+    broke_months = ['ADS_103221_672000_165000_2011_0_0_86_50.tif']
+    lfi_dem_list = [x for x in lfi_dem_list if not broke_months[0] in x]
+
+    zones = get_zones_from_worksheet(cfg.PATHS['lfi_worksheet'], 'CLNR',
+                                     gdir=gdir)
+
+    # 'common' DEMs for this glacier (all years!)
+    cdems = []
+    for z in zones:
+        plist = [x for x in lfi_dem_list if 'ADS_{}'.format(z) in x]
+        cdems.extend(plist)
+
+    # check the common dates for all zones
+    cdates = [datetime.datetime(int(os.path.basename(x).split('_')[4]),
+                                int(os.path.basename(x).split('_')[5]),
+                                int(os.path.basename(x).split('_')[6])) for
+              x in cdems]
+    cdates = np.unique(cdates)
+    cyears = np.unique([d.year for d in cdates])
+
+    lfi_all = []
+    for cd in cyears:
+        print(cd)
+        if cd != 2014:
             continue
-    deltacols = ['deltah_{}_{}'.format(i,j) for i,j in combos]
 
-    res_df = pd.DataFrame(index=shapedf.RGIId.values,
-                          columns=years_unique+deltacols)
-    res_df.fillna()
+        lfi_to_merge = [c for c in cdems if '_{}_'.format(str(cd)) in c]
 
-    ws = r'\\speedy10.wsl.ch\Data_14\_PROJEKTE\Swiss_Glacier\GIS\Worksheet.shp'
-    shapedf = attach_ginzler_zone(shapedf, ws)
-    # ineffective, but better than storing everything in the cache
-    for _, row in shapedf:
-        cdems = []
-        for zone in row.zone:
-            cdems.extend([x for x in dem_list if 'ADS_{}'.format(zone) in x])
-
-        # check the common dates (all!) for all zones
-        cdates = [datetime.datetime(int(os.path.basename(x).split('_')[4]),
-                                    int(os.path.basename(x).split('_')[5]),
-                                    int(os.path.basename(x).split('_')[6])) for
-                  x in cdems]
-        for y in [d.year for d in cdates]:
-            same_year = [d for d in cdates if y == d.year]
-            if len(np.unique(same_year)) > 1:
-                cdates = [date for date in cdates if date.year != y]
-                cdems = [dem for dem in cdems if not '_{}_'.format(y) in dem]
-
-        riodems = dict()
-        for cd in cdates:
-            to_merge = [rasterio.open(s) for s in [c for c in cdems if '_{}_'
-                                     .format(cd.year) in c]]
-            merged, _ = merge_tool(to_merge)
-
-            # apply a glacier mask
-            out_image, out_transform = rasterio.mask.mask(merged, row.geometry,
-                                                            crop=True)
-            out_meta = merged.meta.copy()
-
-            isfinite = np.isfinite(out_image)
-            # check the number of NaNs on the glacier area
-            if np.sum(~isfinite) > (0.2 * out_image.shape[0] *
-                                        out_image.shape[1]):
-                log.info('DEM at {} was skipped due to missing values'.format(cd))
-                cdates.remove(cd)  # to be consistent
+        # stupid check for overlapping resolutions: the bigger number wins
+        present_50 = np.sum(['50.tif' in c for c in lfi_to_merge])
+        present_25 = np.sum(['25.tif' in c for c in lfi_to_merge])
+        if present_50 > 0 and present_25 > 0:
+            if present_50 >= present_25:
+                lfi_to_merge = [i for i in lfi_to_merge if not '25.tif' in i]
             else:
-                riodems[cd] = merged
+                lfi_to_merge = [i for i in lfi_to_merge if '25.tif' in i]
 
-        assert len([d.year for d in cdates]) == \
-               len(np.unique([d.year for d in cdates]))
+        # acquisition dates
+        lfi_dates = [datetime.datetime(int(os.path.basename(x).split('_')[4]),
+                                       int(os.path.basename(x).split('_')[5]),
+                                       int(os.path.basename(x).split('_')[6]))
+                     for x in lfi_to_merge]
+        lfi_dates = np.unique(lfi_dates)
 
-        # now for the subtraction and insertion
-        for i, d in enumerate(sorted(cdates, reverse=True)):
-            try:
-                for j in range(3, len(cdates)):
-                    dem_diff = np.subtract(riodems[d], riodems[sorted(cdates, reverse=True)[i + j]])
-                    mean_diff = np.nanmean(dem_diff)
-                    res_df.loc[res_df.RGIId==row.RGIId, d.year] = d
-                    res_df.loc[res_df.RGIId == row.RGIId, sorted(cdates, reverse=True)[i + j].year] = sorted(cdates, reverse=True)[i + j]
-                    res_df.loc[res_df.RGIId == row.RGIId, 'deltah_{}_{}'.format(d.year,sorted(cdates, reverse=True)[i + j].year)] = mean_diff
+        # merge and append
+        lfi_dem = _local_dem_to_xr_dataset(lfi_to_merge, lfi_dates)
+        lfi_all.append(lfi_dem)
 
-            except IndexError:
-                continue
+    aligned = xr.align(*lfi_all, join='outer', exclude='time')
+    concat = xr.concat(aligned, dim='time')
+    concat.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w', group='lfi')
+
+    # get DHM25 DEMs
+    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25']+'*\\*.agr')
+    d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
+                                          '*' + cfg.NAMES['DHM25'] + '*.shp'))
+    d_zones = get_zones_from_worksheet(d_ws_path[0], 'zone', gdir=gdir)
+    d_to_merge = []
+    for d_z in d_zones:
+        d_to_merge.extend([d for d in d_list if str(d_z) in d])
+    # TODO: Replace with real acquisition dates!
+    d_acq_dates = [datetime.datetime(1970, 8, 15)]
+    d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates)
+    #dems_all.append(d_dem)
+    d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
+                    group=cfg.NAMES['DHM25'])
+
+    # get SwissALTI3D DEMs
+    a_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+
+                       cfg.NAMES['SWISSALTI2010']+'*\\*.agr')
+    a_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
+                                       '*'+cfg.NAMES['SWISSALTI2010']+'*.shp'))
+    a_zones = get_zones_from_worksheet(a_ws_path[0], 'zone', gdir=gdir)
+    a_to_merge = []
+    for a_z in a_zones:
+        a_to_merge.extend([d for d in a_list if str(a_z) in d])
+    # TODO: Replace with real acquisition dates!
+    a_acq_dates = [datetime.datetime(2010, 8, 15)]
+    a_dem = _local_dem_to_xr_dataset(a_to_merge, a_acq_dates)
+    #dems_all.append(a_dem)
+    a_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
+                    group=cfg.NAMES['SWISSALTI2010'])
 
 
-    #       for each combination(?) in the list:
-    #            subtract the DEMs (new-old) and take the mean
 
-    return res_df
+if __name__ == '__main__':
+    #rgigdf = gpd.read_file('C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp')
+    #rgigdf = rgigdf.ix[0:1]
+    #abc = dem_differencing_results(rgigdf,
+    #                               r'\\speedy10.wsl.ch\data_15\_PROJEKTE\Swiss_Glacier\TIFF')
+    #make_swisstopo_worksheet(
+    #    'C:\\Users\\Johannes\\Documents\\crampon\\data\\DEM\\DHM25L1\\',
+    #    in_epsg='21781', out_epsg='4326')
+    from crampon import workflow
+    glaciers = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
+    rgidf = gpd.read_file(glaciers)
+    rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]  # Gries
+    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B3601-6'])] # Oberaletsch
+    #oa_ch = gpd.read_file('c:\\users\\johannes\\desktop\\oa_conyexhull.shp')
+    #rgidf.geometry.values[0] = oa_ch.geometry.values[0]
+    #rgidf.plot()
+    #rgidf.crs = {'init': 'epsg:21781'}
+    #rgidf = rgidf.to_crs(epsg=4326)
+    cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
+                        'CH_params.cfg')
+    g = workflow.init_glacier_regions(rgidf, reset=False, force=False)
+    abc = get_local_dems(g[0])
