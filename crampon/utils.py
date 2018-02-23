@@ -14,7 +14,9 @@ import logging
 import paramiko as pm
 import xarray as xr
 import rasterio
+import subprocess
 from rasterio.merge import merge as merge_tool
+from rasterio.warp import transform as transform_tool
 from rasterio.mask import mask as riomask
 import geopandas as gpd
 import shapely
@@ -207,9 +209,9 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
     return last_begin
 
 
-def merge_rasters(to_merge, outpath=None, outformat="Gtiff"):
+def merge_rasters_rasterio(to_merge, outpath=None, outformat="Gtiff"):
     """
-    Merges rasters to a single one.
+    Merges rasters to a single one using rasterio.
 
     Parameters
     ----------
