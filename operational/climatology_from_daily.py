@@ -20,7 +20,7 @@ from crampon import workflow
 from crampon import tasks
 from crampon.workflow import execute_entity_task
 from crampon import graphics, utils
-from crampon.core.models.massbalance import DailyMassBalanceModel
+from crampon.core.models.massbalance import DailyMassBalanceModel, BraithwaiteModel
 import numpy as np
 
 # Logging options
@@ -90,7 +90,8 @@ rgidf = rgidf[~rgidf.RGIId.isin(problem_glaciers_sgi)]
 rgidf = rgidf.sort_values(by='Area', ascending=False)
 rgidf = rgidf[rgidf.Area >= 0.0105]
 #rgidf = rgidf.tail(50)
-#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.00638'])] # just to have one REFMB glacier
+#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05','RGI50-11.B4504',
+#'RGI50-11.A55F03', 'RGI50-11.B4312n-1', 'RGI50-11.B5616n-1', 'RGI50-11.C1410'])] # just to have one REFMB glacier
 rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]
 
 
@@ -120,13 +121,17 @@ if __name__ == '__main__':
 
     for g in gdirs:
 
+        #utils.get_local_dems(g)
+
         # remove as soon as mustar is daily/calibration is correct!
-        prcp_fac = 1.4    # tuned manually to 1284 mm (mean winter balance)
-        mu_star = 8.0    # tuned manually to  -1001 mm (mean annual balance)
+        prcp_fac = 1.4#1.32#1.4#1.4    # tuned manually to 1284 mm (mean winter balance)
+        mu_star = 13.#11.7#4.17#8.0     # tuned manually to  -1001 mm (mean annual balance)
+        mu_snow = 6.3#3.96#2.83#4.0     # educated guess
         print(mu_star, prcp_fac)
 
-        day_model = DailyMassBalanceModel(g, mu_star=mu_star,
-                                          prcp_fac=prcp_fac, bias=0.)
+
+        day_model = BraithwaiteModel(g, mu_ice=mu_star, mu_snow=mu_snow,
+                                     prcp_fac=prcp_fac, bias=0.)
 
         heights, widths = g.get_inversion_flowline_hw()
 
@@ -134,6 +139,7 @@ if __name__ == '__main__':
         exp = [1]
 
         mb = []
+        print(datetime.datetime.now())
         for date in day_model.tspan_in:
 
             # Get the mass balance and convert to m per day
@@ -148,7 +154,7 @@ if __name__ == '__main__':
                                   'mu_star': mu_star,
                                   'id': g.rgi_id,
                                   'name': g.name})
-
+        print(datetime.datetime.now())
         # save intermediate results
         g.write_pickle(mb_ds, 'mb_daily')
 
