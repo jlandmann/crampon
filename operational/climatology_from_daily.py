@@ -158,9 +158,8 @@ if __name__ == '__main__':
         # save intermediate results
         g.write_pickle(mb_ds, 'mb_daily')
 
-        bgmon_hydro = 10
-        bgday_hydro = 1
-
+        bgmon_hydro = cfg.PARAMS['bgmon_hydro']
+        bgday_hydro = cfg.PARAMS['bgday_hydro']
 
         # Remove here beginning of file until first begin of hydro year
         first_occ = mb_ds.sel(time=((mb_ds.time.dt.month == bgmon_hydro) &
