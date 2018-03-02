@@ -1234,9 +1234,6 @@ def get_local_dems(gdir):
 
     lfi_all = []
     for cd in cyears:
-        print(cd)
-        if cd != 2014:
-            continue
 
         lfi_to_merge = [c for c in cdems if '_{}_'.format(str(cd)) in c]
 
