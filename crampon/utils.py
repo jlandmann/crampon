@@ -956,6 +956,7 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
 
     return iprcp, itemp, igrad, ihgt
 
+
 # IMPORTANT: overwrite OGGM functions with same name
 joblib_read_climate = joblib_read_climate_crampon
 
@@ -1148,7 +1149,21 @@ def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=1900,
 
     # load and merge; overwrite is necessary, as some rasters cover same area
     xr_das = [d.load() for d in xr_das]
-    merged = xr.merge(xr_das)
+    try:
+        merged = xr.merge(xr_das)
+    # this happens for DHM25 on Rhone, for example (overlapping tiles)
+    except xr.core.merge.MergeError:
+        merged = []
+        if len(xr_das) > 1:
+            while len(xr_das) > 1:
+                if merged:
+                    merged = merged.combine_first(xr_das[-1])
+                    del xr_das[-1]
+                else:
+                    merged = xr_das[0].combine_first(xr_das[1])
+                    del xr_das[0:2]
+        else:
+            merged = xr_das[0]
 
     # coord/dim changes
     merged = merged.squeeze(dim='band')
@@ -1234,6 +1249,7 @@ def get_local_dems(gdir):
 
     lfi_all = []
     for cd in cyears:
+        log.info('Assembling LFI DEMs for {} in {}'.format(gdir.rgi_id, cd))
 
         lfi_to_merge = [c for c in cdems if '_{}_'.format(str(cd)) in c]
 
@@ -1262,6 +1278,7 @@ def get_local_dems(gdir):
     concat.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w', group='lfi')
 
     # get DHM25 DEMs
+    log.info('Assembling DHM25 DEM for {}'.format(gdir.rgi_id))
     d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25']+'*\\*.agr')
     d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                           '*' + cfg.NAMES['DHM25'] + '*.shp'))
@@ -1272,11 +1289,11 @@ def get_local_dems(gdir):
     # TODO: Replace with real acquisition dates!
     d_acq_dates = [datetime.datetime(1970, 8, 15)]
     d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates)
-    #dems_all.append(d_dem)
     d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['DHM25'])
 
     # get SwissALTI3D DEMs
+    log.info('Assembling SwissALTI3D DEM for {}'.format(gdir.rgi_id))
     a_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+
                        cfg.NAMES['SWISSALTI2010']+'*\\*.agr')
     a_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
