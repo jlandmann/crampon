@@ -3,12 +3,12 @@ import salem
 import os
 import logging
 import crampon.cfg as cfg
-from crampon import tasks
 from crampon import utils
+from crampon.core.preprocessing import gis
 import crampon
 from shutil import rmtree
 from oggm.workflow import _init_pool_globals, init_mp_pool, _merge_dicts,\
-    _pickle_copier, execute_entity_task
+    _pickle_copier, execute_entity_task, init_glacier_regions
 
 # MPI similar to OGGM - not yet implemented
 try:
@@ -21,7 +21,7 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
-def init_glacier_regions(shapedf=None, reset=False, force=False):
+def init_glacier_regions_crampon(shapedf=None, reset=False, force=False):
     """
     Set up or take over GlacierDirectories. The first task (always!).
 
@@ -76,6 +76,8 @@ def init_glacier_regions(shapedf=None, reset=False, force=False):
             gdirs.append(gdir)
 
     # If not initialized, run the task in parallel
-    execute_entity_task(tasks.define_glacier_region, new_gdirs)
+    execute_entity_task(gis.define_glacier_region, new_gdirs)
 
     return gdirs
+
+init_glacier_regions = init_glacier_regions_crampon
