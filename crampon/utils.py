@@ -1117,7 +1117,7 @@ def mount_network_drive(path, user, log=None):
                               .format(path))
 
 
-def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=1900,
+def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
                              miss_val=np.nan):
     """
     Hard-coded function that reads DEMs into xarray.Datasets and adds metadata.
@@ -1197,7 +1197,7 @@ def get_local_dems(gdir):
     SwissALTI3D) as well as the National Forest Inventory DEMs on the network
     drive are implemented.
     The transformation cod from Swiss coordinates to lat/lon comes from the
-    xarray webpage [1]_
+    xarray webpage [1]_.
 
     Parameters
     ----------
