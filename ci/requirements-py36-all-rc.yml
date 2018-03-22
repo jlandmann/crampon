@@ -26,7 +26,6 @@ dependencies:
   - schedule
   - xarray
   - pip:
-
     - coveralls
     - pytest-cov
     - pytest-mpl
