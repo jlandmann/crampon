@@ -20,11 +20,10 @@ dependencies:
   - cartopy
   - paramiko
   - six
-  - posixpath
   - configobj
-  - schedule
   - pip:
     - git+https://github.com//OGGM/oggm.git
+    - schedule
     - coveralls
     - pytest-cov
     - pytest-mpl

@@ -20,12 +20,11 @@ dependencies:
   - cartopy
   - paramiko
   - six
-  - posixpath
   - oggm
   - configobj
-  - schedule
   - pip:
     - git+https://github.com/pydata/xarray.git
+    - schedule
     - coveralls
     - pytest-cov
     - pytest-mpl

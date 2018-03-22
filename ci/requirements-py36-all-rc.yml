@@ -21,11 +21,10 @@ dependencies:
   - cartopy
   - paramiko
   - six
-  - posixpath
   - configobj
-  - schedule
   - xarray
   - pip:
+    - schedule
     - coveralls
     - pytest-cov
     - pytest-mpl
