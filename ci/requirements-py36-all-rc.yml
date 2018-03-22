@@ -1,0 +1,34 @@
+name: test_env
+channels:
+  - conda-forge/label/rc
+  - conda-forge
+dependencies:
+  - python=3.6
+  - six
+  - numpy
+  - scipy
+  - pyproj
+  - joblib
+  - netCDF4
+  - shapely
+  - geopandas
+  - rasterio
+  - pandas
+  - xarray
+  - dask
+  - matplotlib
+  - Pillow
+  - cartopy
+  - paramiko
+  - six
+  - posixpath
+  - configobj
+  - schedule
+  - xarray
+  - pip:
+
+    - coveralls
+    - pytest-cov
+    - pytest-mpl
+    - motionless
+

@@ -1,31 +1,50 @@
-sudo: required
-dist: trusty
-
-# This is absolutely not finished and just copied from different sources
-notifications:
-email: false
-
+# This is almost a copy from salem, except that python 2.7 is not supported
 language: python
-python:
-#  - "2.6"
-#  - "2.7"
-#  - "3.2"
-#  - "3.3"
-#  - "3.4"
-  - "3.5"
-#  - "3.5-dev" # 3.5 development branch
-#  - "3.6"
-#  - "3.6-dev" # 3.6 development branch
-#  - "3.7-dev" # 3.7 development branch
-#  - "nightly" # currently points to 3.7-dev
+sudo: false
+notifications:
+  email: false
 
-# command to install dependencies
+branches:
+  except:
+    - docs
+
+matrix:
+  fast_finish: true
+  include:
+  - python: 3.6
+    env: CONDA_ENV=py36-all MPL=--mpl
+  - python: 3.6
+    env: CONDA_ENV=py36-xarray-dev MPL=--mpl
+  - python: 3.6
+    env: CONDA_ENV=py36-oggm-dev MPL=--mpl
+  - python: 3.6
+    env: CONDA_ENV=py36-all-rc MPL=--mpl
+  allow_failures:
+  - python: 3.6
+    env: CONDA_ENV=py36-xarray-dev MPL=--mpl
+  - python: 3.6
+    env: CONDA_ENV=py36-oggm-dev MPL=--mpl
+  - python: 3.6
+    env: CONDA_ENV=py36-all-rc MPL=--mpl
+
+before_install:
+  - "export DISPLAY=:99.0"
+  - "sh -e /etc/init.d/xvfb start"
+  - wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh;
+  - bash miniconda.sh -b -p $HOME/miniconda
+  - export PATH="$HOME/miniconda/bin:$PATH"
+  - hash -r
+  - conda config --set always_yes yes --set changeps1 no
+  - conda update -q conda
+  - pip install pyyaml
+
 install:
-  - pip install -r requirements.txt
-  - pip3 install --upgrade git+https://github.com/fmaussion/salem.git
-  - pip3 install --upgrade git+https://github.com/OGGM/oggm.git
+  - conda env create --file ci/requirements-$CONDA_ENV.yml --quiet
+  - source activate test_env
   - pip install -e .
-  - py.test crampon --cov=crampon --cov-report term-missing
 
-# command to run tests
-script: py.test  # or py.test for Python versions 3.5 and below
+script:
+  - pytest crampon $MPL --cov=crampon --cov-report term-missing;
+
+after_success:
+- coveralls
