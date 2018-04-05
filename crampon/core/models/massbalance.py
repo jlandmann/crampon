@@ -67,6 +67,24 @@ class DailyMassBalanceModel(MassBalanceModel):
         # Public attrs
         self.temp_bias = 0.
 
+    def get_prcp_sol_liq(self, iprcp, heights, temp):
+        # Compute solid precipitation from total precipitation
+        # the prec correction with the gradient does not exist in OGGM
+        npix = len(heights)
+        prcptot = np.ones(npix) * iprcp + self.pgrad * iprcp * (heights -
+                                                                self.ref_hgt)
+        fac = 1 - (temp - self.t_solid) / (self.t_liq - self.t_solid)
+        prcpsol = prcptot * np.clip(fac, 0, 1)
+        prcpliq = prcptot - prcpsol
+
+        return prcpsol, prcpliq
+
+    def get_tempformelt(self, temp):
+        # Compute temperature available for melt
+        tempformelt = temp - self.t_melt
+        tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
+        return tempformelt
+
     def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
@@ -115,15 +133,9 @@ class DailyMassBalanceModel(MassBalanceModel):
         # Compute temp and tempformelt (temperature above melting threshold)
         npix = len(heights)
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
-        tempformelt = temp - self.t_melt
-        tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
 
-        # Compute solid precipitation from total precipitation
-        # the prec correction with the gradient does not exist OGGM
-        prcpsol = np.ones(npix) * iprcp + self.pgrad * iprcp * (heights -
-                                                                self.ref_hgt)
-        fac = 1 - (temp - self.t_solid) / (self.t_liq - self.t_solid)
-        prcpsol *= np.clip(fac, 0, 1)
+        tempformelt = self.get_tempformelt(temp)
+        prcpsol, _ = self.get_prcp_sol_liq(iprcp, heights, temp)
 
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
         mb_day = prcpsol - self.mu_star * tempformelt - \
@@ -237,15 +249,9 @@ class BraithwaiteModel(DailyMassBalanceModel):
         # Compute temp and tempformelt (temperature above melting threshold)
         npix = len(heights)
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
-        tempformelt = temp - self.t_melt
-        tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
 
-        # Compute solid precipitation from total precipitation
-        # the prec correction with the gradient does not exist OGGM
-        prcpsol = np.ones(npix) * iprcp + self.pgrad * iprcp * (heights -
-                                                                self.ref_hgt)
-        fac = 1 - (temp - self.t_solid) / (self.t_liq - self.t_solid)
-        prcpsol *= np.clip(fac, 0, 1)
+        tempformelt = self.get_tempformelt(temp)
+        prcpsol, _ = self.get_prcp_sol_liq(iprcp, heights, temp)
 
         # Get snow distribution from yesterday and determine snow/ice from it
         # One could also get the accumulation first & update snow before melting
