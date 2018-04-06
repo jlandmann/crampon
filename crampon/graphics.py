@@ -11,6 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
+import matplotlib.animation as animation
 import matplotlib
 from salem import get_demo_file, DataLevels, GoogleVisibleMap, Map
 import numpy as np
@@ -436,3 +437,35 @@ def plot_cumsum_allyears(gdir):
     ax.set_xticklabels([y for y in np.unique(
         [t.year for t in pd.DatetimeIndex(mb_ds.time.values)])
                         ][::5], fontsize=16)
+
+
+def plot_animated_swe(mb_model):
+    """
+    Plots the snow water equivalent of a glacier animated over time.
+
+    Parameters
+    ----------
+    mb_model: MassBalanceModel Object with `snow` attribute
+        The model whose snow to plot.
+
+    Returns
+    -------
+    ani: animation.FuncAnimation
+        The produced animation.
+    """
+    fig, ax = plt.subplots()
+    line, = ax.plot(np.arange(len(mb_model.heights)), mb_model.heights)
+    ax.set_ylim(
+        (np.min(mb_model.snow) / 1000., np.max(mb_model.snow) / 1000.))
+    time_text = ax.text(.5, .5, '', fontsize=15)
+
+    def animate(i, data, line, time_text):
+        line.set_ydata(data.snow[i] / 1000.)  # update the data
+        time_text.set_text(data.tspan_in[i].strftime("%Y-%m-%d"))
+        return line,
+
+    ani = animation.FuncAnimation(fig, animate,
+                                  frames=mb_model.snow.shape[0],
+                                  fargs=(mb_model, line, time_text),
+                                  interval=10)
+    return ani
