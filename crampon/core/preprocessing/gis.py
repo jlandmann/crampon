@@ -1,17 +1,70 @@
 from __future__ import absolute_import, division
 
+from distutils.version import LooseVersion
 from salem import Grid, wgs84
+import os
 import numpy as np
 import pyproj
 import logging
 import xarray as xr
 from crampon import entity_task
+from crampon import utils
 import crampon.cfg as cfg
+from functools import partial
+import geopandas as gpd
+import shapely
+import salem
 from oggm.core.gis import gaussian_blur, _check_geometry,\
     _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks
 
+import rasterio
+from rasterio.warp import reproject, Resampling
+try:
+    # rasterio V > 1.0
+    from rasterio.merge import merge as merge_tool
+except ImportError:
+    from rasterio.tools.merge import merge as merge_tool
+
 # Module logger
 log = logging.getLogger(__name__)
+
+
+def merge_rasters_rasterio(to_merge, outpath=None, outformat="Gtiff"):
+    """
+    Merges rasters to a single one using rasterio.
+
+    Parameters
+    ----------
+    to_merge: list or str
+        List of paths to the rasters to be merged.
+    outpath: str, optional
+        Path where to write the merged raster.
+    outformat: str, optional
+        Any format rasterio/GDAL has a driver for. Default: GeoTiff ('Gtiff').
+
+    Returns
+    -------
+    merged, profile: tuple of (numpy.ndarray, rasterio.Profile)
+        The merged raster and numpy array and its rasterio profile.
+    """
+    to_merge = [rasterio.open(s) for s in to_merge]
+    merged, output_transform = merge_tool(to_merge)
+
+    profile = to_merge[0].profile
+    if 'affine' in profile:
+        profile.pop('affine')
+    profile['transform'] = output_transform
+    profile['height'] = merged.shape[1]
+    profile['width'] = merged.shape[2]
+    profile['driver'] = outformat
+    if outpath:
+        with rasterio.open(outpath, 'w', **profile) as dst:
+            dst.write(merged)
+        for rf in to_merge:
+            rf.close()
+
+    return merged, profile
+
 
 
 # This could go to salem via a fork

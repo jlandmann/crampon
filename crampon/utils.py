@@ -209,43 +209,6 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
     return last_begin
 
 
-def merge_rasters_rasterio(to_merge, outpath=None, outformat="Gtiff"):
-    """
-    Merges rasters to a single one using rasterio.
-
-    Parameters
-    ----------
-    to_merge: list or str
-        List of paths to the rasters to be merged.
-    outpath: str, optional
-        Path where to write the merged raster.
-    outformat: str, optional
-        Any format rasterio/GDAL has a driver for. Default: GeoTiff ('Gtiff').
-
-    Returns
-    -------
-    merged, profile: tuple of (numpy.ndarray, rasterio.Profile)
-        The merged raster and numpy array and its rasterio profile.
-    """
-    to_merge = [rasterio.open(s) for s in to_merge]
-    merged, output_transform = merge_tool(to_merge)
-
-    profile = to_merge[0].profile
-    if 'affine' in profile:
-        profile.pop('affine')
-    profile['transform'] = output_transform
-    profile['height'] = merged.shape[1]
-    profile['width'] = merged.shape[2]
-    profile['driver'] = outformat
-    if outpath:
-        with rasterio.open(outpath, 'w', **profile) as dst:
-            dst.write(merged)
-        for rf in to_merge:
-            rf.close()
-
-    return merged, profile
-
-
 class CirrusClient(pm.SSHClient):
     """
     Class for SSH interaction with Cirrus Server at WSL.
