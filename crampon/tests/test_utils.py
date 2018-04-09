@@ -9,6 +9,7 @@ import logging
 import salem
 import numpy as np
 import pandas as pd
+import datetime
 from numpy.testing import assert_array_equal, assert_almost_equal
 
 from crampon.tests import requires_credentials, requires_vpn
@@ -104,6 +105,26 @@ class TestMiscFuncs(unittest.TestCase):
             utils.closest_date(pd.Timestamp('2018-03-06 12:00:00'),
                                date_range), pd.Timestamp('2018-04-01'))
 
+    def test_get_begin_last_flexyear(self):
+
+        self.assertEqual(
+            utils.get_begin_last_flexyear(datetime.datetime(2018,4,1)),
+            datetime.datetime(2017,10,1))
+        self.assertEqual(
+            utils.get_begin_last_flexyear(datetime.datetime(2018,4,1), start_month=11, start_day=15),
+            datetime.datetime(2017,11,15))
+        self.assertEqual(
+            utils.get_begin_last_flexyear(datetime.datetime(2098, 4, 1),
+                                          start_month=11, start_day=15),
+            datetime.datetime(2097, 11, 15))
+        self.assertEqual(
+            utils.get_begin_last_flexyear(datetime.datetime(2017, 11, 15),
+                                          start_month=11, start_day=15),
+            datetime.datetime(2017, 11, 15))
+        self.assertEqual(
+            utils.get_begin_last_flexyear(datetime.datetime(2017, 11, 14),
+                                          start_month=11, start_day=15),
+            datetime.datetime(2016, 11, 15))
 
 class CramponTestDataFiles(unittest.TestCase):
 

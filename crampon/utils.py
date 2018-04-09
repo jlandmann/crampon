@@ -187,7 +187,7 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
 
     Returns
     -------
-    begin: str
+    begin: datetime.datetime
         Begin date of the most recent/current flexible year.
 
     Examples
