@@ -179,6 +179,12 @@ class TestMeteoTSAccessor(unittest.TestCase):
         if os.path.exists(TEST_DIR):
             shutil.rmtree(TEST_DIR)
 
+    def test_update_with_verified(self):
+        pass
+
+    def test_update_with_operational(self):
+        pass
+
     def test_ensure_time_continuity(self):
         self.mtsa.crampon.ensure_time_continuity()
 
@@ -192,6 +198,9 @@ class TestMeteoTSAccessor(unittest.TestCase):
         self.assertEqual(begin.day, 1)
         self.assertEqual(end.month, 9)
         self.assertEqual(end.day, 30)
+
+    def test_postprocess_cirrus(self):
+        pass
 
 
 # the retry tests come from:
