@@ -103,6 +103,17 @@ try:
 except:
     HAS_INTERNET = False
 
+# check if VPN is on (vpn.wsl.ch refuses, so check with speedy 10 & cirrus
+# https://stackoverflow.com/questions/6757587/continuous-check-for-vpn-connectivity-python
+PING_HOSTS = ['speedy10.wsl.ch', 'cirrus.wsl.ch']
+retcode = 0
+for host in PING_HOSTS:
+    retcode += os.system('ping {}'.format(host))
+if retcode:
+    HAS_VPN = False
+else:
+    HAS_VPN = True
+
 # check if there is a credentials file (should be added to .gitignore)
 cred_path = os.path.abspath(os.path.join(__file__, "../../..", '.credentials'))
 if os.path.exists(cred_path):
@@ -112,7 +123,14 @@ if os.path.exists(cred_path):
     except ConfigObjError:
         raise
 
+
 def requires_credentials(test):
     # Test decorator
     msg = 'requires credentials'
     return test if HAS_CREDENTIALS else unittest.skip(msg)(test)
+
+
+def requires_vpn(test):
+    # Test decorator
+    msg = 'requires VPN connection'
+    return test if HAS_VPN else unittest.skip(msg)(test)

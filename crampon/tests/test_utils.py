@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from numpy.testing import assert_array_equal
 
-from crampon.tests import requires_credentials
+from crampon.tests import requires_credentials, requires_vpn
 from crampon import utils
 from crampon import cfg
 
@@ -26,6 +26,7 @@ if not os.path.exists(TEST_DIR):
 
 
 @requires_credentials
+@requires_vpn
 class TestCirrusClient(unittest.TestCase):
 
     def setUp(self):
