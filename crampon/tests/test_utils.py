@@ -4,15 +4,19 @@ import warnings
 import unittest
 import os
 import shutil
+import time
 
 import salem
 import numpy as np
 import pandas as pd
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_array_equal, assert_almost_equal
 
 from crampon.tests import requires_credentials, requires_vpn
 from crampon import utils
 from crampon import cfg
+from oggm.tests.test_utils import TestDataFiles as OGGMTestDataFiles
+from oggm.tests.funcs import get_test_dir, patch_url_retrieve_github
+_url_retrieve = None
 
 # General settings
 warnings.filterwarnings("once", category=DeprecationWarning)
@@ -82,6 +86,38 @@ class TestMiscFuncs(unittest.TestCase):
 
         a = utils.leap_year(1300, calendar='gregorian')
         self.assertFalse(a)
+
+
+class CramponTestDataFiles(unittest.TestCase):
+
+    def setUp(self):
+        self.dldir = os.path.join(get_test_dir(), 'tmp_download')
+        utils.mkdir(self.dldir)
+        cfg.initialize()
+        cfg.PATHS['dl_cache_dir'] = os.path.join(self.dldir, 'dl_cache')
+        cfg.PATHS['working_dir'] = os.path.join(self.dldir, 'wd')
+        cfg.PATHS['tmp_dir'] = os.path.join(self.dldir, 'extract')
+        self.reset_dir()
+        utils._urlretrieve = _url_retrieve
+
+    def tearDown(self):
+        if os.path.exists(self.dldir):
+            shutil.rmtree(self.dldir)
+        utils._urlretrieve = patch_url_retrieve_github
+
+    def reset_dir(self):
+        if os.path.exists(self.dldir):
+            shutil.rmtree(self.dldir)
+        utils.mkdir(cfg.PATHS['dl_cache_dir'])
+        utils.mkdir(cfg.PATHS['working_dir'])
+        utils.mkdir(cfg.PATHS['tmp_dir'])
+
+    def test_get_oggm_demo_files(self):
+        return OGGMTestDataFiles.test_download_demo_files
+
+    def test_get_crampon_demo_file(self):
+        # At the moment not implemented
+        pass
 
 
 class TestMeteoTSAccessor(unittest.TestCase):
