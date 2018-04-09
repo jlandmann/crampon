@@ -226,6 +226,9 @@ def initialize(file=None):
     #                                                    'rgi_subregions.csv'),
     #                                       index_col=0)
 
+    CPARAMS['bgday_hydro'] = cp.as_int('bgday_hydro')
+    CPARAMS['bgmon_hydro'] = cp.as_int('bgmon_hydro')
+
     # Delete non-floats
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
            'glathida_rgi_links', 'lfi_dir', 'dem_dir', 'grid_dx_method',
@@ -238,7 +241,8 @@ def initialize(file=None):
            'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
            'tstar_search_window', 'use_bias_for_run', 'run_period',
            'prcp_scaling_factor', 'use_intersects', 'filter_min_slope',
-           'auto_skip_task', 'correct_for_neg_flux', 'problem_glaciers']
+           'auto_skip_task', 'correct_for_neg_flux', 'problem_glaciers',
+           'bgmon_hydro', 'bgday_hydro']
     for k in ltr:
         cp.pop(k, None)
 
