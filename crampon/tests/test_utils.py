@@ -87,6 +87,23 @@ class TestMiscFuncs(unittest.TestCase):
         a = utils.leap_year(1300, calendar='gregorian')
         self.assertFalse(a)
 
+    def test_closest_date(self):
+
+        date_range = pd.date_range('2018-04-01', '2018-04-05')
+
+        self.assertEqual(
+            utils.closest_date(pd.Timestamp('2018-04-01 12:00:01'),
+                               date_range), pd.Timestamp('2018-04-02'))
+        self.assertEqual(
+            utils.closest_date(pd.Timestamp('2018-04-01 12:00:00'),
+                               date_range), pd.Timestamp('2018-04-01'))
+        self.assertEqual(
+            utils.closest_date(pd.Timestamp('2018-04-06 12:00:00'),
+                               date_range), pd.Timestamp('2018-04-05'))
+        self.assertEqual(
+            utils.closest_date(pd.Timestamp('2018-03-06 12:00:00'),
+                               date_range), pd.Timestamp('2018-04-01'))
+
 
 class CramponTestDataFiles(unittest.TestCase):
 
