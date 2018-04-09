@@ -73,9 +73,9 @@ FOUR_THIRDS = 4./3.
 ONE_FIFTH = 1./5.
 
 # Added from CRAMPON:
-_doc = 'CSV output from the calibration on custom mass balance data with ' \
-       'mustar, bias and error'
-CBASENAMES['mustar_from_mauro'] = ('mustar_from_mauro.csv', _doc)
+_doc = 'CSV output from the calibration for the different models, including' \
+       'uncertainties.'
+CBASENAMES['calibration'] = ('calibration.csv', _doc)
 _doc = 'The daily climate timeseries for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
