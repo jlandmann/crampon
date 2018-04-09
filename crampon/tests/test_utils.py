@@ -44,7 +44,15 @@ class TestCirrusClient(unittest.TestCase):
             shutil.rmtree(TEST_DIR)
 
     def test_create_connect(self):
+        self.client.create_connect(self.client.cr['cirrus']['host'],
+                                   self.client.cr['cirrus']['user'],
+                                   self.client.cr['cirrus']['password'])
         self.assertIsInstance(self.client, utils.CirrusClient)
+        self.assertTrue(self.client.ssh_open)
+
+    def test__open_sftp(self):
+        self.client._open_sftp()
+        self.assertTrue(self.client.sftp_open)
 
     def test_list_content(self):
         content =  self.client.list_content('/data/*.pdf')
@@ -125,6 +133,7 @@ class TestMiscFuncs(unittest.TestCase):
             utils.get_begin_last_flexyear(datetime.datetime(2017, 11, 14),
                                           start_month=11, start_day=15),
             datetime.datetime(2016, 11, 15))
+
 
 class CramponTestDataFiles(unittest.TestCase):
 
