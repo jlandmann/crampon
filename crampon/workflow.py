@@ -34,19 +34,19 @@ def init_glacier_regions_crampon(shapedf=None, reset=False, force=False):
     Parameters
     ----------
     shapedf: :obj:`geopandas.GeoDataFrame`, optional
-        A GeoDataFrame with geometries from whcih to set up the
+        A geopandas.GeoDataFrame with geometries to use for setting up the
         GlacierDirectories.
     reset: bool, optional
-        Whether or not the exitsing GlacierDirectories and log shall be
-        deleted. Default: False
+        Whether or not the existing GlacierDirectories and log shall be
+        deleted. Default: False.
     force: bool, optional
         Whether or not to ask before deleting GlacierDirectories and log.
-        Default: False
+        Default: False.
 
     Returns
     -------
     gdirs: list
-        A list of the GlacierDirectories.
+        A list of the GlacierDirectory objects.
     """
 
     if reset and not force:
@@ -79,5 +79,6 @@ def init_glacier_regions_crampon(shapedf=None, reset=False, force=False):
     execute_entity_task(gis.define_glacier_region, new_gdirs)
 
     return gdirs
+
 
 init_glacier_regions = init_glacier_regions_crampon
