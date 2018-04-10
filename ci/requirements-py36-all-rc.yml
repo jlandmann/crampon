@@ -23,6 +23,7 @@ dependencies:
   - six
   - configobj
   - xarray
+  - folium
   - pip:
     - schedule
     - coveralls

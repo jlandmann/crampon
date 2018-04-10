@@ -23,6 +23,7 @@ dependencies:
   - six
   - oggm
   - configobj
+  - folium
   - pip:
     - schedule
     - coveralls

@@ -21,6 +21,7 @@ dependencies:
   - paramiko
   - six
   - configobj
+  - folium
   - pip:
     - git+https://github.com//OGGM/oggm.git
     - schedule
