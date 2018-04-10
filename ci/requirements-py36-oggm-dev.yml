@@ -23,7 +23,7 @@ dependencies:
   - configobj
   - folium
   - pip:
-    - git+https://github.com//OGGM/oggm.git
+    - git+https://github.com/OGGM/oggm.git
     - schedule
     - coveralls
     - pytest-cov
