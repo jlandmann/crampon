@@ -24,6 +24,7 @@ dependencies:
   - configobj
   - xarray
   - folium
+  - oggm
   - pip:
     - schedule
     - coveralls
