@@ -2,12 +2,14 @@ from __future__ import division
 
 from oggm.core.massbalance import *
 from crampon.cfg import SEC_IN_DAY
-from crampon.utils import SuperclassMeta, lazy_property
+from crampon.utils import SuperclassMeta, lazy_property, closest_date
 import xarray as xr
-import cython
 
 
 class DailyMassBalanceModel(MassBalanceModel):
+    """
+    Child of OGGM's PastMassBalanceModel, able to calculate daily mass balance.
+    """
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix=''):
