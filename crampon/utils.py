@@ -162,6 +162,14 @@ def closest_date(date, candidates):
     closest: Same type as input date
         The found closest date.
 
+    Examples
+    --------
+    Find the closest date to 2018-04-01 in a list.
+
+    >>> closest_date(datetime.datetime(2018,4,1), [datetime.datetime(2018,4,3),
+    >>> datetime.datetime(2018,3,21)])
+    datetime.datetime(2018, 4, 3, 0, 0)
+
     References
     ----------
     .. [1] https://stackoverflow.com/questions/32237862/find-the-closest-date-to-a-given-date
