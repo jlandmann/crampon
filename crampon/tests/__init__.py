@@ -51,7 +51,6 @@ if os.environ.get('TRAVIS') is not None:
     # specific to travis to reduce global test time
     ON_TRAVIS = True
     RUN_DOWNLOAD_TESTS = False
-    matplotlib.use('Agg')
 
     if sys.version_info < (3, 5):
         # Minimal tests
