@@ -1076,16 +1076,19 @@ def mount_network_drive(path, user, log=None):
 
     Returns
     -------
-
+    out: int
+        0 if mounting succeeded, 1 if failed.
     """
     out = subprocess.call(r'net use {} {}'.format(path, user),
                           stdout=subprocess.PIPE, shell=True)
 
-    if log and out == 0:
-        log.info('Network drive {} successfully connected'.format(path))
+    if out == 0:
+        msg = 'Network drive {} successfully connected'.format(path)
+        log.info(msg) if log else print(msg)
     else:
         raise ConnectionError('Network drive {} connection failed'
                               .format(path))
+    return out
 
 
 def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
@@ -1189,7 +1192,7 @@ def get_local_dems(gdir):
     mkdir(tmpdir)
 
     # get forest inventory DEMs (quite hard-coded for the LFI file names)
-    mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
+    _ = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
 
     # neither os nor pathlib works, so quick'n'dirty:
     lfi_dem_list = glob.glob(cfg.PATHS['lfi_dir']+'\\TIFF\\*.tif')

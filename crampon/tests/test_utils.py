@@ -133,6 +133,14 @@ class TestMiscFuncs(unittest.TestCase):
                                           start_month=11, start_day=15),
             datetime.datetime(2016, 11, 15))
 
+    @requires_credentials
+    @requires_vpn
+    def test_mount_network_drive(self):
+
+        drive = r'\\speedy10.wsl.ch\data_15\_PROJEKTE\Swiss_Glacier'
+        msg = utils.mount_network_drive(drive, r'wsl\landmann')
+        self.assertEqual(msg, 0)
+
 
 class CramponTestDataFiles(unittest.TestCase):
 
