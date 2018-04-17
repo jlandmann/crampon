@@ -1,9 +1,9 @@
 A Python project to monitor and predict glacier Mass Balance
 ============================================================
 
-.. ******************************************
-..  ******* A Placeholder for Test status****
-.. ******************************************
+.. image:: https://travis-ci.com/jlandmann/crampon.svg?token=fJsScXTF7F6CQfcwxzzz&branch=master
+        :target: https://travis-ci.com/jlandmann/crampon
+        :alt: Linux build status
 
 **Description**
 
