@@ -111,6 +111,62 @@ def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
     return deco_retry
 
 
+def weighted_quantiles(values, quantiles, sample_weight=None,
+                          values_sorted=False, old_style=False):
+        """
+        A function to approximate quantiles of data with corresponding weights.
+
+        Very close to numpy.percentile, but supports weights. Quantiles should
+        be in the range [0, 1].
+        Slightly modified and documentation extended from [1]_.
+
+        Parameters
+        ----------
+        values: numpy.array
+            Data array with the values to be weighted.
+        quantiles: array-like
+            The quantiles to be calculated. Have to be in range [0, 1].
+        sample_weight: array-like, same shape as `values`
+            Weights for the individual data. If not given, they will be the
+            same (one) for each value.
+        values_sorted: bool
+            If True, will avoid sorting of initial array. Default: False.
+        old_style: bool
+            If True, will correct output to be consistent with
+            numpy.percentile. Default: False
+
+        Returns
+        -------
+        numpy.array with computed quantiles.
+
+        References
+        ----------
+        .. [1] https://stackoverflow.com/questions/21844024/weighted-percentile-using-numpy
+        """
+
+        values = np.array(values)
+        quantiles = np.array(quantiles)
+        if sample_weight is None:
+            sample_weight = np.ones(len(values))
+        sample_weight = np.array(sample_weight)
+        assert np.all(quantiles >= 0) and np.all(
+            quantiles <= 1), 'quantiles should be in [0, 1]'
+
+        if not values_sorted:
+            sorter = np.argsort(values)
+            values = values[sorter]
+            sample_weight = sample_weight[sorter]
+
+        weighted_quantiles = np.cumsum(sample_weight) - 0.5 * sample_weight
+        if old_style:
+            # To be convenient with numpy.percentile
+            weighted_quantiles -= weighted_quantiles[0]
+            weighted_quantiles /= weighted_quantiles[-1]
+        else:
+            weighted_quantiles /= np.sum(sample_weight)
+        return np.interp(quantiles, weighted_quantiles, values)
+
+
 def leap_year(year, calendar='standard'):
     """
     Determine if year is a leap year.
