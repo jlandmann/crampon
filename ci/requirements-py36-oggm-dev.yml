@@ -23,6 +23,7 @@ dependencies:
   - configobj
   - folium
   - mpld3
+  - salem
   - pip:
     - git+https://github.com/OGGM/oggm.git
     - schedule
