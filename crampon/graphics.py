@@ -205,14 +205,28 @@ def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disgui
 
     # Add glacier shapes
     glc_gdf = gpd.GeoDataFrame.from_file(shp_loc)
+    glc_gdf = glc_gdf.sort_values(by='Area', ascending=False)
+    glc_gdf = glc_gdf.head(1000)
     glc_gdf = glc_gdf[['Name', 'RGIId', 'CenLat', 'CenLon', 'Area',
                        'geometry']]
+    cmap = plt.cm.get_cmap('autumn', len(glc_gdf))
+
+    # THE RANDOM COLORS IS JUST TO PRODUCE FAKE DATA!!!!!!
+    nums = np.random.choice(['yellow', 'orange', 'red'], size=len(glc_gdf))
+    glc_gdf['randcolor'] = nums
     glc_gjs = glc_gdf.to_json()
 
+    style_func2 = lambda feature: {
+        'fillColor': feature['properties']['randcolor'],
+        'color': feature['properties']['randcolor'],
+        'weight': 1,
+        'fillOpacity': 1,
+    }
     polys = folium.features.GeoJson(glc_gjs,
+                                    style_function=style_func2,
                                     name='Swiss Glacier Inventory 2010')
     m.add_child(polys)
-
+    """
     # Test labels
     marker_cluster = folium.MarkerCluster().add_to(m)
 
@@ -232,7 +246,7 @@ def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disgui
                                                            icon_anchor=(10, 10),
         html='<div style="font-size: 12pt">{}</div>'.format(sorted.iloc[i]['Name']),
         )).add_to(marker_cluster)
-
+    """
     ## Add PopUp on GeoJSON - makes the map superslow
     #for i, row in glc_gdf.iterrows():
     #    gj = folium.GeoJson(
@@ -313,19 +327,24 @@ class AnyObject(object):
 
 
 class AnyObjectHandler(object):
+
+    def __init__(self, color='b', facecolor='cornflowerblue'):
+        self.facecolor= facecolor
+        self.color = color
+
     def legend_artist(self, legend, orig_handle, fontsize, handlebox):
         x0, y0 = handlebox.xdescent, handlebox.ydescent
         width, height = handlebox.width, handlebox.height
         l1 = mlines.Line2D([x0, y0 + width],
                            [0.5 * height, 0.5 * height],
-                           linestyle='-', color='b')
+                           linestyle='-', color=self.color)
         patch1 = mpatches.Rectangle([x0, y0 + 0.25 * height], width,
                                     0.5 * height,
-                                    facecolor='cornflowerblue',
+                                    facecolor=self.facecolor,
                                     alpha=0.5,
                                     transform=handlebox.get_transform())
         patch2 = mpatches.Rectangle([x0, y0], width, height,
-                                    facecolor='cornflowerblue',
+                                    facecolor=self.facecolor,
                                     alpha=0.3,
                                     transform=handlebox.get_transform())
         handlebox.add_artist(l1)
@@ -334,7 +353,7 @@ class AnyObjectHandler(object):
         return [l1, patch1, patch2]
 
 #@entity_task(log)
-def plot_cumsum_climatology_and_current(clim, current, fs=17):
+def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
     """
     Make the standard plot containing the MB climatology in the background and
     the current MB year on top.
@@ -345,20 +364,26 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17):
     An option should be added that lets you choose the time span of the
     climatology displayed in the background (added to filename and legend!)
 
-    Further and as soon as ensemble runs come into play
-
     Parameters
     ----------
     clim: xarray.Dataset
-        The mass balance climatology
+        The mass balance climatology. The mass balance variable should be named
+         'MB' and mass balance should have two coordinates (e.g. 'time' and 'n'
+         (some experiment)).
     current: xarray.Dataset
-        The current year's mass balance
+        The current year's mass balance. The mass balance variable should be
+        named 'MB' and mass balance should have two coordinates (e.g. 'time'
+        and 'n' (some experiment)).
     fs: int
-        font size
+        Font size for title, axis labels and legend.
+    loc: int
+        Legend position as passed to plt.legend(). Sometimes the placing of the
+        legend fails when done automatically, so this helps to keep control.
+        Default: 0 ('best' position).
 
     Returns
     -------
-
+    None
     """
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -381,14 +406,18 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17):
     ax.fill_between(xvals, clim.MB.values[:, 0], clim.MB.values[:, 4],
                     facecolor='cornflowerblue', alpha=0.3)
     # plot MB of this glacio year up to now
-    # TODO: as soon as we have more experiments, make errorbars or fill_between
-    mb_now_cs_pad = np.lib.pad(current.MB.values[:, 0], (0, len(xvals) -
-                                                         len(current.time)),
+    mb_now_cs_pad = np.lib.pad(current.MB.values,
+                               ((0, len(xvals) - current.MB.shape[0]), (0, 0)),
                                'constant',
                                constant_values=(np.nan, np.nan))
-    p4, = ax.plot(xvals, mb_now_cs_pad, c='orange')
+    p4, = ax.plot(xvals, mb_now_cs_pad[:, 2], c='darkorange', label='Median')
+    ax.fill_between(xvals, mb_now_cs_pad[:, 1], mb_now_cs_pad[:, 3],
+                    facecolor='orange', alpha=0.5)
+    # plot 10th to 90th pctl
+    ax.fill_between(xvals, mb_now_cs_pad[:, 0], mb_now_cs_pad[:, 4],
+                    facecolor='orange', alpha=0.3)
     ax.set_xlabel('Months', fontsize=16)
-    ax.set_ylabel('Cumulative Mass Balance (m we)', fontsize=fs)
+    ax.set_ylabel('Cumulative Mass Balance (m w.e.)', fontsize=fs)
     ax.set_xlim(xvals.min(), xvals.max())
     plt.tick_params(axis='both', which='major', labelsize=fs)
     mbeg = xtime[np.where(xtime.day == 1)]
@@ -410,9 +439,16 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17):
               .format(clim.attrs['id'].split('.')[1],
                       clim.attrs['name']), fontsize=fs)
 
-    ax.legend([AnyObject(), p4], ['Climatology Median, IQR, 10th/90th PCTL',
-                                  'Current MB year'],
-              handler_map={AnyObject: AnyObjectHandler()}, fontsize=fs, loc=0)
+    entry_one = AnyObject()
+    entry_two = AnyObject()
+    ax.legend([entry_one, entry_two],
+              ['Climatology Median, IQR, 10th/90th PCTL',
+               'Current Year Median, IQR, 10th/90th PCTL'], fontsize=fs,
+              loc=loc,
+              handler_map={entry_one: AnyObjectHandler(color='b',
+                                                       facecolor='cornflowerblue'),
+                           entry_two: AnyObjectHandler(color='darkorange',
+                                                       facecolor='orange')})
     plt.tight_layout()
 
 
@@ -457,15 +493,17 @@ def plot_animated_swe(mb_model):
     line, = ax.plot(np.arange(len(mb_model.heights)), mb_model.heights)
     ax.set_ylim(
         (np.min(mb_model.snow) / 1000., np.max(mb_model.snow) / 1000.))
+    plt.xlabel('Concatenated flowline heights')
+    plt.ylabel('Snow Water Equivalent (m w.e.)')
     time_text = ax.text(.5, .5, '', fontsize=15)
 
     def animate(i, data, line, time_text):
         line.set_ydata(data.snow[i] / 1000.)  # update the data
-        time_text.set_text(data.tspan_in[i].strftime("%Y-%m-%d"))
+        time_text.set_text(data.time_elapsed[i].strftime("%Y-%m-%d"))
         return line,
 
     ani = animation.FuncAnimation(fig, animate,
                                   frames=mb_model.snow.shape[0],
                                   fargs=(mb_model, line, time_text),
-                                  interval=10)
+                                  interval=10, repeat_delay=1.)
     return ani
