@@ -12,7 +12,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
-import datetime
+import datetime as dt
 from itertools import product
 # Locals
 import crampon.cfg as cfg
@@ -92,7 +92,8 @@ rgidf = rgidf[rgidf.Area >= 0.0105]
 #rgidf = rgidf.tail(50)
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05','RGI50-11.B4504',
 #'RGI50-11.A55F03', 'RGI50-11.B4312n-1', 'RGI50-11.B5616n-1', 'RGI50-11.C1410'])] # just to have one REFMB glacier
-rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]
+rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])] # Gries
+#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4312n-1'])] # Rhone
 
 
 log.info('Number of glaciers: {}'.format(len(rgidf)))
@@ -124,23 +125,25 @@ if __name__ == '__main__':
         #utils.get_local_dems(g)
 
         # remove as soon as mustar is daily/calibration is correct!
-        prcp_fac = 1.4#1.32#1.4#1.4    # tuned manually to 1284 mm (mean winter balance)
-        mu_star = 13.#11.7#4.17#8.0     # tuned manually to  -1001 mm (mean annual balance)
-        mu_snow = 6.3#3.96#2.83#4.0     # educated guess
-        print(mu_star, prcp_fac)
+        day_model = BraithwaiteModel(g, bias=0.)
 
-
-        day_model = BraithwaiteModel(g, mu_ice=mu_star, mu_snow=mu_snow,
-                                     prcp_fac=prcp_fac, bias=0.)
-
+        ######################################################################
         heights, widths = g.get_inversion_flowline_hw()
 
         # number of experiments (list!)
         exp = [1]
 
         mb = []
-        print(datetime.datetime.now())
-        for date in day_model.tspan_in:
+        print(dt.datetime.now())
+        bgmon_hydro = cfg.PARAMS['bgmon_hydro']
+        bgday_hydro = cfg.PARAMS['bgday_hydro']
+
+        cali_df = pd.read_csv(g.get_filepath('calibration'), index_col=0,
+                              parse_dates=[0])
+        begin_clim = cali_df.index[0]
+        end_clim = cali_df.index[-1]
+
+        for date in pd.date_range(begin_clim, end_clim):
 
             # Get the mass balance and convert to m per day
             tmp = day_model.get_daily_specific_mb(heights, widths, date=date)
@@ -149,17 +152,16 @@ if __name__ == '__main__':
         mb_ds = xr.Dataset({'MB': (['time', 'n'],
                                    np.atleast_2d(mb).T)},
                            coords={'n': (['n'], exp),
-                                   'time': pd.to_datetime(day_model.tspan_in)},
-                           attrs={'prcp_fac': prcp_fac,
-                                  'mu_star': mu_star,
-                                  'id': g.rgi_id,
+                                   'time': pd.to_datetime(day_model.time_elapsed)},
+                           attrs={'id': g.rgi_id,
                                   'name': g.name})
-        print(datetime.datetime.now())
+        print(dt.datetime.now())
         # save intermediate results
         g.write_pickle(mb_ds, 'mb_daily')
 
-        bgmon_hydro = cfg.PARAMS['bgmon_hydro']
-        bgday_hydro = cfg.PARAMS['bgday_hydro']
+        snow_cond = day_model.snow
+        time_elap = day_model.time_elapsed
+        #######################################################################
 
         # Remove here beginning of file until first begin of hydro year
         first_occ = mb_ds.sel(time=((mb_ds.time.dt.month == bgmon_hydro) &
@@ -203,10 +205,15 @@ if __name__ == '__main__':
         bname = os.path.join(PLOTS_DIR, g.rgi_id + '_')
 
         ################################################
-        # test
         # MAKE MB UP TO NOW
-        mb_now = []
-        yesterday = (datetime.datetime.now() - datetime.timedelta(2))
+
+        # QUICK'N'DIRTY
+        now = dt.datetime.now()
+        if now.hour >= 12 and now.minute >= 30:
+            yesterday = (now - dt.timedelta(1))
+        else:
+            yesterday = (now - dt.timedelta(2))
+
         yesterday_str = yesterday.strftime('%Y-%m-%d')
 
         begin = utils.get_begin_last_flexyear(yesterday,
@@ -216,25 +223,61 @@ if __name__ == '__main__':
 
         curr_year_span = pd.date_range(start=begin_str, end=yesterday_str,
                                      freq='D')
-        for date in curr_year_span:
-            date = date.to_pydatetime()
-            # Get the mass balance and convert to m per day
-            tmp = day_model.get_daily_specific_mb(heights, widths,
-                                                  date=date)
-            mb_now.append(tmp)
 
-        mb_now_cs_arr = np.cumsum([i.mean() for i in mb_now])
+        #############################
+        # temporary
+        # period to extrapolate the parameters
+        extrap_period = (dt.datetime(1961, bgmon_hydro, bgday_hydro),
+                         dt.datetime(2017, bgmon_hydro, bgday_hydro))
+        param_df = cali_df[(cali_df.index >= extrap_period[0]) &
+                           (cali_df.index <= extrap_period[1])]
+
+        stacked = None
+        # same quantiles for all parameters (mu_ice & prcp_fac correlated (0.8)
+        mu_ice_exp = custom_quantiles(cali_df.mu_ice)
+        mu_snow_exp = custom_quantiles(cali_df.mu_snow)
+        # TODO: Constrain here prcp_fac for measured glacier if it's "known" after WB campaign
+        prcp_fac_exp = custom_quantiles(cali_df.prcp_fac)
+
+        for mu_ice_curr, mu_snow_curr, prcp_fac_curr in zip(mu_ice_exp.values,
+                                                            mu_snow_exp.values,
+                                                            prcp_fac_exp.values):
+
+            day_model_curr = BraithwaiteModel(g, mu_ice=mu_ice_curr,
+                                              mu_snow=mu_snow_curr,
+                                              prcp_fac=prcp_fac_curr, bias=0.)
+            day_model_curr.snow = snow_cond
+            day_model_curr.time_elapsed = time_elap
+
+            mb_now = []
+            for date in curr_year_span:
+                date = date.to_pydatetime()
+                # Get the mass balance and convert to m per day
+                tmp = day_model_curr.get_daily_specific_mb(heights, widths,
+                                                      date=date)
+                mb_now.append(tmp)
+
+            mb_now_cs_arr = np.cumsum(mb_now)
+
+            if stacked is not None:
+                stacked = np.vstack((stacked, mb_now_cs_arr))
+            else:
+                stacked = mb_now_cs_arr
+
         mb_now_cs = xr.Dataset({'MB': (['time', 'n'],
-                                       np.atleast_2d(mb_now_cs_arr).T)},
-                               coords={'n': (['n'], exp),
+                                       np.atleast_2d(stacked).T),
+                                'mu_ice': (['n'], mu_ice_exp.values),
+                                'mu_snow': (['n'], mu_snow_exp.values),
+                                'prcp_fac': (['n'], prcp_fac_exp.values)},
+                               coords={'n': (['n'], mu_ice_exp.index.values),
                                        'time': pd.to_datetime(curr_year_span)},
-                               attrs={'prcp_fac': prcp_fac, 'mu_star': mu_star,
-                                      'id': g.rgi_id, 'name': g.name})
+                               attrs={'id': g.rgi_id, 'name': g.name})
         g.write_pickle(mb_now_cs, 'mb_current')
 
         ##################################################
 
-        graphics.plot_cumsum_climatology_and_current(quant, current=mb_now_cs)
+        graphics.plot_cumsum_climatology_and_current(quant, current=mb_now_cs,
+                                                     loc=3)
         plt.savefig(bname + 'test_new.png', dpi=1000)
         graphics.plot_googlemap(g)
         plt.savefig(bname + 'googlemap.png')
