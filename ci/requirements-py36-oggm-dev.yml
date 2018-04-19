@@ -23,9 +23,9 @@ dependencies:
   - configobj
   - folium
   - mpld3
-  - salem
   - pip:
     - git+https://github.com/OGGM/oggm.git
+    - git+https://github.com/fmaussion/salem.git
     - schedule
     - coveralls
     - pytest-cov
