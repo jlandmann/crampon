@@ -8,7 +8,7 @@ import logging
 
 import pandas as pd
 import datetime
-from numpy.testing import assert_array_equal, assert_almost_equal
+import numpy as np
 
 from crampon.tests import requires_credentials, requires_vpn, is_download
 from crampon import utils
@@ -140,6 +140,25 @@ class TestMiscFuncs(unittest.TestCase):
         drive = r'\\speedy10.wsl.ch\data_15\_PROJEKTE\Swiss_Glacier'
         msg = utils.mount_network_drive(drive, r'wsl\landmann')
         self.assertEqual(msg, 0)
+
+    def test_weighted_quantiles(self):
+
+        test = utils.weighted_quantiles([1, 2, 9, 3.2, 4], [0.0, 0.5, 1.])
+        np.testing.assert_equal(test, np.array([1., 3.2, 9.]))
+
+        test = utils.weighted_quantiles([1, 2, 9, 3.2, 4], [0.0, 0.5, 1.],
+                                         sample_weight=[2, 1, 2, 4, 1])
+        np.testing.assert_equal(test, np.array([1., 3.2, 9.]))
+
+        test = utils.weighted_quantiles([1, 2, 9, 3.2, 4], [0.0, 0.5, 1.],
+                                         sample_weight=[2, 1, 2, 4, 1],
+                                         values_sorted= True)
+        np.testing.assert_almost_equal(test, np.array([ 1., 7.06666667, 4.]))
+
+        test = utils.weighted_quantiles([1, 2, 9, 3.2, 4], [0.0, 0.5, 1.],
+                                        sample_weight=[2, 1, 2, 4, 1],
+                                        values_sorted=True, old_style=True)
+        np.testing.assert_almost_equal(test, np.array([1., 6.58333333, 4.]))
 
 
 class CramponTestDataFiles(unittest.TestCase):
