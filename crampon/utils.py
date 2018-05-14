@@ -1183,10 +1183,10 @@ def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
         merged = xr.merge(xr_das)
     # this happens for DHM25 on Rhone, for example (overlapping tiles)
     except xr.core.merge.MergeError:
-        merged = []
+        merged = None
         if len(xr_das) > 1:
-            while len(xr_das) > 1:
-                if merged:
+            while len(xr_das) >= 1:
+                if merged is not None:
                     merged = merged.combine_first(xr_das[-1])
                     del xr_das[-1]
                 else:
