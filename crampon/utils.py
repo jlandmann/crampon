@@ -1195,6 +1195,9 @@ def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
         else:
             merged = xr_das[0]
 
+    if isinstance(merged, xr.core.dataarray.DataArray):
+        merged = merged.to_dataset(name='height')
+
     # coord/dim changes
     merged = merged.squeeze(dim='band')
     merged = merged.drop('band')
