@@ -122,7 +122,7 @@ if __name__ == '__main__':
         begin_clim = cali_df.index[0]
         end_clim = cali_df.index[-1]
 
-        for date in pd.date_range(start=begin_clim, freq='D', periods=1000):
+        for date in pd.date_range(begin_clim, end_clim):
 
             # Get the mass balance and convert to m per day
             tmp = day_model.get_daily_mb(heights, date=date)
