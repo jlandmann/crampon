@@ -172,6 +172,7 @@ def initialize(file=None):
     oggmcfg.PATHS['wgms_rgi_links'] = cp['wgms_rgi_links']
     oggmcfg.PATHS['glathida_rgi_links'] = cp['glathida_rgi_links']
     oggmcfg.PATHS['leclercq_rgi_links'] = cp['leclercq_rgi_links']
+    oggmcfg.PATHS['mb_dir'] = cp['mb_dir']
 
     # run params
     oggmcfg.PARAMS['run_period'] = [int(vk) for vk in cp.as_list('run_period')]
@@ -191,6 +192,7 @@ def initialize(file=None):
     oggmcfg.PARAMS['optimize_thick'] = cp.as_bool('optimize_thick')
     oggmcfg.PARAMS['filter_min_slope'] = cp.as_bool('filter_min_slope')
     oggmcfg.PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
+    oggmcfg.PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
 
     # Climate
     oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_int(
@@ -233,7 +235,8 @@ def initialize(file=None):
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
            'glathida_rgi_links', 'lfi_dir', 'dem_dir', 'grid_dx_method',
            'mp_processes', 'use_multiprocessing', 'use_divides',
-           'temp_local_gradient_bounds',
+           'temp_local_gradient_bounds', 'mb_dir',
+           'temp_local_gradient_bounds', 'mb_dir',
            'topo_interp', 'use_compression', 'bed_shape',
            'continue_on_error',
            'use_optimized_inversion_params', 'invert_with_sliding',
@@ -242,7 +245,7 @@ def initialize(file=None):
            'tstar_search_window', 'use_bias_for_run', 'run_period',
            'prcp_scaling_factor', 'use_intersects', 'filter_min_slope',
            'auto_skip_task', 'correct_for_neg_flux', 'problem_glaciers',
-           'bgmon_hydro', 'bgday_hydro']
+           'bgmon_hydro', 'bgday_hydro', 'run_mb_calibration']
     for k in ltr:
         cp.pop(k, None)
 
