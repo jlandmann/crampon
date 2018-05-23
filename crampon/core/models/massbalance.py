@@ -181,8 +181,11 @@ class DailyMassBalanceModel(MassBalanceModel):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         if isinstance(self.prcp_fac, pd.Series):
-            iprcp = self.prcp_unc[ix] * self.prcp_fac[self.prcp_fac.index.
-                get_loc(date, **kwargs)]
+            iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
+                                                                  **kwargs)]
+            if pd.isnull(iprcp_fac):
+                iprcp_fac = np.nanmean(self.prcp_fac)
+            iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
             iprcp = self.prcp_unc[ix] * self.prcp_fac
         itgrad = self.tgrad[ix]
@@ -200,11 +203,14 @@ class DailyMassBalanceModel(MassBalanceModel):
         if isinstance(self.mu_star, pd.Series):
             mu_star = self.mu_star.iloc[self.mu_star.index.get_loc(
                 date, **kwargs)]
+            if pd.isnull(mu_star):
+                mu_star = np.nanmean(self.mu_star)
         else:
             mu_star = self.mu_star
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[self.bias.index.get_loc(date, **kwargs)]
+            # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
 
@@ -420,8 +426,11 @@ class BraithwaiteModel(DailyMassBalanceModel):
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
-            iprcp = self.prcp_unc[ix] * self.prcp_fac[self.prcp_fac.index.
-                get_loc(date, **kwargs)]
+            iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
+                                                                  **kwargs)]
+            if pd.isnull(iprcp_fac):
+                iprcp_fac = np.nanmean(self.prcp_fac)
+            iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
             iprcp = self.prcp_unc[ix] * self.prcp_fac
 
@@ -439,18 +448,23 @@ class BraithwaiteModel(DailyMassBalanceModel):
         if isinstance(self.mu_ice, pd.Series):
             mu_ice = self.mu_ice.iloc[
                 self.mu_ice.index.get_loc(date, **kwargs)]
+            if pd.isnull(mu_ice):
+                mu_ice = np.nanmean(self.mu_ice)
         else:
             mu_ice = self.mu_ice
 
         if isinstance(self.mu_snow, pd.Series):
             mu_snow = self.mu_snow.iloc[
                 self.mu_snow.index.get_loc(date, **kwargs)]
+            if pd.isnull(mu_snow):
+                mu_snow = np.nanmean(self.mu_snow)
         else:
             mu_snow = self.mu_snow
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
                 self.bias.index.get_loc(date, **kwargs)]
+            # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
 
