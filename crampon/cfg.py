@@ -103,6 +103,7 @@ _doc = 'The multitemporal glacier outlines in the local projection.'
 CBASENAMES['outlines_ts'] = ('outlines_ts.shp', _doc)
 _doc = 'A CSV with measured mass balances from the glaciological method.'
 CBASENAMES['glacio_method_mb'] = ('glacio_method_mb', _doc)
+CBASENAMES['mb_daily_rescaled'] =('mb_daily_rescaled.pkl', 'abc')
 
 
 # OGGM changed it to -1., let's first see what Fabi writes in his paper
