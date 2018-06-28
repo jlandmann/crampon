@@ -409,8 +409,6 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
         log.info('After whole cali:{}, {}, grad={}'.format(spinupres.x[0],
                                                         prcp_fac_guess, grad))
 
-        if row.date1.year == 2017:
-            print('reached 2017')
         # Write in cali df
         cali_df.loc[row.date0:row.date1, 'mu_ice'] = spinupres.x[0]
         cali_df.loc[row.date0:row.date1, 'mu_snow'] = spinupres.x[0] * ratio_s_i
