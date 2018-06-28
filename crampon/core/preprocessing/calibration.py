@@ -419,7 +419,7 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
         heights, widths = gdir.get_inversion_flowline_hw()
         curr_model = BraithwaiteModel(gdir, bias=0.)
         mb = []
-        for date in pd.date_range(measured.iloc[0].date0, row.date1):
+        for date in pd.date_range(row.date0, row.date1):
             tmp = curr_model.get_daily_specific_mb(heights, widths, date=date)
             mb.append(tmp)
 
