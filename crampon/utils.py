@@ -957,6 +957,32 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
         itemp = temp[:, ilat, ilon]
         ihgt = hgt[ilat, ilon]
 
+        # check for missing meteo input and fill (temp mean and precip zero)
+        t_miss = np.where(np.isnan(itemp))
+        p_miss = np.where(np.isnan(iprcp))
+
+        log.warn("Temp missing for time {}".format(nc['time'][t_miss]))
+        log.warn("Precip missing for time {}".format(nc['time'][p_miss]))
+
+        for m in t_miss:
+            itemp[m] = (itemp[m - 1] + itemp[m + 1]) / 2.
+            t_load = temp[:]
+            p_load = prcp[:]
+            try:
+                t_load[m[0], :, :][:] = ((temp[m - 1] + temp[m + 1]) / 2.)[:]
+            except IndexError:
+                t_load[m][0] = temp[m - 1][:]
+            t_load[m[0], :, :][:].mask = temp[m - 1][:].mask  # important!
+            temp = t_load.copy()
+            t_load = None
+        for n in p_miss:
+            iprcp[n] = 0.
+            p_load[n[0], :, :][:] = np.zeros_like(p_load[n[0]])[:]
+            p_load[n[0], :, :][:].mask = prcp[n - 1][:].mask  # important!
+            prcp = p_load.copy()
+            p_load = None
+
+        # Temperature gradient
         if use_grad != 0:
             # some min/max constants for the window
             minw = divmod(use_grad, 2)[0]
