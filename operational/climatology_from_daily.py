@@ -267,6 +267,9 @@ if __name__ == '__main__':
             else:
                 stacked = mb_now_cs_arr
 
+        # might happen that quantiles are messed up
+        stacked = np.sort(stacked, axis=0)
+
         mb_now_cs = xr.Dataset({'MB': (['time', 'n'],
                                        np.atleast_2d(stacked).T),
                                 'mu_ice': (['n'], mu_ice_exp.values),
