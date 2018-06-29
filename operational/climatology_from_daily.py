@@ -246,8 +246,11 @@ if __name__ == '__main__':
             day_model_curr = BraithwaiteModel(g, mu_ice=mu_ice_curr,
                                               mu_snow=mu_snow_curr,
                                               prcp_fac=prcp_fac_curr, bias=0.)
-            day_model_curr.snow = snow_cond
-            day_model_curr.time_elapsed = time_elap
+
+            # Take care of overlap between cali and current MB year
+            day_model_curr.time_elapsed = time_elap.difference(curr_year_span)
+            day_model_curr.snow = np.compress(
+                ~(time_elap.isin(curr_year_span)), snow_cond, axis=0)
 
             mb_now = []
             for date in curr_year_span:
