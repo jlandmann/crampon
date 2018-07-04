@@ -470,7 +470,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
 
         # Get snow distribution from yesterday and determine snow/ice from it;
-        # Could also get the accumulation first & update snow before melting
+        # this makes more sense as temp is from 0am-0am and precip from 6am-6am
         snowdist = np.where(self.snow[-1] > 0.)
         mu_comb = np.zeros_like(self.snow[-1])
         mu_comb[:] = mu_ice
