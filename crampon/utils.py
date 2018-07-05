@@ -961,8 +961,14 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
         t_miss = np.where(np.isnan(itemp))
         p_miss = np.where(np.isnan(iprcp))
 
-        log.warn("Temp missing for time {}".format(nc['time'][t_miss]))
-        log.warn("Precip missing for time {}".format(nc['time'][p_miss]))
+        log.warn("Temp missing for time {}".format(
+            [i.strftime('%Y-%m-%d') for i in
+             netCDF4.num2date(nc['time'][t_miss], nc['time'].units,
+                              nc['time'].calendar)]))
+        log.warn("Precip missing for time {}".format(
+            [i.strftime('%Y-%m-%d') for i in
+             netCDF4.num2date(nc['time'][p_miss], nc['time'].units,
+                              nc['time'].calendar)]))
 
         for m in t_miss:
             itemp[m] = (itemp[m - 1] + itemp[m + 1]) / 2.
@@ -972,7 +978,8 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
                 t_load[m[0], :, :][:] = ((temp[m - 1] + temp[m + 1]) / 2.)[:]
             except IndexError:
                 t_load[m][0] = temp[m - 1][:]
-            t_load[m[0], :, :][:].mask = temp[m - 1][:].mask  # important!
+            # important until MaskedArrayFutureWarning is implemented!
+            t_load[m[0], :, :][:].mask = temp[m - 1][:].mask
             temp = t_load.copy()
             t_load = None
         for n in p_miss:
