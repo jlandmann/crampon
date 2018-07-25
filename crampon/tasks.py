@@ -19,10 +19,11 @@ from oggm.core.climate import process_cru_data
 from crampon.core.preprocessing.climate import process_custom_climate_data
 from oggm.core.climate import process_cesm_data
 
+from oggm.core.climate import apparent_mb
 from oggm.core.inversion import prepare_for_inversion
 from oggm.core.inversion import volume_inversion
 from oggm.core.inversion import filter_inversion_output
-from oggm.core.inversion import distribute_thickness
+from oggm.core.inversion import distribute_thickness_interp
 from oggm.core.flowline import init_present_time_glacier
 from oggm.core.flowline import run_random_climate
 
