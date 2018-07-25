@@ -417,7 +417,11 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
 
         # get history for next run
         heights, widths = gdir.get_inversion_flowline_hw()
+
         curr_model = BraithwaiteModel(gdir, bias=0.)
+        if run_hist is not None:
+            curr_model.time_elapsed = run_hist
+            curr_model.snow = snow_hist
         mb = []
         for date in pd.date_range(row.date0, row.date1):
             tmp = curr_model.get_daily_specific_mb(heights, widths, date=date)
