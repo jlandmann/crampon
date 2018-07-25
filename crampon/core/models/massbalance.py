@@ -482,13 +482,14 @@ class BraithwaiteModel(DailyMassBalanceModel):
         self.time_elapsed = date
         snow_cond = self.update_snow(date, mb_day)
 
-
         # cheap removal of snow before density model kicks in
         try:
-            if ((self.snow[-1] - self.snow[-366]) >= 0.).any():  # check MB pos
-                inds = np.where((self.snow[-1] - self.snow[-366]) >= 0.)
-                self.snow[-1][inds] = np.clip(self.snow[-1][inds] - np.clip(self.snow[-365][inds] - self.snow[-366][inds], 0.,
-                                        None), 0., None)  # cheap removal
+            # check MB pos
+            inds = np.where((self.snow[-1] - self.snow[-366]) >= 0.)
+            self.snow[-1][inds] = np.clip(self.snow[-1][inds] -
+                                          np.clip(self.snow[-365][inds] -
+                                                  self.snow[-366][inds], 0.,
+                                                  None), 0., None)
         except IndexError: # when date not yet exists
             pass
 
