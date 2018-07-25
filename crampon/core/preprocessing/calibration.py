@@ -29,10 +29,10 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
     8 : reconstruction from volume change with help of stake data(dV & b_a/b_w)
 
     Columns "id" (indicator on data base), "date0" (annual MB campaign date at
-    begin), "date_s" (date of spring campaign), "date1" (annual MB campiagn
-    date at end), "Winter" (winter MB) and "Annual" (annual MB) are kept.
-    File names of the mass balance data must contain the glaciers ID (stored in
-    the crampon.GlacierDirectory.id attribute)
+    begin_mbyear), "date_s" (date of spring campaign), "date1" (annual MB
+    campaign date at end), "Winter" (winter MB) and "Annual" (annual MB) are
+    kept. File names of the mass balance data must contain the glaciers ID
+    (stored in the crampon.GlacierDirectory.id attribute)
 
     Parameters
     ----------
@@ -116,8 +116,8 @@ def to_minimize_braithwaite_fixedratio(x, gdir, measured, prcp_fac,
     measured: pandas.DataFrame
     A DataFrame with measured glaciological mass balances.
     y0: float, optional
-        Start year of the calibration period. The exact begin date is taken
-        from the day of the annual balance campaign in the `measured`
+        Start year of the calibration period. The exact begin_mbyear date is
+        taken from the day of the annual balance campaign in the `measured`
         DataFrame. If not given, the date is taken from the minimum date in the
         DataFrame of the measured values.
     y1: float, optional
