@@ -175,9 +175,9 @@ if __name__ == '__main__':
     # 4) make MB since beginning of the mass balance year
     # 5) make future MB
 
-    schedule.every().day.at("12:20").do(daily_tasks(gdirs)).tag('daily-tasks')
+    schedule.every().day.at("12:20").do(daily_tasks, gdirs).tag('daily-tasks')
 
+    print('Finished setup tasks, switching to operational...')
     while True:
-        print('Finished setup tasks, switching to operational...')
         schedule.run_pending()
         time.sleep(1)
