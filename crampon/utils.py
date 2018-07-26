@@ -1185,7 +1185,7 @@ def mount_network_drive(path, user, log=None):
     return out
 
 
-def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
+def _local_dem_to_xr_dataset(to_merge, acq_date, calendar_startyear=0,
                              miss_val=np.nan):
     """
     Hard-coded function that reads DEMs into xarray.Datasets and adds metadata.
@@ -1198,7 +1198,7 @@ def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
     ----------
     to_merge: list
         List of DEM paths to merge.
-    acq_dates: list of datetime.datetime
+    acq_date: datetime.datetime
         Datetime object delivering the acquisition date of the DEMs.
     calendar_startyear: int
         Year when the netCDF calendar should begin (e.g. 'Years since 1900').
@@ -1242,18 +1242,20 @@ def _local_dem_to_xr_dataset(to_merge, acq_dates, calendar_startyear=0,
     # Replaces -9999.0 with NaN: See here:
     # https://github.com/pydata/xarray/issues/1749
     merged = merged.where(merged != -9999.0)
-    merged = merged.assign_coords(time=acq_dates[0].year - calendar_startyear)
-    final_ds = merged.expand_dims('time')
+    merged = merged.assign_coords(time=acq_date)
+    try:
+        final_ds = merged.expand_dims('time')
+    except ValueError:
+        final_ds = merged.copy()
     # set EPSG:21781
     final_ds.attrs['pyproj_srs'] = '+proj=somerc +lat_0=46.95240555555556 ' \
                              '+lon_0=7.439583333333333 +k_0=1 +x_0=600000 ' \
                              '+y_0=200000 +ellps=bessel ' \
                              '+towgs84=674.374,15.056,405.346,0,0,0,0 ' \
                              '+units=m +no_defs'
-    encoding = {'height': {'_FillValue': miss_val, 'units': 'meters', 'year':
-        acq_dates[0].year, 'standard_name': 'height_above_reference_ellipsoid'},
-                'time': {'units': 'years since {}-01-01 00:00:00'.format(
-                    calendar_startyear), 'calendar': 'standard'},
+    encoding = {'height': {'_FillValue': miss_val, 'units': 'meters', 'date':
+        acq_date.strftime("%Y%m%d"), 'standard_name':
+        'height_above_reference_ellipsoid'}, 'time': {'calendar': 'standard'},
                 'zlib': True}
     final_ds.encoding = encoding
 
