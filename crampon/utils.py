@@ -961,33 +961,38 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
         t_miss = np.where(np.isnan(itemp))
         p_miss = np.where(np.isnan(iprcp))
 
-        log.warn("Temp missing for time {}".format(
-            [i.strftime('%Y-%m-%d') for i in
-             netCDF4.num2date(nc['time'][t_miss], nc['time'].units,
-                              nc['time'].calendar)]))
-        log.warn("Precip missing for time {}".format(
-            [i.strftime('%Y-%m-%d') for i in
-             netCDF4.num2date(nc['time'][p_miss], nc['time'].units,
-                              nc['time'].calendar)]))
+        if t_miss[0]:
+            log.warning("Temp missing for time {}".format(
+                [i.strftime('%Y-%m-%d') for i in
+                 netCDF4.num2date(nc['time'][t_miss], nc['time'].units,
+                                  nc['time'].calendar)]))
+            for m in t_miss:
+                itemp[m] = (itemp[m - 1] + itemp[m + 1]) / 2.
+                t_load = temp[:]
+                # either mean of before and after, or value of before
+                try:
+                    t_load[m[0], :, :][:] = ((temp[m - 1] + temp[m + 1]) / 2.)[
+                                            :]
+                except IndexError:
+                    t_load[m][0] = temp[m - 1][:]
+                # important until MaskedArrayFutureWarning is implemented!
+                t_load[m[0], :, :][:].mask = temp[m - 1][:].mask
+                temp = t_load.copy()
+                t_load = None
 
-        for m in t_miss:
-            itemp[m] = (itemp[m - 1] + itemp[m + 1]) / 2.
-            t_load = temp[:]
-            p_load = prcp[:]
-            try:
-                t_load[m[0], :, :][:] = ((temp[m - 1] + temp[m + 1]) / 2.)[:]
-            except IndexError:
-                t_load[m][0] = temp[m - 1][:]
-            # important until MaskedArrayFutureWarning is implemented!
-            t_load[m[0], :, :][:].mask = temp[m - 1][:].mask
-            temp = t_load.copy()
-            t_load = None
-        for n in p_miss:
-            iprcp[n] = 0.
-            p_load[n[0], :, :][:] = np.zeros_like(p_load[n[0]])[:]
-            p_load[n[0], :, :][:].mask = prcp[n - 1][:].mask  # important!
-            prcp = p_load.copy()
-            p_load = None
+        if p_miss[0]:
+            log.warning("Precip missing for time {}".format(
+                [i.strftime('%Y-%m-%d') for i in
+                 netCDF4.num2date(nc['time'][p_miss], nc['time'].units,
+                                  nc['time'].calendar)]))
+
+            for n in p_miss:
+                p_load = prcp[:]
+                iprcp[n] = 0.
+                p_load[n[0], :, :][:] = np.zeros_like(p_load[n[0]])[:]
+                p_load[n[0], :, :][:].mask = prcp[n - 1][:].mask  # important!
+                prcp = p_load.copy()
+                p_load = None
 
         # Temperature gradient
         if use_grad != 0:
