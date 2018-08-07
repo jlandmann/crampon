@@ -37,47 +37,8 @@ utils.mkdir(cfg.PATHS['working_dir'])
 glaciers = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
 rgidf = gpd.read_file(glaciers)
 
-# where problems occur
-problem_glaciers_sgi = ['RGI50-11.00761-0', 'RGI50-11.00794-1',
-                         'RGI50-11.01509-0', 'RGI50-11.01538-0',
-                        'RGI50-11.01956-0', 'RGI50-11.B6302-1',
-                         'RGI50-11.02552-0', 'RGI50-11.B3643n',
-                        'RGI50-11.02576-0', 'RGI50-11.02663-0',
-                         'RGI50-11.A12E09-0','RGI50-11.B3217n',
-                         'RGI50-11.A14I03-3', 'RGI50-11.A14G14-0',
-                        'RGI50-11.A54I17n-0', 'RGI50-11.A14F13-4',
-                        'RGI50-11.B4616-0',   # 'bottleneck' polygons
-                        'RGI50-11.02848',  # ValueError: no minimum-cost path was found to the specified end point (compute_centerlines)
-                        'RGI50-11.01382',  # AssertionError in initialize flowlines : assert len(hgts) >= 5
-                        'RGI50-11.01621',  # ValueError: start points must all be within the costs array
-                        'RGI50-11.01805',  # gets stuck at initialize_flowlines
-                        'RGI50-11.B3511n', 'RGI50-11.B3603', 'RGI50-11.C3509n',
-                        'RGI50-11.A10G14-0', 'RGI50-11.B9521n-0',
-                        'RGI50-11.02431-1', 'RGI50-11.A51G14-1',
-                        'RGI50-11.A51H05-0', 'RGI50-11.02815-1',
-                        'RGI50-11.01853-0', 'RGI50-11.01853-0',
-                        'RGI50-11.B1610n-1', 'RGI50-11.A54L20-15',
-                        'RGI50-11.01051-0', 'RGI50-11.A13J03-0',
-                        'RGI50-11.01787-1', 'RGI50-11.B7412-1',
-                        #
-                        'RGI50-11.A55C21n', 'RGI50-11.B5613n',
-                        'RGI50-11.B4515n', 'RGI50-11.A55B37n',
-                        'RGI50-11.B8603n', 'RGI50-11.C0304-1',
-                        'RGI50-11.A14E06n', 'RGI50-11.B4637n',
-                        'RGI50-11.B8529n-1', 'RGI50-11.B7404',
-                        'RGI50-11.A54G45n', 'RGI50-11.B4716n',
-                        'RGI50-11.A54M51n', 'RGI50-11.A13L04-0',
-                        'RGI50-11.A51H16-0', 'RGI50-11.A12L03-1',
-                        'RGI50-11.B4636n', 'RGI50-11.C5104',
-                        'RGI50-11.C9205', 'RGI50-11.B9513',
-                        'RGI50-11.B9521n-1', 'RGI50-11.B9523n']  # too close to border
-
-rgidf = rgidf[~rgidf.RGIId.isin(problem_glaciers_sgi)]
-rgidf = rgidf.sort_values(by='Area', ascending=False)
-rgidf = rgidf[rgidf.Area >= 0.0105]
-
-rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]  # Gries OK
-#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05'])]  # Silvretta OK
+#rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]  # Gries OK
+rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05'])]  # Silvretta OK
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5616n-1'])]  # Findel OK
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A55F03'])]  # Plaine Morte OK
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4312n-1'])]  # Rhone
@@ -119,13 +80,14 @@ if __name__ == '__main__':
 
         cali_df = pd.read_csv(g.get_filepath('calibration'), index_col=0,
                               parse_dates=[0])
-        begin_clim = cali_df.index[0]
-        end_clim = cali_df.index[-1]
+        begin_clim = dt.datetime(1961, 9, 1)
+        end_clim = dt.datetime(2017, 12, 31)
 
         for date in pd.date_range(begin_clim, end_clim):
 
-            # Get the mass balance and convert to m per day
-            tmp = day_model.get_daily_mb(heights, date=date)
+            # Get the mass balance and convert to m w.e. per day
+            tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * cfg.RHO /\
+              1000.
             mb.append(tmp)
 
         mb_ds = xr.Dataset({'MB': (['n', 'height', 'time'],
