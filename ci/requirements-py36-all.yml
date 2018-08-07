@@ -25,7 +25,6 @@ dependencies:
   - configobj
   - folium
   - mpld3
-  - dateutil
   - pip:
     - schedule
     - coveralls
