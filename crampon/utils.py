@@ -1342,25 +1342,42 @@ def get_local_dems(gdir):
                      for x in lfi_to_merge]
         lfi_dates = np.unique(lfi_dates)
 
+        if len(lfi_dates) > 1:
+            log.info('Skipping year {} (has {} acquisition dates).'.format(
+                cd, len(lfi_dates)))
+            continue
+
         # merge and append
-        lfi_dem = _local_dem_to_xr_dataset(lfi_to_merge, lfi_dates)
+        lfi_dem = _local_dem_to_xr_dataset(lfi_to_merge, lfi_dates[0])
+
+        # check holes: small => fill, large=> no fill. Check percentage of NaN
+        #checked = gis.dem_quality_check(lfi_dem)
+
+        #if checked:
         lfi_all.append(lfi_dem)
+        #else:
+        #    log.info('Skipping DEM from {} (did not pass quality check)'
+        #             .format(lfi_dem.time))
+        #    continue
 
     aligned = xr.align(*lfi_all, join='outer', exclude='time')
     concat = xr.concat(aligned, dim='time')
-    concat.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w', group='lfi')
+
+    concat.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w',
+                     group=cfg.NAMES['LFI'])
 
     # get DHM25 DEMs
     log.info('Assembling DHM25 DEM for {}'.format(gdir.rgi_id))
-    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25']+'*\\*.agr')
+    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25'] +
+                       '*\\*.agr')
     d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
-                                          '*' + cfg.NAMES['DHM25'] + '*.shp'))
+                                       '*' + cfg.NAMES['DHM25'] + '*.shp'))
     d_zones = get_zones_from_worksheet(d_ws_path[0], 'zone', gdir=gdir)
     d_to_merge = []
     for d_z in d_zones:
         d_to_merge.extend([d for d in d_list if str(d_z) in d])
     # TODO: Replace with real acquisition dates!
-    d_acq_dates = [datetime.datetime(1970, 8, 15)]
+    d_acq_dates = datetime.datetime(1970, 1, 1)
     d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates)
     d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['DHM25'])
@@ -1376,9 +1393,8 @@ def get_local_dems(gdir):
     for a_z in a_zones:
         a_to_merge.extend([d for d in a_list if str(a_z) in d])
     # TODO: Replace with real acquisition dates!
-    a_acq_dates = [datetime.datetime(2010, 8, 15)]
+    a_acq_dates = datetime.datetime(2010, 1, 1)
     a_dem = _local_dem_to_xr_dataset(a_to_merge, a_acq_dates)
-    #dems_all.append(a_dem)
     a_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['SWISSALTI2010'])
 
