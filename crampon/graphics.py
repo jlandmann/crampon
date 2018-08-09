@@ -5,7 +5,9 @@ from crampon import utils
 import logging
 from matplotlib.ticker import NullFormatter
 from oggm.graphics import *
+from oggm.utils import nicenumber
 import os
+import datetime as dt
 import geopandas as gpd
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -352,8 +354,10 @@ class AnyObjectHandler(object):
         handlebox.add_artist(patch2)
         return [l1, patch1, patch2]
 
+
 #@entity_task(log)
-def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
+def plot_cumsum_climatology_and_current(clim, current, clim_begin=(10, 1),
+                                        current_begin=None, fs=14, loc=0):
     """
     Make the standard plot containing the MB climatology in the background and
     the current MB year on top.
@@ -374,6 +378,11 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
         The current year's mass balance. The mass balance variable should be
         named 'MB' and mass balance should have two coordinates (e.g. 'time'
         and 'n' (some experiment)).
+    clim_begin: tuple
+        Tuple of (month, day) when the mass budget year normally begins.
+    current_begin: tuple
+        Tuple of (month, day) when the mass budget year begins in the current
+        mass budget year.
     fs: int
         Font size for title, axis labels and legend.
     loc: int
@@ -385,17 +394,47 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
     -------
     None
     """
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, (ax, ax2) = plt.subplots(2, figsize=(10, 5),
+                                  gridspec_kw={'height_ratios': [7, 1]})
 
     # currently no better solution to add one year
-    xtime = pd.date_range(pd.to_datetime(current.isel(time=0).time.values),
-                             periods=366)
+    #xtime = pd.date_range(pd.to_datetime(current.isel(time=0).time.values),
+    #                         periods=366)
+    # Say if time on x axis is 365 or 366 long
+    xtime = pd.date_range(
+        dt.datetime(current.isel(time=0).time.dt.year, 10, 1),
+        periods=366)
     if ((xtime.month == 2) & (xtime.day == 29)).any():
         xvals = np.arange(366)
     else:
         xtime = xtime[:-1]
         xvals = np.arange(365)
         clim = clim.sel(hydro_doys=slice(None, 365))
+
+    # Say how much we would have to pad in front/back to match this time frame
+    pad_f = (pd.Timestamp(current.isel(time=0).time.item()) -
+             dt.datetime(current.isel(time=0).time.dt.year.item(),
+                         clim_begin[0], clim_begin[1])).days
+
+    # mb_now_cs_pad = np.lib.pad(current.MB.values,
+    #                           ((0, len(xvals) - current.MB.shape[0]), (0, 0)),
+    #                           'constant',
+    #                           constant_values=(np.nan, np.nan))
+    if pad_f >= 0:
+        pad_b = len(xvals) - current.MB.shape[0] - pad_f
+        mb_now_cs_pad = np.lib.pad(current.MB.values,
+                                   ((pad_f, pad_b), (0, 0)),
+                                   'constant',
+                                   constant_values=(np.nan, np.nan))
+    else:
+        current_clip = current.sel(time=slice(
+            dt.datetime(current.isel(time=0).time.dt.year.item(),
+                        clim_begin[0], clim_begin[1]), None))
+        mb_now_cs_pad = np.lib.pad(current_clip.MB.values,
+                                   ((0, len(xvals) - current_clip.MB.shape[0]),
+                                    (0, 0)),
+                                   'constant',
+                                   constant_values=(np.nan, np.nan))
 
     # plot median
     p1, = ax.plot(xvals, clim.MB.values[:, 2], c='b', label='Median')
@@ -406,10 +445,6 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
     ax.fill_between(xvals, clim.MB.values[:, 0], clim.MB.values[:, 4],
                     facecolor='cornflowerblue', alpha=0.3)
     # plot MB of this glacio year up to now
-    mb_now_cs_pad = np.lib.pad(current.MB.values,
-                               ((0, len(xvals) - current.MB.shape[0]), (0, 0)),
-                               'constant',
-                               constant_values=(np.nan, np.nan))
     p4, = ax.plot(xvals, mb_now_cs_pad[:, 2], c='darkorange', label='Median')
     ax.fill_between(xvals, mb_now_cs_pad[:, 1], mb_now_cs_pad[:, 3],
                     facecolor='orange', alpha=0.5)
@@ -435,7 +470,7 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
     mstr = 'JFMAMJJAS0ND'
     ax.set_xticklabels([mstr[i-1] for i in month_int], fontsize=fs)
     ax.grid(True, which='both', alpha=0.5)
-    plt.title('Daily Cumulative MB Distribution of {} ({})'
+    plt.suptitle('Daily Cumulative MB Distribution of {} ({})'
               .format(clim.attrs['id'].split('.')[1],
                       clim.attrs['name']), fontsize=fs)
 
@@ -449,7 +484,43 @@ def plot_cumsum_climatology_and_current(clim, current, fs=17, loc=0):
                                                        facecolor='cornflowerblue'),
                            entry_two: AnyObjectHandler(color='darkorange',
                                                        facecolor='orange')})
-    plt.tight_layout()
+
+    clim_med = clim.MB.values[:, 2][:len(current.MB.values)]
+    # from cumsum to actual MBs
+    clim_mbs = np.append(np.array([clim_med[0]]),
+                    np.array(clim_med[1:] - clim_med[:-1]), axis=0)
+    curr_mbs = np.append(np.atleast_2d(current.MB.values[0]),
+                         current.MB.values[1:] - current.MB.values[:-1],
+                         axis=0)
+    # we take only the median
+    clim_acc = np.sum(clim_mbs[clim_mbs > 0.])
+    clim_abl = np.sum(clim_mbs[clim_mbs < 0.])
+    # here we take all PCTLs
+    curr_acc = np.sum(np.clip(curr_mbs, 0., None), axis=0)
+    curr_abl = np.sum(np.clip(curr_mbs, None, 0.), axis=0)
+    barlist = ['Accumulation', 'Ablation', 'Budget']
+    bar_ypos = np.arange(len(barlist))
+    devs = np.concatenate((np.atleast_2d((curr_acc / clim_acc - 1) * 100),
+                           np.atleast_2d((curr_abl / clim_abl - 1) * 100),
+                           np.atleast_2d(
+                               (current.MB.values[-1, :] / clim_med[
+                                   -1] - 1) * 100)),
+                          axis=0)
+    ax2.barh(bar_ypos, devs[:, 4] - devs[:, 0], left=devs[:, 0], color='g',
+             edgecolor='g', alpha=0.3)
+    ax2.barh(bar_ypos, devs[:, 3] - devs[:, 1], left=devs[:, 1], color='g',
+             edgecolor='g', alpha=0.5)
+    ax2.barh(bar_ypos, np.repeat(.1, 3), left=devs[:, 2], color='g',
+             edgecolor='g')
+    ax2.set_xlim([-nicenumber(np.max(np.abs(devs)), 50),
+                  nicenumber(np.max(np.abs(devs)), 50)])
+
+    ax2.set_yticks(bar_ypos)
+    ax2.set_yticklabels(barlist, fontsize=12)
+    ax2.invert_yaxis()  # labels read top-to-bottom
+    ax2.set_xlabel('Deviation of PCTLs from climatology median (%)')
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # include suptitle
 
 
 def plot_cumsum_allyears(gdir):
