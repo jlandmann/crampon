@@ -264,6 +264,9 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
 
     dem_source_list = [cfg.NAMES['DHM25'], cfg.NAMES['SWISSALTI2010'],
                        cfg.NAMES['LFI']]
+    oggm_dem = False
+    homo_dems = []
+    homo_dates = []
     for demtype in dem_source_list:
         print(demtype)
         try:
@@ -325,6 +328,94 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
                     resampling=resampling)
 
                 dest.write(dst_array, 1)
+
+                homo_dems.append(dst_array)
+                homo_dates.append(t.time.values)
+
+    # Stupid, but we need it until we are able to fill the whole galcier grid with valid DEM values/take care of NaNs
+    # Open DEM
+    source = entity.DEM_SOURCE if hasattr(entity,
+                                          'DEM_SOURCE') else None
+    dem_list, dem_source = get_topo_file((minlon, maxlon),
+                                         (minlat, maxlat),
+                                         rgi_region=gdir.rgi_region,
+                                         rgi_subregion=gdir.rgi_subregion,
+                                         source=source)
+    log.debug('(%s) DEM source: %s', gdir.rgi_id, dem_source)
+
+    # A glacier area can cover more than one tile:
+    if len(dem_list) == 1:
+        dem_dss = [rasterio.open(
+            dem_list[0])]  # if one tile, just open it
+        dem_data = rasterio.band(dem_dss[0], 1)
+        if LooseVersion(rasterio.__version__) >= LooseVersion(
+                '1.0'):
+            src_transform = dem_dss[0].transform
+        else:
+            src_transform = dem_dss[0].affine
+    else:
+        dem_dss = [rasterio.open(s) for s in
+                   dem_list]  # list of rasters
+        dem_data, src_transform = merge_tool(
+            dem_dss)  # merged rasters
+
+    # Use Grid properties to create a transform (see rasterio cookbook)
+    dst_transform = rasterio.transform.from_origin(
+        ulx, uly, dx, dx
+        # sign change (2nd dx) is done by rasterio.transform
+    )
+
+    # Set up profile for writing output
+    profile = dem_dss[0].profile
+    profile.update({
+        'crs': proj4_str,
+        'transform': dst_transform,
+        'width': nx,
+        'height': ny
+    })
+
+    # Could be extended so that the cfg file takes all Resampling.* methods
+    # if cfg.PARAMS['topo_interp'] == 'bilinear':
+    #    resampling = Resampling.bilinear
+    # elif cfg.PARAMS['topo_interp'] == 'cubic':
+    #    resampling = Resampling.cubic
+    # else:
+    #    raise ValueError('{} interpolation not understood'
+    #                     .format(cfg.PARAMS['topo_interp']))
+
+    try:
+        resampling = Resampling[cfg.PARAMS['topo_interp'].lower()]
+    except ValueError:
+        raise ValueError(
+            '{} interpolation not understood. Must be a '
+            'rasterio.Resampling method string supported by '
+            'rasterio.warp.reproject).'
+            .format(cfg.PARAMS['topo_interp']))
+    ## Once there is a SUPPORTED_RESAMPLING constant in rasterio.warp (with 1.0 release)
+    # if resampling not in SUPPORTED_RESAMPLING:
+    #     raise ValueError()
+
+    dem_reproj = gdir.get_filepath('dem')
+    with rasterio.open(dem_reproj, 'w', **profile) as dest:
+        dst_array = np.empty((ny, nx), dtype=dem_dss[0].dtypes[0])
+        reproject(
+            # Source parameters
+            source=dem_data,
+            src_crs=dem_dss[0].crs,
+            src_transform=src_transform,
+            # Destination parameters
+            destination=dst_array,
+            dst_transform=dst_transform,
+            dst_crs=proj4_str,
+            # Configuration
+            resampling=resampling)
+
+        dest.write(dst_array, 1)
+
+    for dem_ds in dem_dss:
+        dem_ds.close()
+
+    oggm_dem = True
 
     # Glacier grid
     x0y0 = (ulx+dx/2, uly-dx/2)  # To pixel center coordinates
