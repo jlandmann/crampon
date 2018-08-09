@@ -961,7 +961,7 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
         t_miss = np.where(np.isnan(itemp))
         p_miss = np.where(np.isnan(iprcp))
 
-        if t_miss[0]:
+        if t_miss[0].any():
             log.warning("Temp missing for time {}".format(
                 [i.strftime('%Y-%m-%d') for i in
                  netCDF4.num2date(nc['time'][t_miss], nc['time'].units,
@@ -980,7 +980,7 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
                 temp = t_load.copy()
                 t_load = None
 
-        if p_miss[0]:
+        if p_miss[0].any():
             log.warning("Precip missing for time {}".format(
                 [i.strftime('%Y-%m-%d') for i in
                  netCDF4.num2date(nc['time'][p_miss], nc['time'].units,
