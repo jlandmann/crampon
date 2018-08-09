@@ -14,8 +14,9 @@ from functools import partial
 import geopandas as gpd
 import shapely
 import salem
-from oggm.core.gis import gaussian_blur, _check_geometry,\
+from oggm.core.gis import gaussian_blur, multi_to_poly,\
     _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks
+from oggm.utils import get_topo_file
 
 import rasterio
 from rasterio.warp import reproject, Resampling
@@ -187,7 +188,7 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     # for defining the grid
     # transform geometry to map
     geometry = shapely.ops.transform(project, entity['geometry'])
-    geometry = _check_geometry(geometry, gdir=gdir)
+    geometry = multi_to_poly(geometry, gdir=gdir)
     xx, yy = geometry.exterior.xy
 
     # Corners, incl. a buffer of N pix
