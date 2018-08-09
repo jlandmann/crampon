@@ -1383,6 +1383,366 @@ def get_local_dems(gdir):
                     group=cfg.NAMES['SWISSALTI2010'])
 
 
+OGGMGlacierDirectory = GlacierDirectory
+
+
+class GlacierDirectory(object):
+    """
+    Organizes read and write access to the glacier's files.
+
+    This is an extension of the oggm.GlacierDirectory [1]_ for CRAMPON needs.
+
+    Some functions are the same, but the focus on RGI is loosened while trying
+    to implement solutions for handling multitemporal data.
+    It handles a glacier directory created in a base directory (default
+    is the "per_glacier" folder in the working directory). The role of a
+    GlacierDirectory is to give access to file paths and to I/O operations.
+    The user should not care about *where* the files are
+    located, but should know their name (specified in cfg.BASENAMES).
+    If the directory does not exist, it will be created.
+
+    Attributes
+    ----------
+    dir : str
+        path to the directory
+    rgi_id : str
+        The glacier's RGI identifier (when available)
+    glims_id : str
+        The glacier's GLIMS identifier (when available)
+    rgi_area_km2 : float
+        The glacier's RGI area (km2)
+    cenlon, cenlat : float
+        The glacier centerpoint's lon/lat
+    rgi_date : datetime
+        The RGI's BGNDATE attribute if available. Otherwise, defaults to
+        2003-01-01
+    rgi_region : str
+        The RGI region name
+    name : str
+        The RGI glacier name (if Available)
+    glacier_type : str
+        The RGI glacier type ('Glacier', 'Ice cap', 'Perennial snowfield',
+        'Seasonal snowfield')
+    terminus_type : str
+        The RGI terminus type ('Land-terminating', 'Marine-terminating',
+        'Lake-terminating', 'Dry calving', 'Regenerated', 'Shelf-terminating')
+    is_tidewater : bool
+        Is the glacier a caving glacier?
+    inversion_calving_rate : float
+        Calving rate used for the inversion
+
+    References
+    ----------
+    .. [1] http://oggm.readthedocs.io/en/latest/generated/oggm.GlacierDirectory.html#oggm.GlacierDirectory
+    """
+
+    def __init__(self, entity, base_dir=None, reset=False):
+        """Creates a new directory or opens an existing one.
+        Parameters
+        ----------
+        entity : a `GeoSeries <http://geopandas.org/data_structures.html#geoseries>`_ or str
+            glacier entity read from the shapefile (or a valid RGI ID if the
+            directory exists)
+        base_dir : str
+            path to the directory where to open the directory.
+            Defaults to `cfg.PATHS['working_dir'] + /per_glacier/`
+        reset : bool, default=False
+            empties the directory at construction (careful!)
+        """
+
+        # Making oggm.GlacierDirectory available for composition
+        self.OGGMGD = OGGMGlacierDirectory(entity, base_dir=base_dir, reset=reset)
+
+        if base_dir is None:
+            if not cfg.PATHS.get('working_dir', None):
+                raise ValueError("Need a valid PATHS['working_dir']!")
+            base_dir = os.path.join(cfg.PATHS['working_dir'],
+                                    'per_glacier')
+
+        # IDs are also valid entries
+        if isinstance(entity, str):
+            # TODO: Think if :8 and :11 makes sense for other invs than RGI
+            _shp = os.path.join(base_dir, entity[:8], entity[:11],
+                                entity, 'outlines.shp')
+            entity = read_shapefile(_shp)
+            crs = salem.check_crs(entity.crs)
+            entity = entity.iloc[0]
+            xx, yy = salem.transform_proj(crs, salem.wgs84,
+                                          [entity['min_x'],
+                                           entity['max_x']],
+                                          [entity['min_y'],
+                                           entity['max_y']])
+        else:
+            g = entity['geometry']
+            xx, yy = ([g.bounds[0], g.bounds[2]],
+                      [g.bounds[1], g.bounds[3]])
+
+        # Extent of the glacier in lon/lat
+        self.extent_ll = [xx, yy]
+
+        # Try which inventory it is
+        # RGI_v4 no longer supported
+        if 'RGIID' in entity:
+            raise ValueError('RGI Version 4 is not supported anymore')
+        elif 'RGIId' in entity:
+            self.inventory = 'RGI'
+        elif 'sgi_r2018' in entity:
+            self.inventory = 'SGI_2018'
+        else:
+            raise NotImplementedError('This inventory is not yet understood')
+
+        # TODO: Make other inventories than RGI possible
+        if self.inventory == 'RGI':
+            # Should be V5
+            self.id = entity.RGIId
+            self.rgi_id = entity.RGIId
+            self.glims_id = entity.GLIMSId
+            self.area_km2 = float(entity.Area)
+            self.rgi_area_km2 = float(entity.Area)
+            self.cenlon = float(entity.CenLon)
+            self.cenlat = float(entity.CenLat)
+            self.rgi_region = '{:02d}'.format(int(entity.O1Region))
+            self.rgi_subregion = (self.rgi_region + '-' +
+                                  '{:02d}'.format(
+                                      int(entity.O2Region)))
+            name = entity.Name
+            rgi_datestr = entity.BgnDate
+
+            try:
+                gtype = entity.GlacType
+            except AttributeError:
+                # RGI V6
+                gtype = [str(entity.Form), str(entity.TermType)]
+
+            # rgi version can be useful
+            self.rgi_version = self.rgi_id.split('-')[0][-2]
+            if self.rgi_version not in ['5', '6']:
+                raise RuntimeError('RGI Version not understood: '
+                                   '{}'.format(self.rgi_version))
+
+            # remove spurious characters and trailing blanks
+            self.name = filter_rgi_name(name)
+
+            # region
+            reg_names, subreg_names = parse_rgi_meta(version=self.rgi_version)
+            n = reg_names.loc[int(self.rgi_region)].values[0]
+            self.rgi_region_name = self.rgi_region + ': ' + n
+            n = subreg_names.loc[self.rgi_subregion].values[0]
+            self.rgi_subregion_name = self.rgi_subregion + ': ' + n
+
+            # Read glacier attrs
+            gtkeys = {'0': 'Glacier',
+                      '1': 'Ice cap',
+                      '2': 'Perennial snowfield',
+                      '3': 'Seasonal snowfield',
+                      '9': 'Not assigned',
+                      }
+            ttkeys = {'0': 'Land-terminating',
+                      '1': 'Marine-terminating',
+                      '2': 'Lake-terminating',
+                      '3': 'Dry calving',
+                      '4': 'Regenerated',
+                      '5': 'Shelf-terminating',
+                      '9': 'Not assigned',
+                      }
+            self.glacier_type = gtkeys[gtype[0]]
+            self.terminus_type = ttkeys[gtype[1]]
+            self.is_tidewater = self.terminus_type in ['Marine-terminating',
+                                                       'Lake-terminating']
+            self.inversion_calving_rate = 0.
+            self.is_icecap = self.glacier_type == 'Ice cap'
+
+            # Hemisphere
+            self.hemisphere = 'sh' if self.cenlat < 0 else 'nh'
+
+            # convert the date
+            try:
+                rgi_date = pd.to_datetime(rgi_datestr[0:4],
+                                          errors='raise', format='%Y')
+            except:
+                rgi_date = None
+            self.rgi_date = rgi_date
+        elif self.inventory == 'SGI':
+            pass
+
+        # The divides dirs are created by gis.define_glacier_region, but we
+        # make the root dir
+        self.dir = os.path.join(base_dir, self.id[:8],
+                                self.id[:11],
+                                self.id)
+        if reset and os.path.exists(self.dir):
+            shutil.rmtree(self.dir)
+        mkdir(self.dir)
+
+        # logging file
+        self.logfile = os.path.join(self.dir, 'log.txt')
+
+        # Optimization
+        self._mbdf = None
+
+    def __repr__(self):
+
+        summary = ['<crampon.GlacierDirectory>']
+        summary += ['Inventory Type: ' + self.inventory]
+        if self.name:
+            summary += ['  Name: ' + self.name]
+        if os.path.isfile(self.get_filepath('glacier_grid')):
+            summary += ['  Grid (nx, ny): (' + str(self.grid.nx) + ', ' +
+                        str(self.grid.ny) + ')']
+            summary += ['  Grid (dx, dy): (' + str(self.grid.dx) + ', ' +
+                        str(self.grid.dy) + ')']
+        if self.inventory == 'RGI':
+            summary += ['  ID: ' + self.rgi_id]
+            summary += ['  Region: ' + self.rgi_region_name]
+            summary += ['  Subregion: ' + self.rgi_subregion_name]
+            summary += ['  Glacier type: ' + str(self.glacier_type)]
+            summary += ['  Terminus type: ' + str(self.terminus_type)]
+            summary += ['  Area: ' + str(self.rgi_area_km2) + ' km2']
+            summary += ['  Lon, Lat: (' + str(self.cenlon) + ', ' +
+                        str(self.cenlat) + ')']
+        elif self.inventory == 'SGI':
+            summary += ['  ID: ' + self.rgi_id]
+            summary += ['  Area: ' + str(self.area_km2) + ' km2']
+            summary += ['  Lon, Lat: (' + str(self.cenlon) + ', ' +
+                        str(self.cenlat) + ')']
+
+        return '\n'.join(summary) + '\n'
+
+    @lazy_property
+    def grid(self):
+        """A ``salem.Grid`` handling the georeferencing of the local grid"""
+        return salem.Grid.from_json(self.get_filepath('glacier_grid'))
+
+    @lazy_property
+    def area_m2(self):
+        """The glacier's RGI area (m2)."""
+        return self.area_km2 * 10 ** 6
+
+    # something we still need, because we use OGGM functions. Might leave soon.
+    @lazy_property
+    def rgi_area_m2(self):
+        return self.area_m2
+
+    # take over some very useful stuff from OGGM
+    def copy_to_basedir(self, base_dir, setup='run'):
+        return self.OGGMGD.copy_to_basedir(base_dir=base_dir, setup=setup)
+
+    def get_filepath(self, filename, delete=False, filesuffix=''):
+        return self.OGGMGD.get_filepath(filename=filename, delete=delete,
+                                        filesuffix=filesuffix)
+
+    def has_file(self, filename):
+        return self.OGGMGD.has_file(filename=filename)
+
+    def add_to_diagnostics(self, key, value):
+        return self.OGGMGD.add_to_diagnostics(key, value)
+
+    def get_diagnostics(self):
+        return self.OGGMGD.get_diagnostics()
+
+    def read_pickle(self, filename, use_compression=None, filesuffix=''):
+        return self.OGGMGD.read_pickle(filename=filename,
+                                       use_compression=use_compression,
+                                       filesuffix=filesuffix)
+
+    def write_pickle(self, var, filename, use_compression=None, filesuffix=''):
+        return self.OGGMGD.write_pickle(var=var, filename=filename,
+                                        use_compression=use_compression,
+                                        filesuffix=filesuffix)
+
+    def get_inversion_flowline_hw(self):
+        return self.OGGMGD.get_inversion_flowline_hw()
+
+    def log(self, task_name, err=None):
+        return self.OGGMGD.log(task_name=task_name, err=err)
+
+    def get_task_status(self, task_name):
+        return self.OGGMGD.get_task_status(task_name=task_name)
+
+    def write_monthly_climate_file(self, time, prcp, temp, grad, ref_pix_hgt,
+                                   ref_pix_lon, ref_pix_lat,
+                                   time_unit='days since 1801-01-01 00:00:00',
+                                   file_name='climate_monthly',
+                                   filesuffix=''):
+        return self.OGGMGD.write_monthly_climate_file(time=time, prcp=prcp,
+                                                      temp=temp, grad=grad,
+                                                      ref_pix_hgt=ref_pix_hgt,
+                                                      ref_pix_lon=ref_pix_lon,
+                                                      ref_pix_lat=ref_pix_lat,
+                                                      time_unit=time_unit,
+                                                      file_name=file_name,
+                                                      filesuffix=filesuffix)
+
+    def create_gridded_ncdf_file(self, filename):
+        """
+        Makes a gridded netcdf file template with time axis.
+
+        The difference to the method in OGGM is that we introduce a time axis
+        in order to be able to supply time series of the gridded parameters.
+        The other variables have to be created and filled by the calling
+        routine.
+
+        Parameters
+        ----------
+        filename : str
+            file name (must be listed in cfg.BASENAMES)
+        Returns
+        -------
+        a ``netCDF4.Dataset`` object.
+        """
+
+        # overwrite as default
+        fpath = self.get_filepath(filename)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+        nc = netCDF4.Dataset(fpath, 'w', format='NETCDF4')
+
+        xd = nc.createDimension('x', self.grid.nx)
+        yd = nc.createDimension('y', self.grid.ny)
+        time = nc.createDimension('time', None)
+
+        nc.author = 'OGGM and CRAMPON'
+        nc.author_info = 'Open Global Glacier Model and Cryospheric ' \
+                         'Monitoring and Prediction Online'
+        nc.proj_srs = self.grid.proj.srs
+
+        lon, lat = self.grid.ll_coordinates
+        x = self.grid.x0 + np.arange(self.grid.nx) * self.grid.dx
+        y = self.grid.y0 + np.arange(self.grid.ny) * self.grid.dy
+
+        v = nc.createVariable('x', 'f4', ('x',), zlib=True)
+        v.units = 'm'
+        v.long_name = 'x coordinate of projection'
+        v.standard_name = 'projection_x_coordinate'
+        v[:] = x
+
+        v = nc.createVariable('y', 'f4', ('y',), zlib=True)
+        v.units = 'm'
+        v.long_name = 'y coordinate of projection'
+        v.standard_name = 'projection_y_coordinate'
+        v[:] = y
+
+        v = nc.createVariable('longitude', 'f4', ('y', 'x'), zlib=True)
+        v.units = 'degrees_east'
+        v.long_name = 'longitude coordinate'
+        v.standard_name = 'longitude'
+        v[:] = lon
+
+        v = nc.createVariable('latitude', 'f4', ('y', 'x'), zlib=True)
+        v.units = 'degrees_north'
+        v.long_name = 'latitude coordinate'
+        v.standard_name = 'latitude'
+        v[:] = lat
+
+        v = nc.createVariable('time', 'f4', ('time',), zlib=True)
+        v.units = 'days since 1961-01-01'
+        v.long_name = 'time'
+        v.standard_name = 'time'
+
+        return nc
+
+
 
 if __name__ == '__main__':
     #rgigdf = gpd.read_file('C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp')
