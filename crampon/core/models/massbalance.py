@@ -8,16 +8,28 @@ import xarray as xr
 
 class DailyMassBalanceModel(MassBalanceModel):
     """
-    Child of OGGM's PastMassBalanceModel, able to calculate daily mass balance.
+    Extension of OGGM's MassBalanceModel, able to calculate daily mass balance.
     """
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
-                 filename='climate_daily', filesuffix=''):
+                 filename='climate_daily', filesuffix='',
+                 param_ep_func=np.nanmean):
 
         """
-        PastMassBalanceModel.__init__(self, gdir=gdir, mu_star=mu_star, bias=bias,
-                                      prcp_fac=prcp_fac, filename=filename,
-                                      filesuffix=filesuffix)
+        Model to calculate the daily mass balance of a glacier.
+
+        Parameters
+        ----------
+        gdir:
+        mu_star:
+        bias:
+        prcp_fac:
+        filename:
+        filesuffix:
+        param_ep_func: numpy arithmetic function
+            Method to use for extrapolation when there are no calibrated
+            paramaters available for the time step where the mass balance
+            should be calcul
         """
         # should probably be replaced by a direct access to a file that
         # contains uncertainties (don't know how to handle that yet)
@@ -50,6 +62,7 @@ class DailyMassBalanceModel(MassBalanceModel):
 
         self.gdir = gdir
         self.filesuffix = filesuffix
+        self.param_ep_func = param_ep_func
         self.mu_star = mu_star
         self.bias = bias
         self.prcp_fac = prcp_fac
@@ -82,13 +95,13 @@ class DailyMassBalanceModel(MassBalanceModel):
             # Read timeseries
             self.temp = nc.variables['temp'][:]
             self.prcp_unc = nc.variables['prcp'][:]
-            #if isinstance(self.prcp_fac, pd.Series):
-            #    self.prcp = nc.variables['prcp'][:] * \
-            #                self.prcp_fac.reindex(index=time,
-            #                                      method='nearest')\
-            #                    .fillna(value=np.nanmean(self.prcp_fac))
-            #else:
-            #    self.prcp = nc.variables['prcp'][:] * self.prcp_fac
+            if isinstance(self.prcp_fac, pd.Series):
+                self.prcp = nc.variables['prcp'][:] * \
+                            self.prcp_fac.reindex(index=time,
+                                                  method='nearest')\
+                                .fillna(value=self.param_ep_func(self.prcp_fac))
+            else:
+                self.prcp = nc.variables['prcp'][:] * self.prcp_fac
             self.tgrad = nc.variables['grad'][:]
             self.pgrad = cfg.PARAMS['prcp_grad']
             self.ref_hgt = nc.ref_hgt
@@ -181,10 +194,13 @@ class DailyMassBalanceModel(MassBalanceModel):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         if isinstance(self.prcp_fac, pd.Series):
-            iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                  **kwargs)]
+            try:
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
+                                                                      **kwargs)]
+            except KeyError:
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
-                iprcp_fac = np.nanmean(self.prcp_fac)
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
             iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
             iprcp = self.prcp_unc[ix] * self.prcp_fac
@@ -201,10 +217,13 @@ class DailyMassBalanceModel(MassBalanceModel):
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
         if isinstance(self.mu_star, pd.Series):
-            mu_star = self.mu_star.iloc[self.mu_star.index.get_loc(
-                date, **kwargs)]
+            try:
+                mu_star = self.mu_star.iloc[self.mu_star.index.get_loc(
+                    date, **kwargs)]
+            except KeyError:
+                mu_star = self.param_ep_func(self.mu_star)
             if pd.isnull(mu_star):
-                mu_star = np.nanmean(self.mu_star)
+                mu_ice = self.param_ep_func(self.mu_star)
         else:
             mu_star = self.mu_star
 
@@ -366,13 +385,13 @@ class BraithwaiteModel(DailyMassBalanceModel):
             # Read timeseries
             self.temp = nc.variables['temp'][:]
             # Todo: Think of nicer extrapolation method than fill with mean
-            #if isinstance(self.prcp_fac, pd.Series):
-            #    self.prcp = nc.variables['prcp'][:] * \
-            #                self.prcp_fac.reindex(index=time,
-            #                                      method='nearest').fillna(
-            #        value=np.nanmean(self.prcp_fac))
-            #else:
-            #    self.prcp = nc.variables['prcp'][:] * self.prcp_fac
+            if isinstance(self.prcp_fac, pd.Series):
+                self.prcp = nc.variables['prcp'][:] * \
+                            self.prcp_fac.reindex(index=time,
+                                                  method='nearest').fillna(
+                    value=self.param_ep_func(self.prcp_fac))
+            else:
+                self.prcp = nc.variables['prcp'][:] * self.prcp_fac
             self.tgrad = nc.variables['grad'][:]
             self.pgrad = cfg.PARAMS['prcp_grad']
             self.ref_hgt = nc.ref_hgt
@@ -426,10 +445,13 @@ class BraithwaiteModel(DailyMassBalanceModel):
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
-            iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                  **kwargs)]
+            try:
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
+                                                                      **kwargs)]
+            except KeyError:
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
-                iprcp_fac = np.nanmean(self.prcp_fac)
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
             iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
             iprcp = self.prcp_unc[ix] * self.prcp_fac
@@ -446,18 +468,24 @@ class BraithwaiteModel(DailyMassBalanceModel):
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
         if isinstance(self.mu_ice, pd.Series):
-            mu_ice = self.mu_ice.iloc[
-                self.mu_ice.index.get_loc(date, **kwargs)]
+            try:
+                mu_ice = self.mu_ice.iloc[
+                    self.mu_ice.index.get_loc(date, **kwargs)]
+            except KeyError:
+                mu_ice = self.param_ep_func(self.mu_ice)
             if pd.isnull(mu_ice):
-                mu_ice = np.nanmean(self.mu_ice)
+                mu_ice = self.param_ep_func(self.mu_ice)
         else:
             mu_ice = self.mu_ice
 
         if isinstance(self.mu_snow, pd.Series):
-            mu_snow = self.mu_snow.iloc[
-                self.mu_snow.index.get_loc(date, **kwargs)]
+            try:
+                mu_snow = self.mu_snow.iloc[
+                    self.mu_snow.index.get_loc(date, **kwargs)]
+            except KeyError:
+                mu_snow = self.param_ep_func(self.mu_snow)
             if pd.isnull(mu_snow):
-                mu_snow = np.nanmean(self.mu_snow)
+                mu_snow = self.param_ep_func(self.mu_snow)
         else:
             mu_snow = self.mu_snow
 
