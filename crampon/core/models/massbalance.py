@@ -224,7 +224,7 @@ class DailyMassBalanceModel(MassBalanceModel):
             except KeyError:
                 mu_star = self.param_ep_func(self.mu_star)
             if pd.isnull(mu_star):
-                mu_ice = self.param_ep_func(self.mu_star)
+                mu_star = self.param_ep_func(self.mu_star)
         else:
             mu_star = self.mu_star
 
@@ -574,7 +574,7 @@ class PellicciottiModel(DailyMassBalanceModel):
     def __init__(self):
 
         super.__init__()
-        self.albedo = None # GlacierAlbedo() TODO: implement Albedo object
+        self.albedo = GlacierAlbedo() #TODO: implement Albedo object
 
     def get_alpha(self, snow, date):
         """
@@ -713,7 +713,7 @@ class PellicciottiModel(DailyMassBalanceModel):
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
         mb_day = prcpsol - mu_comb * tempformelt - bias
 
-        mb_day = self.t * T + self.srf * (1- alpha) * G
+        mb_day = self.t * T + self.srf * (1 - self.albedo.get_alpha()) * G
 
         self.time_elapsed = date
         snow_cond = self.update_snow(date, mb_day)
@@ -736,8 +736,9 @@ class PellicciottiModel(DailyMassBalanceModel):
 
 class Layer(object):
     """
-    The base class that all snow/firn/preosclosed/ice layers should inherit from.
+    The base class that all snow/firn/poresclosed/ice layers should inherit from.
     """
+
 
 class SnowLayer(object):
     """
@@ -925,7 +926,8 @@ class FirnLayer(SnowLayer):
         super().__init__(swe, rho, origin, temperature=temperature,
                          liq_content=liq_content)
 
-        self.init_density = None
+        # TODO: It was set to None before:Why?
+        self.init_density = rho
 
 
 class PoresClosedLayer(SnowLayer):
@@ -958,6 +960,11 @@ class PoresClosedLayer(SnowLayer):
     # TODO: Is this true?
     @property
     def liq_content(self):
+        return 0.
+
+    @property
+    def bubble_pressure(self):
+        # Todo: needs to be implemented
         return 0.
 
 
@@ -1038,7 +1045,9 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
         self.init_rho = rho
         self.origin = origin
         self.init_temperature = temperature
-        self.liq_content = liq_content
+        self.init_liq_content = liq_content
+
+        self.layers = self.setup_layers()
 
         # parameters
         self.refreezing = refreezing
@@ -1059,10 +1068,8 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
             self._tgrid_temperature = temperature
         else:
             # initiate with zero deg C, if we don't know better
-            self.temperature = np.ones(n_layers) * 273.16
-            self._tgrid_temperature = np.ones(n_layers) * 273.16
-
-        self.layers = self.setup_layers()
+            self.temperature = np.ones(self.n_layers) * 273.16
+            self._tgrid_temperature = np.ones(self.n_layers) * 273.16
 
     def setup_layers(self):
         """
@@ -1082,13 +1089,13 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
             A grid object
         """
 
-        pack = [0] * self.n_layers
+        pack = [0] * len(self.init_swe)
 
-        for n in range(self.n_layers):
+        for n in range(len(self.init_swe)):
             pack[n] = LayerFactory.make_layer(self.init_swe[n],
                                               self.init_rho[n], self.origin[n],
-                                              temperature=self.temperature[n],
-                                              liq_content=self.liq_content[n])
+                                              temperature=self.init_temperature[n],
+                                              liq_content=self.init_liq_content[n])
         return pack
 
     @property
@@ -1120,6 +1127,43 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
         return [np.average([l.rho for l in self.layers],
                            weights=[l.sh for l in self.layers])]
 
+    def get_type_indices(self, layertype):
+        """
+        Get the grid indices as tuples for a given type.
+
+        Parameters
+        ----------
+        type: str
+            Type to retrieve the indices for. Allowed are: 'snow', 'firn',
+            'poresclosed' and 'ice'.
+
+        Returns
+        -------
+        indices: list of tuples
+            Indices where the given type occurs.
+        """
+
+        if layertype.lower() not in ['snow', 'firn', 'poresclosed', 'ice']:
+            raise ValueError('Type {} not accepted. Must be either of "snow", '
+                             '"firn", "poresclosed" or "ice".'.format(layertype))
+
+        indices = []
+        for i, layer in enumerate(self.layers):
+            if layertype == 'snow':
+                if type(layer) == SnowLayer:
+                    indices.append((i))
+            elif layertype == 'firn':
+                if type(layer) == FirnLayer:
+                    indices.append((i))
+            elif layertype == 'poresclosed':
+                if type(layer) == PoresClosedLayer:
+                    indices.append((i))
+            elif layertype == 'ice':
+                if type(layer) == IceLayer:
+                    indices.append((i))
+
+        return indices
+
     def add_layer(self, swe, rho, origin, temperature=None, liq_content=None,
                   ix=0):
         """
@@ -1149,6 +1193,22 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
             self.layers.pop(ix)
         else:
             raise IndexError('No layer to be removed')
+
+    def remove_ice_layers(self):
+        """
+        Removes layers a the bottom (only there!) that have exceeded the
+        threshold density for ice.
+
+        Returns
+        -------
+        None
+        """
+
+        ice_ix = self.get_type_indices('ice')
+        # Ensure we are somewhere at the bottom:
+        for i in ice_ix:
+            if all([ice_ix[i:] in list(range(i, self.n_layers))]):
+                self.remove_layer(i)
 
     def melt(self, swe):
         """
@@ -1243,8 +1303,8 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
                     [t.swe for t in [layer_one, layer_two]])
                 new_liq_content = np.sum(
                     [t.liq_content for t in [layer_one, layer_two]])
-
-                insert = LayerFactory.make_layer(swe=new_swe, rho=new_rho,
+                # TODO: check if factory can be used
+                insert = SnowLayer(swe=new_swe, rho=new_rho,
                                    origin=new_origin,
                                    temperature=new_temperature,
                                    liq_content=new_liq_content)
@@ -1253,6 +1313,59 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
 
                 # remove l+1
                 self.remove_layer(l + 1)
+
+    def merge_firn_layers(self, date):
+        """
+        E.g. application:
+        If a layer bunch is older than one year, collapse them into one firn layer
+
+        Parameters
+        ----------
+        date: datetime.datetime
+            The date determines the origin date of the merged layer.
+
+        Returns
+        -------
+        None
+        """
+
+        # First update all layer types
+        self.update_layers()
+
+        temp_inds = []
+        temp_layers = []
+        for l in range(self.n_layers):
+            # merge only by density and not by date/age
+            # don't use isinstance, this also returns true for SnowLayer:
+            if (type(self.layers[l]) == SnowLayer) and \
+                    self.layers[l].rho >= cfg.PARAMS['snow_firn_threshold']:
+                temp_inds.append(l)
+                temp_layers.append(self.layers[l])
+
+        if temp_layers:
+            temp_inds.sort(reverse=True)
+            for i in temp_inds:
+                self.layers.pop(i)
+
+            new_swe = sum([t.swe for t in temp_layers])
+            new_rho = sum([t.rho * t.sh for t in temp_layers]) / np.sum(
+                [t.sh for t in temp_layers])
+            # TODO: is it clever to give them the current date? Actually yes, because the daily model should have run until then already
+            new_origin = date
+            # new_origin = np.max([t.last_update for t in temp_layers])
+            # TODO: the temperature should actually go via the energy
+            new_temp = sum(
+                [t.temperature * t.swe for t in temp_layers]) / np.sum(
+                [t.swe for t in temp_layers])
+            new_liq = sum([t.liq_content for t in temp_layers])
+            insert = FirnLayer(swe=new_swe, rho=new_rho, origin=new_origin,
+                               temperature=new_temp, liq_content=new_liq)
+            insert.init_density = new_rho
+
+            self.layers.insert(min(temp_inds), insert)
+
+        # HOW TO ENSURE THAT THE LAYERS ARE NOT MERGED WITH OTHER FIRN LAYERS?
+        # INTRODUCE STATUS ATTRIBUTE?
 
     def update_layers(self):
         """
@@ -1267,8 +1380,168 @@ class SnowFirnPack(object, metaclass=SuperclassMeta):
 
         # employ the factory with the properties of each existing layer to have a centralized place where we determine the properties of the layers
 
+        for n in range(self.n_layers):
+            l = self.layers[n]
+            self.layers[n] = LayerFactory.make_layer(l.swe, l.rho, l.origin,
+                                                     temperature=l.temperature,
+                                                     liq_content=l.liq_content)
 
-class SnowFirnCover(object, metaclass=SuperclassMeta):
+    def densify_firn_huss(self, date, f_firn=2.4, poresclosed_rate=10.,
+                          rho_f0_const=False):
+        """
+        Apply the firn densification after Huss (2013), Reeh (2008) and Herron
+        and Langway (1980).
+
+        Parameters
+        ----------
+        f_firn: float
+           A factor empirically determined by Herron and Langway (1980), used
+           by Huss 2013 to tune simulated to observed firn densification
+        poresclosed_rate: float
+            The rate with which the firn pack densifies once the pores are
+            closed. Default: 10 kg m-3 a-1 (see Huss 2013).
+        rho_f0_const: bool
+            Whether or not the initial firn density should be constant or
+            calculated from the layer's density (if available). Default: False
+            (density calculated, if available).
+
+        Returns
+        -------
+        None
+        """
+
+        self.merge_firn_layers(date)
+
+        # Mean annual surface temperature, 'presumably' firn temperature at 10m
+        # depth (Reeh (2008)); set to 273 according to Huss 2013
+        # TODO: this should be actually calculated
+        T_ms = 273.  # K
+
+        # some model constant
+        k1 = f_firn * 575. * np.exp(
+            - cfg.E_FIRN / (cfg.R * T_ms))  # m(-0.5)a(-0.5)
+
+        # what happens between 800 and pore close-off? We just replace it.
+        firn_ix = self.get_type_indices('firn')
+        poresclosed_ix = self.get_type_indices('poresclosed')
+
+        for l in firn_ix:
+
+            # careful with days!!!! (the difference might be 364 days or so)
+
+            # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
+            t = (date - self.layers[l].origin).days / 365.25
+
+            if rho_f0_const:
+                # initial firn density from Huss (2013) is 490, anyway...
+                rho_f0 = cfg.PARAMS['snow_firn_threshold']  # kg m-3
+            else:
+                rho_f0 = self.layers[l].init_density
+
+            # just to not divide by zero when a layer forms
+            if t != 0.:
+                b = np.sum([i.swe for i in self.layers[
+                                           :l]]) / t  # annual accumulation rate
+
+                c_reeh_ice = k1 * np.sqrt(
+                    b * cfg.RHO / cfg.RHO_W)  # 550 kg m-3 < rho_f < 800 kg m-3
+
+                # Huss 2013, equation 5
+                rho_f = cfg.RHO - (cfg.RHO - rho_f0) * np.exp(
+                    -c_reeh_ice * t)
+
+                self.layers[l].rho = rho_f
+            else:
+                continue
+
+            # TODO: apply refreezing here?
+            if self.refreezing:
+                self.update_refreezing_potential()
+
+                #rho_f += RF_t
+
+
+        # TODO: HERE WE ASSUME ONE YEAR => t NEEDS TO BE ADJUSTED OR AN ATTRIBUTE "LAST_UPDATED" NEEDS TO BE MADE
+        for h, l in poresclosed_ix:
+            self.layers[l].rho = self.layers[l].rho + poresclosed_rate * dt.timedelta(date - self.layers[l].origin).years
+
+        # last but not least
+        self.remove_ice_layers()
+
+
+    def densify_snow_anderson(self, date, eta0=3.7e7, etaa=0.081, etab=0.018,
+                              snda=2.8e-6, sndb=0.042, sndc=0.046, rhoc=150.,
+                              rhof=100., target_dt=24*3600):
+        """
+        Snow densification according to Anderson (1976).
+
+        The values for the parameters are taken from the SFM2 model (Essery,
+        2015). The biggest problem might be that they are not tested on
+        perennial snow.
+
+        Parameters
+        ----------
+        date: dt.datetime
+            Date for which to update the snow density.
+        eta0: float
+            Reference snow viscosity (Pa s). Default: 3.7e7 (`Essery 2018`_).
+        etaa: float
+            Snow viscosity parameter (1/K). Default: 0.081 (`Essery 2018`_).
+        etab: float
+            Snow viscosity parameter (m3 kg-1). Default: 0.018
+            (`Essery 2018`_).
+        snda: float
+            Snow densification parameter (s-1). Default 2.8e-6
+            (`Essery 2018`_).
+        sndb: float
+            Snow densification parameter (K-1). Default 0.042 (`Essery 2018`_).
+        sndc: float
+            Snow densification parameter (m3 kg-1). Default 0.046
+            (`Essery 2018`_).
+        rhoc: float
+            Critical snow density (kg m-3). Default: 150. (`Essery 2018`_).
+        rhof: float
+            Fresh snow density (kg m-3). Default 100. (`Essery 2018`_).
+        target_dt: int
+            Target integration time in seconds (the time step over which the
+            equation should be integrated). Default: 24 * 3600 (one day).
+
+        Returns
+        -------
+        None
+
+        .. _Essery 2018:
+        https://github.com/RichardEssery/FSM2/blob/master/src/SNOW.F90
+        """
+
+        Tm_k = cfg.PARAMS['temp_melt'] + 273.16
+
+        # CHECK HERE IF THE DATE IS MORE THAN ONE DAY AWAY FROM THE LAST UPDATE?
+        dt = target_dt
+
+        # UPDATE TEMPERATURES HERE
+
+        # DON'T USE THE RETRIEVED INDICES HERE: otherwise overlying mass could be wrong if layers above are by chance firn ( densification(ice lenses by refreezing!)
+        mass = 0.
+        for l in range(self.n_layers):
+            rho_old = self.layers[l].rho
+            mass += rho_old * self.layers[l].sh
+
+            if type(self.layers[l]) == SnowLayer:
+                self.layers[l].rho = rho_old + \
+                                      (rho_old * cfg.G * mass * dt / eta0) * \
+                                      np.exp(etaa * (self.layers[
+                                                         l].temperature - Tm_k) - etab *
+                                             rho_old) + dt * \
+                                      rho_old * snda * np.exp(
+                    sndb * (self.layers[l].temperature - Tm_k) - sndc * max(
+                        rho_old - rhoc, 0.))
+
+        # to be sure
+        self.remove_ice_layers()
+
+
+class SnowFirnCover(object):
     """ Implements a an interface to a snow and/or firn cover.
 
     # TODO: Take care of removing ice layers instantly, so that e.g. the method "get:total_rho" doesn't deliver wrong results
@@ -1346,13 +1619,30 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
             self.temperature = np.ones(height_nodes) * 273.16
             self._tgrid_temperature = np.ones(height_nodes) * 273.16
 
-        self.grid = self.grid_setup()
+        self.grid = self.setup_grid()
 
     @property
     def n_heights(self):
         return len(self.height_nodes)
 
-    def grid_setup(self):
+    # This makes a decorator within the class
+    def _apply_to_grid(self, function):
+        """
+        The crazy decorator that does the job for almost everything.
+
+        Now, in theory, this class has to inherit from the SnowFirnPack.
+
+        Returns
+        -------
+
+        """
+        def grid_magic(self):
+            for i in self.grid:
+                function(self, i)
+
+        return grid_magic
+
+    def setup_grid(self):
         """
         Set up a grid for the given height nodes.
 
@@ -1373,6 +1663,7 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
         grid = [0] * self.n_heights
 
         for n in range(self.n_heights):
+            #grid[n] = SnowFirnPack(self.swe, self.rho, self.origin, self.temperature, self.liq_content)
             if self.rho[n] < cfg.PARAMS['snow_firn_threshold']:
                 grid[n] = [SnowLayer(self.swe[n], self.rho[n], self.origin[n],
                                      self.temperature[n], self.liq_content[n])]
@@ -1434,11 +1725,16 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
             raise ValueError('Dimensions of SnowFirnCover and mass to be '
                              'added must match.')
 
+        #for h in np.where(swe > 0)[0]:
+        #        self.grid[h].add_layer(swe[h], rho[h], origin,
+        #                               temperature=temperature,
+        #                               liq_content=liq_content)
         for h in np.where(swe > 0)[0]:
             if rho[h] < cfg.PARAMS['snow_firn_threshold']:
                 self.grid[h].insert(ix, SnowLayer(swe[h], rho[h], origin))
             else:
                 self.grid[h].insert(ix, FirnLayer(swe[h], rho[h], origin))
+
 
     def remove_layer(self, height_ix, layer_ix=0):
         """
@@ -1553,6 +1849,28 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
         """
         raise NotImplementedError
 
+    def get_overburden_swe(self, h, l):
+        """Get overburden snow water equivalent for a specific layer
+
+        Parameters
+        ----------
+        h: int
+            Height index of node in SnowFirnCover.
+        l: int
+            Layer index at height node in SnowFirnCover.
+
+        Returns
+        -------
+        top_swe: float
+            The snow water equivalent on top of the given layer.
+        """
+
+        node = self.grid[h]
+        top_layers = node[:l]
+        top_swe = np.sum([i.swe for i in top_layers])
+
+        return top_swe
+
     def remove_ice_layers(self):
         """
         Removes layers a the bottom (only there!) that have exceeded the
@@ -1660,6 +1978,10 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
         -------
         None
         """
+        #for sfp in self.grid:
+        #    sfp.densify_firn_huss(date, f_firn=f_firn,
+        #                          poresclosed_rate=poresclosed_rate,
+        #                          rho_f0_const=rho_f0_const)
 
         self.merge_firn_layers(date)
 
@@ -1709,12 +2031,1102 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
             if self.refreezing:
                 self.update_refreezing_potential()
 
-                #rho_f += RF_t
-
+                # rho_f += RF_t
 
         # TODO: HERE WE ASSUME ONE YEAR => t NEEDS TO BE ADJUSTED OR AN ATTRIBUTE "LAST_UPDATED" NEEDS TO BE MADE
         for h, l in poresclosed_ix:
-            self.grid[h][l].rho = self.grid[h][l].rho + poresclosed_rate * dt.timedelta(date - self.grid[h][l].origin).years
+            self.grid[h][l].rho = self.grid[h][
+                                      l].rho + poresclosed_rate * dt.timedelta(
+                date - self.grid[h][l].origin).years
+
+        # last but not least
+        self.remove_ice_layers()
+
+    def _densify_poresclosed_huss(self, rate):
+        """ """
+        # TODO: Implement this function to be called within firn densification functions
+        pass
+
+    def densify_huss_derivative(self, date, f_firn=2.4):
+        """ Try and implement Reeh"""
+
+        self.merge_firn_layers(date)
+
+        firn_ix = self.get_type_indices('firn')
+        poresclosed_ix = self.get_type_indices('poresclosed')
+        snow_ix = self.get_type_indices('snow')
+
+        for h, l in firn_ix:
+            # TODO: Is the Spec_bal really only Snowlayers?
+            snow_ix_h = [(hs, ls) for (hs, ls) in snow_ix if hs == h]
+
+
+            # SPEC_BAL is in M ICE!!!!
+            # is the specific balance meant as the annual balance or all overburden pressure?
+            #spec_bal = np.sum([self.grid[hs][ls].swe for (hs, ls) in snow_ix_h]) * cfg.RHO_W / cfg.RHO
+
+            # This assumes that the spec bal is all overburden pressure
+            spec_bal = self.get_overburden_swe(h, l) * cfg.RHO_W / cfg.RHO
+
+            # TODO: this should be actually calculated
+            T_ms = 273.  # K
+
+            # some model constant
+            k1 = f_firn * 575. * np.exp(
+                - cfg.E_FIRN / (cfg.R * T_ms))  # m(-0.5)a(-0.5)
+
+            # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
+            t = (date - self.grid[h][l].origin).days / 365.25
+
+            c_reeh_ice = k1 * np.sqrt(
+                spec_bal * cfg.RHO / cfg.RHO_W)  # 550 kg m-3 < rho_f < 800 kg m-3
+
+            if spec_bal > 0.:
+
+                current_rho = self.grid[h][l].rho
+
+                drho = c_reeh_ice * (cfg.RHO - self.grid[h][l].rho)
+
+                self.grid[h][l].rho += drho
+
+            # do not forget
+            self.grid[h][l].last_update = date
+
+        # last but not least
+        self.remove_ice_layers()
+
+    def densify_firn_barnola(self, date, beta=-29.166, gamma=84.422,
+                             delta=-87.425, epsilon=30.673):
+        """
+        Apply the firn densification after Barnola et al. (1990)
+
+        Parameters
+        ----------
+        beta: float
+           Empirical factor (see Barnola et al. (1990)).
+        gamma: float
+           Empirical factor (see Barnola et al. (1990)).
+        delta: float
+           Empirical factor (see Barnola et al. (1990)).
+        epsilon: float
+           Empirical factor (see Barnola et al. (1990)).
+
+        Returns
+        -------
+        None
+
+        """
+
+        self.merge_firn_layers(date)
+
+        firn_ix = self.get_type_indices('firn')
+        poresclosed_ix = self.get_type_indices('poresclosed')
+
+        a0 = 25400
+        for h, l in firn_ix:
+            k1 = a0 * np.exp(
+                -60000 / (cfg.R * self.grid[h][l].temperature))
+
+            print('before', self.grid[h][l].rho)
+
+            # TODO: dt is in seconds! which unit is rho here=?
+            days = (date - self.grid[h][l].last_update).days
+
+            for dt in (np.ones(days) * 24 * 3600):
+
+                current_rho = self.grid[h][l].rho
+                si_ratio = current_rho / cfg.RHO
+
+                if current_rho < 800.:
+                    f = 10 ** ((beta * si_ratio ** 3) +
+                               (gamma * si_ratio ** 2) +
+                               (delta * si_ratio) +
+                               epsilon)
+                else:
+                    f = ((3. / 16.) * (1 - si_ratio)) / \
+                        (1. - (1. - si_ratio) ** 0.3) ** 3.
+
+                p_over = self.get_overburden_swe(h, l) * 1000. * cfg.G
+
+                try:
+                    p_bubble = self.grid[h][l].bubble_pressure  # if pores closed
+                except AttributeError:
+                    p_bubble = 0.
+                drho = k1 * current_rho * f * ((p_over - p_bubble)/10**6) ** 3 * dt
+
+                self.grid[h][l].rho += drho
+
+            print('after', self.grid[h][l].rho)
+            if h == 400:
+                print('hi')
+
+            # do not forget
+            self.grid[h][l].last_update = date
+
+        # last but not least
+        self.remove_ice_layers()
+
+    def densify_snow_anderson(self, date, eta0=3.7e7, etaa=0.081, etab=0.018,
+                              snda=2.8e-6, sndb=0.042, sndc=0.046, rhoc=150.,
+                              rhof=100., target_dt=24*3600):
+        """
+        Snow densification according to Anderson (1976).
+
+        The values for the parameters are taken from the SFM2 model (Essery,
+        2015). The biggest problem might be that they are not tested on
+        perennial snow.
+
+        Parameters
+        ----------
+        date: dt.datetime
+            Date for which to update the snow density.
+        eta0: float
+            Reference snow viscosity (Pa s). Default: 3.7e7 (`Essery 2018`_).
+        etaa: float
+            Snow viscosity parameter (1/K). Default: 0.081 (`Essery 2018`_).
+        etab: float
+            Snow viscosity parameter (m3 kg-1). Default: 0.018
+            (`Essery 2018`_).
+        snda: float
+            Snow densification parameter (s-1). Default 2.8e-6
+            (`Essery 2018`_).
+        sndb: float
+            Snow densification parameter (K-1). Default 0.042 (`Essery 2018`_).
+        sndc: float
+            Snow densification parameter (m3 kg-1). Default 0.046
+            (`Essery 2018`_).
+        rhoc: float
+            Critical snow density (kg m-3). Default: 150. (`Essery 2018`_).
+        rhof: float
+            Fresh snow density (kg m-3). Default 100. (`Essery 2018`_).
+        target_dt: int
+            Target integration time in seconds (the time step over which the
+            equation should be integrated). Default: 24 * 3600 (one day).
+
+        Returns
+        -------
+        None
+
+        .. _Essery 2018:
+        https://github.com/RichardEssery/FSM2/blob/master/src/SNOW.F90
+        """
+
+        #for sfp in self.grid:
+        #    if sfp.get_total_height > 0.:
+        #        sfp.densify_snow_anderson(date, eta0=eta0, etaa=etaa, etab=etab,
+        #                          snda=snda, sndb=sndb, sndc=sndc, rhoc=rhoc,
+        #                          rhof=rhof, target_dt=target_dt)
+
+        Tm_k = cfg.PARAMS['temp_melt'] + 273.16
+
+        # CHECK HERE IF THE DATE IS MORE THAN ONE DAY AWAY FROM THE LAST UPDATE?
+        dt = target_dt
+
+        # UPDATE TEMPERATURES HERE
+
+        height_ix = np.where(self.grid)[0]  # where there is something at all
+
+        # DON'T USE THE RETRIEVED INDICES HERE: otherwise overlying mass could be wrong if layers above are by chance firn ( densification(ice lenses by refreezing!)
+        for h in height_ix:
+            mass = 0.
+            for l in range(len(self.grid[h])):
+                rho_old = self.grid[h][l].rho
+                mass += rho_old * self.grid[h][l].sh
+
+                if type(self.grid[h][l]) == SnowLayer:
+                    self.grid[h][l].rho = rho_old + \
+                                          (
+                                                      rho_old * cfg.G * mass * dt / eta0) * \
+                                          np.exp(etaa * (self.grid[h][
+                                                             l].temperature - Tm_k) - etab *
+                                                 rho_old) + dt * \
+                                          rho_old * snda * np.exp(
+                        sndb * (self.grid[h][
+                                    l].temperature - Tm_k) - sndc * max(
+                            rho_old - rhoc, 0.))
+                    self.grid[h][l].last_update = date
+
+        # to be sure
+        self.remove_ice_layers()
+
+    def merge_firn_layers(self, date):
+        """
+        E.g. application:
+        If a layer bunch is older than one year, collapse them into one firn layer
+        (2) Merge neighbor layers below a layer thickness of 2cm? WHAT TO DO WITH THE ORIGIN DATE?
+
+        Parameters
+        ----------
+        date: datetime.datetime
+            The date determines the origin date of the merged layer.
+
+        Returns
+        -------
+        None
+        """
+
+        for h, pack in enumerate(self.grid):
+            temp_inds = []
+            temp_layers = []
+            for l, layer in enumerate(pack):
+                # merge only by density and not by date/age
+                # don't use isinstance, this also returns true for SnowLayer:
+                if (type(self.grid[h][l]) == SnowLayer) and \
+                        self.grid[h][l].rho >= cfg.PARAMS['snow_firn_threshold']:
+                    temp_inds.append(l)
+                    temp_layers.append(self.grid[h][l])
+
+            if h == 0:
+                print(h)
+                print(h)
+            if temp_layers:
+                temp_inds.sort(reverse=True)
+                for i in temp_inds:
+                    self.grid[h].pop(i)
+
+                new_swe = sum([t.swe for t in temp_layers])
+                new_rho = sum([t.rho * t.sh for t in temp_layers]) / np.sum(
+                    [t.sh for t in temp_layers])
+                # give them current date (daily model should have run until then already)
+                new_origin = date
+                # new_origin = np.max([t.last_update for t in temp_layers])
+                # TODO: the temperature should actually go via the energy
+                new_temp = sum(
+                    [t.temperature * t.swe for t in temp_layers]) / np.sum(
+                    [t.swe for t in temp_layers])
+                new_liq = sum([t.liq_content for t in temp_layers])
+                # TODO: Here needs to a snowlayer, otherwise we get too many firn layers.....one should take care that here the factory can be used, but only the firnlayers < 1 year are merged
+                insert_l = FirnLayer(swe=new_swe, rho=new_rho, origin=new_origin,
+                                   temperature=new_temp, liq_content=new_liq)
+                insert_l.init_density = new_rho
+
+                self.grid[h].insert(min(temp_inds), insert_l)
+
+        # HOW TO ENSURE THAT THE LAYERS ARE NOT MERGED WITH OTHER FIRN LAYERS? INTRODUCE STATUS ATTRIBUTE?
+
+    def merge_layers(self, min_sh=0.02):
+        """
+        Merge similar neighbor layers inplace by a minimum height criterion.
+
+        Parameters
+        ----------
+        min_sh: float
+            Minimum allowed height for a snow layer im meters. Default: 0.02 m.
+
+        Returns
+        -------
+        None
+        """
+
+        for h in range(len(self.grid)):
+            for l in range(len(self.grid[h]) - 1):
+
+                # if we've become too short already
+                try:
+                    self.grid[h][l+1]
+                except IndexError:
+                    continue
+
+                if self.grid[h][l].sh < min_sh:
+                    # update l
+                    layer_one = self.grid[h][l]
+                    layer_two = self.grid[h][l + 1]
+                    new_swe = np.sum([layer_one.swe + layer_two.swe])
+                    new_rho = np.sum([t.rho * t.sh for t in
+                                      [layer_one, layer_two]]) / np.sum(
+                        [t.sh for t in [layer_one, layer_two]])
+                    new_origin = np.max(
+                        [t.last_update for t in [layer_one, layer_two]])
+                    # TODO: the temperature should actually go via the energy
+                    new_temperature = np.sum(
+                        [t.temperature * t.swe for t in
+                         [layer_one, layer_two]]) / np.sum(
+                        [t.swe for t in [layer_one, layer_two]])
+                    new_liq_content = np.sum(
+                        [t.liq_content for t in [layer_one, layer_two]])
+                    insert = SnowLayer(swe=new_swe, rho=new_rho,
+                                       origin=new_origin,
+                                       temperature=new_temperature,
+                                       liq_content=new_liq_content)
+
+                    self.grid[h][l] = insert
+
+                    # remove l+1
+                    self.remove_layer(h, l + 1)
+
+    def return_state(self, param='swe', dataset=False):
+        """This should be a function that can be called to get the current
+        status of the snow/firn cover as numpy arrays or xr.Dataset. If put in
+        a loop, the history can be retrieved."""
+
+        if dataset:
+            raise NotImplementedError
+        else:
+            # recipe to convert list of lists to array
+            length = len(sorted(self.grid, key=len, reverse=True)[0])
+            grid_array = np.array(
+                [[np.nan] * (length - len(xi)) + [getattr(i, param) for i in xi] for xi in self.grid])
+
+            return grid_array
+
+
+class SnowFirnCoverArrays(object):
+    """ Implements a an interface to a snow and/or firn cover with property arrays.
+
+    # TODO: Take care of removing ice layers instantly, so that e.g. the method "get:total_rho" doesn't deliver wrong results
+
+    Attributes
+    ----------
+    heights: numpy.ndarray
+        The heights at which the snow/firn cover shall be implemented (m).
+    swe: numpy.ndarray
+        The snow water equivalent of the snow/firn layers (m w.e.).
+    sh: numpy.ndarray
+        The snow height of the snow/firn layers (m).
+    rho: numpy.ndarray
+        The density of the snow/firn layers (kg m-3).
+    origin: numpy.ndarray of datetime.datetime
+        The origin date of the snow/firn layers.
+    temp_profile: numpy.ndarray
+        Temperature profile of the layers. If not given, it is initiated with
+        zero degrees everywhere (K).
+    liq_content: numpy.ndarray
+        Liquid content of the snowpack (m w.e.). NOT YET IMPLEMENTED!
+        # TODO: to be implemented
+    pore_close: float
+        Pore close-off density threshold (kg m-3).
+    firn_ice_transition: float
+        Density threshold for the transition from firn to ice.
+    refreezing: bool
+        If refreezing should be considered. Just switch off the refreezing for
+        testing purposes or if you know what you are doing! Default: True.
+    """
+
+    def __init__(self, height_nodes, swe, rho, origin, temperatures=None,
+                 pore_close=None, firn_ice_transition=None, refreezing=True,
+                 max_layers=75):
+        """
+        Instantiate a snow and/or firn cover and its necessary methods.
+
+        If no temperatures are given, the temperature profile is assumed to be
+        homogeneous.
+
+        Parameters
+        ----------
+        height_nodes: array-like
+            The heights at which the snow/firn cover should be implemented.
+        """
+
+        # TODO: SHOULD THERE BE AN "INIT" in front of every parameter? Later we
+        # don't use them anymore
+        self.height_nodes = height_nodes
+        self.init_swe = swe
+        self.init_rho = rho
+        self.init_sh = self.init_swe * (cfg.RHO_W / self.init_rho)
+        self.init_origin = [origin] * self.n_heights
+        init_liq_content = np.zeros_like(height_nodes)
+        init_liq_content.fill(np.nan)
+        self.init_liq_content = init_liq_content
+
+        # parameters
+        self.refreezing = refreezing
+        # if not given, try and retrieve from cfg
+        if pore_close is None:
+                self.pore_close = cfg.PARAMS['pore_closeoff']
+        else:
+            self.pore_close = pore_close
+        if firn_ice_transition is None:
+            self.firn_ice_transition = cfg.RHO
+        else:
+            self.firn_ice_transition = firn_ice_transition
+
+        # Init homog. grid for temperature modeling: zero at top, + downwards
+        self._tgrid_nodes = [np.array([0., self.init_sh[i]]) for i in
+                             range(len(self.init_sh))]
+        if temperatures is not None:
+            self.init_temperature = temperatures
+            self._tgrid_temperature = temperatures
+        else:
+            # initiate with zero deg C, if we don't know better
+            self.init_temperature = np.ones(height_nodes) * 273.16
+            self._tgrid_temperature = np.ones(height_nodes) * 273.16
+
+        init_array = np.zeros((self.n_heights, max_layers))
+        init_array.fill(np.nan)
+
+        # we start putting the initial layer at index 0 (top of array!)
+        self._swe = np.hstack((np.atleast_2d(swe).T, init_array))
+        self._rho = np.hstack((np.atleast_2d(rho).T, init_array))
+        self._origin = np.hstack((np.atleast_2d(np.array([origin for i in range(self.n_heights)])).T, init_array))
+        self._last_update = self._origin.copy()
+        self._temperature = np.hstack((np.ones_like(np.atleast_2d(self.init_temperature).T) * 273.16 , init_array))
+        self._liq_content = np.hstack(
+            (np.ones_like(np.atleast_2d(self.init_liq_content).T), init_array))
+
+    @property
+    def swe(self):
+        return self._swe
+
+    @swe.setter
+    def swe(self, value):
+        self._swe = value
+
+    @property
+    def rho(self):
+        return self._rho
+
+    @rho.setter
+    def rho(self, value):
+        self._rho = value
+
+    @property
+    def sh(self):
+        #return self.swe * (np.divide(cfg.RHO_W, self.rho,
+        #                             out=np.zeros_like(self.rho),
+        #                             where=(self.rho != 0)))
+        return self.swe * np.divide(cfg.RHO_W, self.rho)
+
+    @property
+    def temperature(self):
+        return self._temperature
+
+    @temperature.setter
+    def temperature(self, value):
+        # if no or positive temperature is given, assume zero degrees Celsius
+        self._temperature = value
+        #self._temperature[~pd.isnull(value) & (value <= 273.16)] = value[~pd.isnull(value) & (value <= 273.16)]
+
+    @property
+    def liq_content(self):
+        return self._liq_content
+
+    @liq_content.setter
+    def liq_content(self, value):
+        if value is not None:
+            if value > self.swe:
+                raise ValueError('Liquid water content of a snow layer cannot '
+                                 'be bigger than the snow water equivalent.')
+            self._liq_content = value
+        else:
+            self._liq_content = 0.
+
+    @property
+    def origin(self):
+        return self._origin
+
+    @property
+    def last_update(self):
+        return self._last_update
+
+    @property
+    def cold_content(self):
+        """
+        The cold content of the layer, expressed in J m-2.
+
+        The sign of the cold content is negative!
+
+        Returns
+        -------
+        ccont: float
+            The cold content.
+        """
+        ccont = np.negative(cfg.HEAT_CAP_ICE * self.rho * self.sh *
+                            self.temperature)
+        return ccont
+
+    @property
+    def refreezing_potential(self):
+        """
+        The refreezing potential expressed in kg m-2 or m w.e., respectively.
+
+        the sign of the refreezing potential is negative!
+
+        Returns
+        -------
+        rpot: float
+            The refreezing potential.
+        """
+        rpot = self.cold_content / cfg.LATENT_HEAT_FUSION_WATER
+        return rpot
+
+    # TODO: Find a more intelligent solution than implementing "not allowed" types in a SnowLayer
+    @property
+    def status(self):
+        if self.rho < cfg.PARAMS['snow_firn_threshold']:
+            return 'snow'
+        elif cfg.PARAMS['snow_firn_threshold'] <= self.rho < cfg.PARAMS[
+            'pore_closeoff']:
+            return 'firn'
+        elif cfg.PARAMS['pore_closeoff'] <= self.rho < cfg.RHO:
+            return 'poresclosed'
+        else:
+            return 'ice'
+
+    @property
+    def n_heights(self):
+        return len(self.height_nodes)
+
+    @property
+    def top_layer(self):
+        """
+        A pointer to the top layer in the SnowFirnPack.
+
+        Initially, when there are no layers in the pack, the top index will be
+        -1!
+
+        Returns
+        -------
+        top: np.ndarray
+            Array giving the indices of the current top layer.
+        """
+        # TODO: Maybe check if the layers are consistent for all properties!?
+        layers_bool = np.logical_or(np.isin(self.swe, [0.]),
+                                    np.isnan(self.swe))
+        top = np.argmax(layers_bool, axis=1) - 1
+        return top
+
+    def get_type_indices(self, layertype):
+        """
+        Get the grid indices as tuples for a given type.
+
+        Parameters
+        ----------
+        type: str
+            Type to retrieve the indices for. Allowed are: 'snow', 'firn',
+            'poresclosed' and 'ice'.
+
+        Returns
+        -------
+        indices: list of tuples
+            Indices where the given type occurs.
+        """
+
+        if layertype == 'snow':
+            return np.where(self.rho < cfg.PARAMS['snow_firn_threshold'])
+        elif layertype == 'firn':
+            return np.where((cfg.PARAMS['snow_firn_threshold'] <= self.rho) & (self.rho < self.pore_close))
+        elif layertype == 'poresclosed':
+            return np.where((self.pore_close <= self.rho) & (self.rho < self.firn_ice_transition))
+        elif layertype == 'ice':
+            return np.where(self.firn_ice_transition <= self.rho)
+        else:
+            raise ValueError('Type {} not accepted. Must be either of "snow", '
+                             '"firn", "poresclosed" or "ice".'.format(layertype))
+
+    def add_layer(self, swe, rho, origin, temperature=None, liq_content=None,
+                  ix=None):
+        """
+        Add a layer to the snow/firn pack.
+
+        Parameters
+        ----------
+        ix: int
+            Where to add the layer. Default: None (top).
+        """
+
+        if len(swe) != self.n_heights:
+            raise ValueError('Dimensions of SnowFirnCover and mass to be '
+                             'added must match.')
+
+        if ix is None:
+            insert_pos = self.top_layer + 1
+        else:
+            insert_pos = ix
+
+        if (insert_pos >= self.swe.shape[1] - 1).any():
+            self._swe = np.lib.pad(self.swe, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+            self._rho = np.lib.pad(self.rho, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+            self._origin = np.lib.pad(self.origin, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+            self._temperature = np.lib.pad(self.temperature, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+            self._liq_content = np.lib.pad(self.liq_content, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+            self._last_update = np.lib.pad(self.last_update, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+
+        #to_merge = (self.sh <= 0.02)
+        #just_fill = (self.sh > 0.02)
+        #if to_merge.any():
+        #    # fill in where to merge layers
+        #    self.swe[to_merge, insert_pos[to_merge] - 1] = self.swe[to_merge, insert_pos[to_merge]] + swe[to_merge]
+        #    self.rho[to_merge, insert_pos[to_merge] - 1] = (self.rho[to_merge, insert_pos[to_merge]] + rho[to_merge]) / 2.
+        #    self.origin[to_merge, insert_pos[to_merge] - 1] = origin#
+#
+#            # fill in where no need to merge
+#            self.swe[just_fill, insert_pos[just_fill]] = swe[just_fill]
+#            self.rho[just_fill, insert_pos[to_merge]] = rho[just_fill]
+#            self.origin[just_fill, insert_pos[to_merge]] = origin
+
+        self.swe[range(self.swe.shape[0]), insert_pos] = swe
+        self.rho[range(self.swe.shape[0]), insert_pos] = rho
+        self.origin[range(self.swe.shape[0]), insert_pos] = origin
+
+        if temperature is not None:
+            self.temperature[
+                range(self.swe.shape[0]), insert_pos] = temperature
+        else:
+            self.temperature[
+                range(self.swe.shape[0]), insert_pos] = 273.16
+        if liq_content is not None:
+            self.liq_content[
+                range(self.swe.shape[0]), insert_pos] = liq_content
+        else:
+            self.liq_content[range(self.swe.shape[0]), insert_pos] = 0.
+
+    def remove_layer(self, ix=None):
+        """
+        Remove a layer from the snow/firn pack.
+
+        Parameters
+        ----------
+        ix: int
+            Where to remove the layer. Default: None (top).
+        """
+
+        if ix is not None:
+            remove_ix = ix
+        else:
+            remove_ix = self.top_layer
+
+            # TODO: find workaround to not have to set everything to zero
+            self.swe[remove_ix] = np.nan
+            self.rho[remove_ix] = np.nan
+            self.origin[remove_ix] = np.nan
+            self.temperature[remove_ix] = np.nan # TODO: is this clever?
+            self.liq_content[remove_ix] = np.nan
+
+    def melt(self, swe):
+        """
+        Removes a layer from the snow/firn pack.
+
+        Parameters
+        ----------
+        swe: np.ndarray
+            The snow water equivalent to be removed. Should be negative
+            numbers.
+        """
+
+        if swe.shape[0] != self.swe.shape[0]:
+            raise ValueError('Dimensions of SnowFirnCover and mass to be '
+                             'removed must match.')
+
+        while (swe > 0.).any():
+            # remove at indices of self.top_layer where swe > 0.
+            remove_ix = (swe >= self.swe[self.top_layer])
+            reduce_ix = (0. < swe <= self.swe[self.top_layer])
+            reduce_amount = self.swe[self.top_layer] - swe
+            remove_amount = self.swe[self.top_layer]
+            assert reduce_amount > 0.
+
+            self.remove_layer(remove_ix)
+            self.swe[reduce_ix] -= reduce_amount[reduce_ix]
+            swe[reduce_ix] -= reduce_amount[reduce_ix]
+            swe[remove_ix] -= remove_amount[remove_ix]
+            # remove other layers accordingly!?
+            # reduce swe by the amount removed
+
+
+
+            # TODO: replace pseudo-code??? Does it have to refreeze every time if there is potential? Do we need impermable layers for this? Look at SFM2
+            # if self.refreeze_pot > 0.:
+            # let it refreeze
+            # let the latent heat warm the snowpack up
+
+    def add_height_nodes(self, nodes):
+        """
+        If the glaciers advances, this is the way to tell the snow/firn cover.
+
+        For simplicity reasons, the snow/firn cover at the lowest height index
+        is copied to the added node(s).
+
+        Parameters
+        ----------
+        nodes: array-like
+            The heights that should be added to the existing height nodes.
+        """
+        raise NotImplementedError
+
+    def remove_height_nodes(self, nodes):
+        """
+        If the glacier retreats, this is the way to tell the nosw/firn cover.
+
+        The question is here is this should take indices or heights (precision problem)
+        """
+
+    def get_total_height(self):
+        """
+        Get total height of the firn and snow cover together.
+        """
+
+        total_height = [np.sum([l.sh for l in h]) for h in self.grid]
+        return total_height
+
+    def get_snow_height(self):
+        """Get height of snow cover only."""
+        raise NotImplementedError
+
+    def get_firn_height(self):
+        """Get height of firn cover only."""
+        raise NotImplementedError
+
+    def get_mean_density(self):
+        """
+        Get density of the overall snow and firn cover.
+
+        The total density is calculated as the density of each layer weighted
+        with its snow height.
+
+        Returns
+        -------
+        total_rho: float
+            The total density of the layer column at each height node.
+        """
+
+        total_rho = [np.average([l.rho for l in h], weights=[l.sh for l in h])
+                     for h in self.grid]
+        return total_rho
+
+    def get_layer_depths(self, where='center'):
+        """
+        Get the center depths of every layer.
+
+        The where kwarg should tell if the layer "top"s, "center"s or
+        "bottom"s should be retrieved.
+        """
+        raise NotImplementedError
+
+    def get_overburden_swe(self, ix=None):
+        """Get overburden snow water equivalent for a specific layer (m w.e.).
+
+        Parameters
+        ----------
+        ix: np.array
+            Index array telling for which indices the overburden swe is desired
+
+        Returns
+        -------
+        ovb_swe: np.array
+            The snow water equivalent on top of the given layer (m w.e.).
+        """
+        ovb_swe = np.fliplr(np.nancumsum(np.fliplr(self.swe), axis=1))
+        ovb_swe -= np.repeat(np.atleast_2d(
+            self.swe[range(self.swe.shape[0]), self.top_layer]).T,
+                             ovb_swe.shape[1], axis=1)
+        # NaN part becomes negative as with the NaN from NaN subtraction zero
+        # is returned since NumPy 1.9.0
+        ovb_swe = np.clip(ovb_swe, 0., None)
+
+        if ix is None:
+            return ovb_swe
+        else:
+            return ovb_swe[ix]
+
+    def get_overburden_mass(self, ix=None):
+        """
+        Get overburden mass for a specific layer (kg).
+
+        Parameters
+        ----------
+        ix: np.array
+            Index array telling for which indices the overburden mass is
+            desired.
+
+        Returns
+        -------
+        np.array
+            The mass on top of the given layer (kg).
+        """
+
+        return self.get_overburden_swe(ix) * cfg.RHO_W
+
+    def remove_ice_layers(self):
+        """
+        Removes layers a the bottom (only there!) that have exceeded the
+        threshold density for ice.
+
+        Returns
+        -------
+        None
+        """
+
+        ice_ix = self.get_type_indices('ice')
+        self.remove_layer(ice_ix)
+
+    def update_temperature_profile(self, max_depth=15, dx=0.1,
+                                   lower_bound=273.16):
+        """
+        Update the temperature profile of the snow/firn pack.
+
+        The temperature is calculated on an equidistant grid until the maximum
+        depth given to insure numeric stability. Temperatures are then mapped
+        in a weighted fashion to the given layers.
+
+        Parameters
+        ----------
+        max_depth: float
+            Maximum depth in meters until which the temperature profile is
+            calculated. Default: 15.
+        dx: float
+            Grid spacing for the homogeneous temperature grid. Default: 0.1m
+        lower_bound: float
+            Lower boundary condition temperature. Default: 273.16 K (temperate
+            ice).
+
+        Returns
+        -------
+        None
+        """
+
+        # Make a grid until 15 m depth as attribute if not yet exists;
+        total_height = self.get_total_height()
+        if self.get_total_height() < max_depth:
+            self._tgrid_nodes = np.arange(0., total_height, dx)
+        else:
+            self._tgrid_nodes = np.arange(0., max_depth, dx)
+        # temperature boundary condition is zero: temperate ice)
+        if max(self._tgrid_nodes) == max_depth:
+            self._tgrid_temperature[-1] = lower_bound
+        else:
+            self._tgrid_temperature[-1] = self._tgrid_temperature[-2]
+        # Calculate forward the existing temperatures on this grid
+        # map the calculated temperatures into the layer structure
+
+        # Update the temperatures of the layers inplace.
+
+    def update_refreezing_potential(self, max_depth=15.):
+        """
+        Update refreezing potential of each layer inplace.
+
+        Parameters
+        ----------
+        max_depth: float
+            Maximum depth in meters until which the refreezing potential is
+            calculated. Default: 15.
+
+        Returns
+        -------
+        None
+        """
+
+        # Update potential inplace
+        for h_node in self.grid:
+            depth = 0.
+            while depth < max_depth:
+                for l in h_node:
+                    l.get_refreezing_potential()
+
+                    depth += l.get_height()
+
+    def densify_firn_huss(self, date, f_firn=2.4, poresclosed_rate=10.,
+                          rho_f0_const=False):
+        """
+        Apply the firn densification after Huss (2013), Reeh (2008) and Herron
+        and Langway (1980).
+
+        Parameters
+        ----------
+        f_firn: float
+           A factor empirically determined by Herron and Langway (1980), used
+           by Huss 2013 to tune simulated to observed firn densification
+        poresclosed_rate: float
+            The rate with which the firn pack densifies once the pores are
+            closed. Default: 10 kg m-3 a-1 (see Huss 2013).
+        rho_f0_const: bool
+            Whether or not the initial firn density should be constant or
+            calculated from the layer's density (if available). Default: False
+            (density calculated, if available).
+
+        Returns
+        -------
+        None
+        """
+        #for sfp in self.grid:
+        #    sfp.densify_firn_huss(date, f_firn=f_firn,
+        #                          poresclosed_rate=poresclosed_rate,
+        #                          rho_f0_const=rho_f0_const)
+
+        # Todo: remove comment out
+        #self.merge_firn_layers(date)
+
+        # Mean annual surface temperature, 'presumably' firn temperature at 10m
+        # depth (Reeh (2008)); set to 273 according to Huss 2013
+        # TODO: this should be actually calculated
+        T_ms = 273.  # K
+
+        # some model constant
+        k1 = f_firn * 575. * np.exp(
+            - cfg.E_FIRN / (cfg.R * T_ms))  # m(-0.5)a(-0.5)
+
+        # what happens between 800 and pore close-off? We just replace it.
+        firn_ix = self.get_type_indices('firn')
+        poresclosed_ix = self.get_type_indices('poresclosed')
+
+
+        # careful with days!!!! (the difference might be 364 days or so)
+
+        # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
+        #t = (date - self.origin[firn_ix]).days / 365.25
+        date_arr = np.zeros_like(self.origin)
+        date_arr[~pd.isnull(self.origin)] = date
+        t = np.fromiter((d.days for d in (date - self.origin[firn_ix])), dtype=float, count=len(date - self.origin[firn_ix])).reshape(self.origin[firn_ix].shape) / 365.25
+
+        if rho_f0_const:
+            # initial firn density from Huss (2013) is 490, anyway...
+            rho_f0 = cfg.PARAMS['snow_firn_threshold']  # kg m-3
+        else:
+            # todo:change to real init density again!!!!!
+            #rho_f0 = self.init_density[firn_ix]
+            rho_f0 = 550.
+
+        # just to not divide by zero when a layer forms
+
+            # "b" is in m w.e. a-1 as in Huss (2013). In Reeh(2008): m ice a-1
+            b = np.divide(self.get_overburden_swe(), t, out=np.zeros_like(self.get_overburden_swe()), where=t!= 0)[firn_ix]
+            #b = self.get_overburden_swe(firn_ix) / t  # annual accumulation rate
+
+
+            c_reeh_ice = k1 * np.sqrt(
+                b * cfg.RHO / cfg.RHO_W)  # 550 kg m-3 < rho_f < 800 kg m-3
+
+            # Huss 2013, equation 5
+            rho_f = cfg.RHO - (cfg.RHO - rho_f0) * np.exp(
+                -c_reeh_ice * t)
+
+            self.rho[firn_ix] = rho_f
+
+        # TODO: apply refreezing here?
+        if self.refreezing:
+            self.update_refreezing_potential()
+
+            # rho_f += RF_t
+
+        # TODO: HERE WE ASSUME ONE YEAR => t NEEDS TO BE ADJUSTED OR AN ATTRIBUTE "LAST_UPDATED" NEEDS TO BE MADE
+        #for h, l in poresclosed_ix:
+        pc_age = np.fromiter((d.days for d in (date - self.origin[poresclosed_ix])),
+                    dtype=float,
+                    count=len(date - self.origin[poresclosed_ix])) / 365.25
+        self.rho[poresclosed_ix] = self.rho[poresclosed_ix] + poresclosed_rate * pc_age
+
+        # last but not least
+        self.remove_ice_layers()
+
+    def _densify_poresclosed_huss(self, rate):
+        """ """
+        # TODO: Implement this function to be called within firn densification functions
+        pass
+
+    def densify_huss_derivative(self, date, f_firn=2.4):
+        """ Try and implement Reeh"""
+
+        self.merge_firn_layers(date)
+
+        firn_ix = self.get_type_indices('firn')
+        poresclosed_ix = self.get_type_indices('poresclosed')
+        snow_ix = self.get_type_indices('snow')
+
+        for h, l in firn_ix:
+            # TODO: Is the Spec_bal really only Snowlayers?
+            snow_ix_h = [(hs, ls) for (hs, ls) in snow_ix if hs == h]
+
+
+            # SPEC_BAL is in M ICE!!!!
+            # is the specific balance meant as the annual balance or all overburden pressure?
+            #spec_bal = np.sum([self.grid[hs][ls].swe for (hs, ls) in snow_ix_h]) * cfg.RHO_W / cfg.RHO
+
+            # This assumes that the spec bal is all overburden pressure
+            spec_bal = self.get_overburden_swe(h, l) * cfg.RHO_W / cfg.RHO
+
+            # TODO: this should be actually calculated
+            T_ms = 273.  # K
+
+            # some model constant
+            k1 = f_firn * 575. * np.exp(
+                - cfg.E_FIRN / (cfg.R * T_ms))  # m(-0.5)a(-0.5)
+
+            # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
+            t = (date - self.grid[h][l].origin).days / 365.25
+
+            c_reeh_ice = k1 * np.sqrt(
+                spec_bal * cfg.RHO / cfg.RHO_W)  # 550 kg m-3 < rho_f < 800 kg m-3
+
+            if spec_bal > 0.:
+
+                current_rho = self.grid[h][l].rho
+
+                drho = c_reeh_ice * (cfg.RHO - self.grid[h][l].rho)
+
+                self.grid[h][l].rho += drho
+
+            # do not forget
+            self.grid[h][l].last_update = date
+
+        # last but not least
+        self.remove_ice_layers()
+
+    def densify_firn_barnola(self, date, beta=-29.166, gamma=84.422,
+                             delta=-87.425, epsilon=30.673):
+        """
+        Apply the firn densification after Barnola et al. (1990)
+
+        Parameters
+        ----------
+        beta: float
+           Empirical factor (see Barnola et al. (1990)).
+        gamma: float
+           Empirical factor (see Barnola et al. (1990)).
+        delta: float
+           Empirical factor (see Barnola et al. (1990)).
+        epsilon: float
+           Empirical factor (see Barnola et al. (1990)).
+
+        Returns
+        -------
+        None
+
+        """
+
+        self.merge_firn_layers(date)
+
+        firn_ix = self.get_type_indices('firn')
+        poresclosed_ix = self.get_type_indices('poresclosed')
+
+        a0 = 25400
+        for h, l in firn_ix:
+            k1 = a0 * np.exp(
+                -60000 / (cfg.R * self.grid[h][l].temperature))
+
+            print('before', self.grid[h][l].rho)
+
+            # TODO: dt is in seconds! which unit is rho here=?
+            days = (date - self.grid[h][l].last_update).days
+
+            for dt in (np.ones(days) * 24 * 3600):
+
+                current_rho = self.grid[h][l].rho
+                si_ratio = current_rho / cfg.RHO
+
+                if current_rho < 800.:
+                    f = 10 ** ((beta * si_ratio ** 3) +
+                               (gamma * si_ratio ** 2) +
+                               (delta * si_ratio) +
+                               epsilon)
+                else:
+                    f = ((3. / 16.) * (1 - si_ratio)) / \
+                        (1. - (1. - si_ratio) ** 0.3) ** 3.
+
+                p_over = self.get_overburden_swe(h, l) * 1000. * cfg.G
+
+                try:
+                    p_bubble = self.grid[h][l].bubble_pressure  # if pores closed
+                except AttributeError:
+                    p_bubble = 0.
+                drho = k1 * current_rho * f * ((p_over - p_bubble)/10**6) ** 3 * dt
+
+                self.grid[h][l].rho += drho
+
+            print('after', self.grid[h][l].rho)
+            if h == 400:
+                print('hi')
+
+            # do not forget
+            self.grid[h][l].last_update = date
 
         # last but not least
         self.remove_ice_layers()
@@ -1766,31 +3178,58 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
 
         Tm_k = cfg.PARAMS['temp_melt'] + 273.16
 
-        # CHECK HERE IF THE DATE IS MORE THAN ONE DAY AWAY FROM THE LAST UPDATE?
-        dt = target_dt
+        # Todo: CHECK HERE IF THE DATE IS MORE THAN ONE DAY AWAY FROM THE LAST UPDATE?
+        deltat = target_dt
 
-        # UPDATE TEMPERATURES HERE
+        # Todo: UPDATE TEMPERATURES HERE?
 
-        height_ix = np.where(self.grid)[0]  # where there is something at all
+        rho_old = self.rho
+        temperature = self.temperature
 
-        # DON'T USE THE RETRIEVED INDICES HERE: otherwise overlying mass could be wrong if layers above are by chance firn ( densification(ice lenses by refreezing!)
-        for h in height_ix:
-            mass = 0.
-            for l in range(len(self.grid[h])):
-                rho_old = self.grid[h][l].rho
-                mass += rho_old * self.grid[h][l].sh
+        # create cumsum, then subtract top layer swe, clip and convert to mass
+        ovb_mass = self.get_overburden_mass()
 
-                if type(self.grid[h][l]) == SnowLayer:
-                    self.grid[h][l].rho = rho_old + \
-                                          (rho_old * cfg.G * mass * dt / eta0) * \
-                                          np.exp(etaa * (self.grid[h][
-                                                             l].temperature - Tm_k) - etab *
-                                                 rho_old) + dt * \
-                                          rho_old * snda * np.exp(
-                        sndb * (self.grid[h][l].temperature - Tm_k) - sndc * max(
-                            rho_old - rhoc, 0.))
+        rho_test_new = rho_old.copy()
+        # todo: replace here the density threshold choice by the status or apply the firn densification daily....otherwise there is no densification after 550 anymore!
+        insert_ix = (self.swe > 0.) & (self.rho < cfg.PARAMS['snow_firn_threshold'])
+        rho_test_new[insert_ix] = (rho_old + \
+                       (
+                               rho_old * cfg.G * ovb_mass * deltat / eta0) * \
+                       np.exp(etaa * (temperature - Tm_k) - etab *
+                              rho_old) + deltat * \
+                       rho_old * snda * np.exp(
+            sndb * (temperature - Tm_k) - sndc * np.clip(
+                rho_old - rhoc, 0., None)))[insert_ix]
+        self.rho = rho_test_new
+        self.last_update[insert_ix] = date
 
-        # to be sure
+        ## DON'T USE THE RETRIEVED INDICES HERE: otherwise overlying mass could be wrong if layers above are by chance firn ( densification(ice lenses by refreezing!)
+        #oswe = np.nansum(self.swe, axis=1)
+        #height_ix = np.where(oswe > 0.)[0]
+        #swe = self.swe
+        #top_layer = self.top_layer
+        #for h in height_ix:
+        #    mass = 0.
+        #    # todo: check if top_layers is really the top layer or one above!
+        #    reverse_layers = np.arange(top_layer[h])[::-1]
+        #    for l in reverse_layers:
+        #
+        #        # TODO: this check for the density can cause problems, if the criteria are not managed centrally
+        #        curr_rho = rho_old[h, l]
+        #        if curr_rho < cfg.PARAMS['snow_firn_threshold']:
+        #            self.rho[h, l] = curr_rho + \
+        #                                  (
+        #                                              curr_rho * cfg.G * mass * deltat / eta0) * \
+        #                                  np.exp(etaa * (temperature[h,l] - Tm_k) - etab *
+        #                                         curr_rho) + deltat * \
+        #                                  curr_rho * snda * np.exp(
+        #                sndb * (temperature[h, l] - Tm_k) - sndc * max(
+        #                    curr_rho - rhoc, 0.))
+        #
+        #            self.last_update[h, l] = date
+        #
+        #        mass += swe[h, l] * 1000
+
         self.remove_ice_layers()
 
     def merge_firn_layers(self, date):
@@ -1831,7 +3270,7 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
                 new_swe = sum([t.swe for t in temp_layers])
                 new_rho = sum([t.rho * t.sh for t in temp_layers]) / np.sum(
                     [t.sh for t in temp_layers])
-                # TODO: is it clever to give them the current date? Actually yes, because the daily model should have run until then already
+                # give them current date (daily model should have run until then already)
                 new_origin = date
                 # new_origin = np.max([t.last_update for t in temp_layers])
                 # TODO: the temperature should actually go via the energy
@@ -1839,11 +3278,12 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
                     [t.temperature * t.swe for t in temp_layers]) / np.sum(
                     [t.swe for t in temp_layers])
                 new_liq = sum([t.liq_content for t in temp_layers])
-                insert = FirnLayer(swe=new_swe, rho=new_rho, origin=new_origin,
+                # TODO: Here needs to a snowlayer, otherwise we get too many firn layers.....one should take care that here the factory can be used, but only the firnlayers < 1 year are merged
+                insert_l = FirnLayer(swe=new_swe, rho=new_rho, origin=new_origin,
                                    temperature=new_temp, liq_content=new_liq)
-                insert.init_density = new_rho
+                insert_l.init_density = new_rho
 
-                self.grid[h].insert(min(temp_inds), insert)
+                self.grid[h].insert(min(temp_inds), insert_l)
 
         # HOW TO ENSURE THAT THE LAYERS ARE NOT MERGED WITH OTHER FIRN LAYERS? INTRODUCE STATUS ATTRIBUTE?
 
@@ -1860,6 +3300,9 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
         -------
         None
         """
+
+        to_merge = np.where(self.sh < min_sh)
+
 
         for h in range(len(self.grid)):
             for l in range(len(self.grid[h]) - 1):
@@ -1887,7 +3330,6 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
                         [t.swe for t in [layer_one, layer_two]])
                     new_liq_content = np.sum(
                         [t.liq_content for t in [layer_one, layer_two]])
-                    # TODO: This is not correct and should be changed after the LayerFactory is built
                     insert = SnowLayer(swe=new_swe, rho=new_rho,
                                        origin=new_origin,
                                        temperature=new_temperature,
@@ -1898,51 +3340,21 @@ class SnowFirnCover(object, metaclass=SuperclassMeta):
                     # remove l+1
                     self.remove_layer(h, l + 1)
 
-
-    # MAYBE THIS METHOD SHOULD BE OUTSIDE THE CLASS => IT'S A CONTROLLER
-    def run_densification(gdir, from_date=None, to_date=None,
-                          recalculate_mb=False):
-        """
-        Run the densification process and subprocesses.
-
-        Parameters
-        ----------
-        from_date
-        to_date
-        recalculate_mb: bool
-            Whether to recalculate the mass balance (computationally
-            expensive!) or - if available - fall back to the saved mass
-            balance in the glacier directory (mb_daily.pkl).
-
-        Returns
-        -------
-
-        """
-
-        # partition the date range into full MB years and the time where we
-        # need the daily model
-
-        # IMPORTANT: This should by lazy: it should only recalculate the MB
-
-        for d in pd.date_range(from_date, to_date):
-            print(d)
-            # if d is the end of the MB year:
-            # self.densify_firn_huss
-            # if d is a day and we are i the part where we use daily models:
-            # self.densify_snow
-
-    def return_state(self, dataset=False):
+    def return_state(self, param='swe', dataset=False):
         """This should be a function that can be called to get the current
         status of the snow/firn cover as numpy arrays or xr.Dataset. If put in
         a loop, the history can be retrieved."""
 
-        # recipe to convert list of lists to array
-        #x = [[1, 2], [1, 2, 3], [1]]
-        #length = len(sorted(x, key=len, reverse=True)[0])
-        #y = np.array([xi + [None] * (length - len(xi)) for xi in x])
+        if dataset:
+            raise NotImplementedError
+        else:
+            # recipe to convert list of lists to array
+            length = len(sorted(self.grid, key=len, reverse=True)[0])
+            grid_array = np.array(
+                [[np.nan] * (length - len(xi)) + [getattr(i, param) for i in xi] for xi in self.grid])
 
-        #if dataset:
-        #ds = xr.Dataset()
+            return grid_array
+
 
 
 def get_rho_dv():
@@ -2066,11 +3478,12 @@ def _custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
     return x.quantile(qs)
 
 
+@xr.register_dataset_accessor('mb')
 class MassBalance(object, metaclass=SuperclassMeta):
     """
     Basic interface for mass balance objects.
     """
-    def __init__(self, gdir, mb_model, dataset=None):
+    def __init__(self, xarray_obj, gdir, mb_model):
         """
         Instantiate the MassBalance base class.
 
@@ -2083,23 +3496,30 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         """
 
+        self._obj = xarray_obj
         self.gdir = gdir
         self.mb_model = mb_model
-        if dataset:
-            # TODO: Implement checks here if the given object has all requirements to be a mass balance dataset
-            self._obj = dataset
         self.cali_pool = None # TODO: Calibration(); for this I need to write a calibration object and implement cli parameters attributes in the MB_model classes
 
-        @lazy_property
-        def apply_cumsum():
-            """
-            Apply cumsum to mass balance data.
+    @staticmethod
+    def _custom_cumsum(x):
+        """Cumulative sum along time, skipping NaNs."""
+        return x.cumsum(dim='time', skipna=True)
 
-            Returns
-            -------
-            cumsum: xr.Dataset
-                The mass balance dataset as cumulative sum.
-            """
+    @staticmethod
+    def _custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
+        """Calculate quantiles with user input."""
+        return x.quantile(qs)
+
+    def apply_cumsum(self):
+        """
+        Apply cumsum to mass balance data.
+
+        Returns
+        -------
+        cumsum: xr.Dataset
+            The mass balance dataset as cumulative sum.
+        """
 
     def create_specific(self, MassBalanceModel, from_date=None, to_date=None, write=True):
         """
@@ -2108,7 +3528,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
         Parameters
         ----------
         MassBalanceModel: crampon.core.models.massbalance.MassBalanceModel
-            The model used to create the mass baöance time series.
+            The model used to create the mass balance time series.
         from_date: datetime.datetime
             The first day of the time series.
         to_date: datetime.datetime
@@ -2162,14 +3582,48 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         """
 
-    def apply_cumsum(self):
+    def to_array(self):
         """
-        Apply the cumulative sum.
+        Output the data as an array.
+
+        If the data is a time series, the
+        The first dimension of the array is defined
+
+        Returns
+        -------
+        arr: np.array
+            An array of
+        """
+
+    def get_balance(self, date1, date2, which='total'):
+        """
+        Retrieves the balance in a time interval.
+
+        Parameters
+        ----------
+        date1: datetime.datetime
+            Begin of the time interval.
+        date2: datetime.datetime
+            End of the time interval.
+        which: str
+            Which balance to retrieve: allowed are 'total' (get the total mass
+            balance), 'accumulation' (get accumulation only), 'ablation'
+            (ablation only). Default: 'total'.
 
         Returns
         -------
 
         """
+
+        if which == 'total':
+            raise NotImplementedError
+        elif which == 'accumulation':
+            raise NotImplementedError
+        elif which == 'ablation':
+            raise NotImplementedError
+        else:
+            raise ValueError('Value {} for balance is not recognized.'.
+                             format(which))
 
 
 class PastMassBalance(MassBalance):
@@ -2187,6 +3641,13 @@ class PastMassBalance(MassBalance):
         dataset
         """
         super().__init__(gdir, mb_model, dataset=dataset)
+
+        if dataset is None:
+            try:
+                self._obj = gdir.read_pickle('mb_daily')
+            except:
+                raise ValueError('Dataset kwarg must be supplied when gdir has '
+                                 'no daily_mb.pkl.')
 
 
 class CurrentYearMassBalance(MassBalance):
@@ -2220,7 +3681,9 @@ if __name__ == '__main__':
     run_time = pd.date_range('1961-10-10', '2017-10-10')
     day_model = BraithwaiteModel(gdirs[0], bias=0.)
     heights, widths = gdirs[0].get_inversion_flowline_hw()
-    cover = SnowFirnCover(heights, swe=np.zeros_like(heights),
+    init_swe = np.zeros_like(heights)
+    init_swe.fill(np.nan)
+    cover = SnowFirnCoverArrays(heights, swe=init_swe,
                           rho=np.ones_like(heights)*100.,
                           origin=run_time[0],
                           temperatures=np.ones_like(heights)*273.16,
@@ -2248,8 +3711,10 @@ if __name__ == '__main__':
 
         before = dt.datetime.now()
         if (tmp > 0.).any():
-            cover.add_layer(swe=np.clip(tmp, 0, None), rho=np.ones_like(tmp) * 100.,
-                            origin=date)
+            swe = np.clip(tmp, 0, None)
+            rho = np.ones_like(tmp) * 100.
+            rho[swe == 0.] = np.nan
+            cover.add_layer(swe=swe, rho=rho, origin=date)
         after = dt.datetime.now()
         add_layer_time.append(after - before)
 
@@ -2259,7 +3724,6 @@ if __name__ == '__main__':
         after = dt.datetime.now()
         melt_time.append(after - before)
 
-
         before = dt.datetime.now()
         cover.densify_snow_anderson(date)
         after = dt.datetime.now()
@@ -2267,21 +3731,58 @@ if __name__ == '__main__':
 
         print(date)
 
+        if date.day == 30 and date.month==9:
+            print('hi')
+
         if date.day == 1:
-            print('Merging', np.sum([len(g) for g in cover.grid]))
+            print('Merging', np.nansum(cover.swe > 0.))
             before = dt.datetime.now()
-            cover.merge_layers(min_sh=0.1)
+            #cover.merge_layers(min_sh=0.1)
             after = dt.datetime.now()
             merge_layers_time.append(after - before)
-            print(np.sum([len(g) for g in cover.grid]))
+            print(np.nansum(cover.swe > 0.))
 
         if date.month == 10 and date.day == 1:
             #rho_snow_end.append([max([i.rho for i in j if dt.timedelta(date - i.origin).days < 365] for j in len(cover.grid))])
-            print('Densifying a la Huss')
+            print('Densifying Firn')
             before = dt.datetime.now()
             cover.densify_firn_huss(date)
             after = dt.datetime.now()
             densify_firn_huss_time.append(after - before)
+
+    print('hi')
+
+    # MAYBE THIS METHOD SHOULD BE OUTSIDE THE CLASS => IT'S A CONTROLLER
+    def run_densification(gdir, from_date=None, to_date=None,
+                          recalculate_mb=False):
+        """
+        Run the densification process and subprocesses.
+
+        Parameters
+        ----------
+        from_date
+        to_date
+        recalculate_mb: bool
+            Whether to recalculate the mass balance (computationally
+            expensive!) or - if available - fall back to the saved mass
+            balance in the glacier directory (mb_daily.pkl).
+
+        Returns
+        -------
+
+        """
+
+        # partition the date range into full MB years and the time where we
+        # need the daily model
+
+        # IMPORTANT: This should by lazy: it should only recalculate the MB
+
+        for d in pd.date_range(from_date, to_date):
+            print(d)
+            # if d is the end of the MB year:
+            # self.densify_firn_huss
+            # if d is a day and we are i the part where we use daily models:
+            # self.densify_snow
 
 
 
