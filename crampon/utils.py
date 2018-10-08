@@ -1419,6 +1419,22 @@ def get_local_dems(gdir):
                     group=cfg.NAMES['SWISSALTI2010'])
 
 
+def get_cirrus_yesterday():
+    """Check if data has already been delivered."""
+    try:
+        climate = xr.open_dataset(cfg.PATHS['climate_file'])
+        climfile_yesterday = pd.Timestamp(climate.time.values[-1])
+    except (KeyError, FileNotFoundError):
+        log.warning('Can\'t determine the \'s yesterday from climate file.')
+    now = dt.datetime.now()
+    if now.hour >= 12 and now.minute >= 30:
+        yesterday = (now - dt.timedelta(1))
+    else:
+        yesterday = (now - dt.timedelta(2))
+
+    return climfile_yesterday
+
+
 OGGMGlacierDirectory = GlacierDirectory
 
 
