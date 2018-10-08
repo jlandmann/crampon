@@ -20,7 +20,7 @@ from rasterio.warp import transform as transform_tool
 from rasterio.mask import mask as riomask
 import geopandas as gpd
 import shapely
-import datetime
+import datetime as dt
 from configobj import ConfigObj, ConfigObjError
 from itertools import product
 import dask
@@ -208,7 +208,7 @@ def closest_date(date, candidates):
 
     Parameters
     ----------
-    date: type allowing comparison, subtraction and abs, e.g. datetime.datetime
+    date: type allowing comparison, subtraction and abs, e.g. dt.datetime
         The date to which the closest partner shall be found.
     candidates: list of same input types as for date
         A list of candidates.
@@ -222,9 +222,10 @@ def closest_date(date, candidates):
     --------
     Find the closest date to 2018-04-01 in a list.
 
-    >>> closest_date(datetime.datetime(2018,4,1), [datetime.datetime(2018,4,3),
-    >>> datetime.datetime(2018,3,21)])
-    datetime.datetime(2018, 4, 3, 0, 0)
+    >>> import datetime as dt
+    >>> closest_date(dt.datetime(2018,4,1), [dt.datetime(2018,4,3),
+    >>> dt.datetime(2018,3,21)])
+    dt.datetime(2018, 4, 3, 0, 0)
 
     References
     ----------
@@ -259,16 +260,17 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
     Find the beginning of the current mass budget year since
     2018-01-24.
 
-    >>> get_begin_last_flexyear(datetime.datetime(2018,1,24))
-    datetime.datetime(2017, 10, 1, 0, 0)
-    >>> get_begin_last_flexyear(datetime.datetime(2017,11,30),
+    >>> import datetime as dt
+    >>> get_begin_last_flexyear(dt.datetime(2018,1,24))
+    dt.datetime(2017, 10, 1, 0, 0)
+    >>> get_begin_last_flexyear(dt.datetime(2017,11,30),
     >>> start_month=9, start_day=15)
-    datetime.datetime(2017, 9, 15, 0, 0)
+    dt.datetime(2017, 9, 15, 0, 0)
     """
 
-    start_year = date.year if datetime.datetime(
+    start_year = date.year if dt.datetime(
         date.year, start_month, start_day) <= date else date.year - 1
-    last_begin = datetime.datetime(start_year, start_month, start_day)
+    last_begin = dt.datetime(start_year, start_month, start_day)
 
     return last_begin
 
@@ -1313,9 +1315,9 @@ def get_local_dems(gdir):
         cdems.extend(plist)
 
     # check the common dates for all zones
-    cdates = [datetime.datetime(int(os.path.basename(x).split('_')[4]),
-                                int(os.path.basename(x).split('_')[5]),
-                                int(os.path.basename(x).split('_')[6])) for
+    cdates = [dt.datetime(int(os.path.basename(x).split('_')[4]),
+                          int(os.path.basename(x).split('_')[5]),
+                          int(os.path.basename(x).split('_')[6])) for
               x in cdems]
     cdates = np.unique(cdates)
     cyears = np.unique([d.year for d in cdates])
@@ -1336,9 +1338,9 @@ def get_local_dems(gdir):
                 lfi_to_merge = [i for i in lfi_to_merge if '25.tif' in i]
 
         # acquisition dates
-        lfi_dates = [datetime.datetime(int(os.path.basename(x).split('_')[4]),
-                                       int(os.path.basename(x).split('_')[5]),
-                                       int(os.path.basename(x).split('_')[6]))
+        lfi_dates = [dt.datetime(int(os.path.basename(x).split('_')[4]),
+                                 int(os.path.basename(x).split('_')[5]),
+                                 int(os.path.basename(x).split('_')[6]))
                      for x in lfi_to_merge]
         lfi_dates = np.unique(lfi_dates)
 
@@ -1377,7 +1379,7 @@ def get_local_dems(gdir):
     for d_z in d_zones:
         d_to_merge.extend([d for d in d_list if str(d_z) in d])
     # TODO: Replace with real acquisition dates!
-    d_acq_dates = datetime.datetime(1970, 1, 1)
+    d_acq_dates = dt.datetime(1970, 1, 1)
     d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates)
     d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['DHM25'])
@@ -1393,7 +1395,7 @@ def get_local_dems(gdir):
     for a_z in a_zones:
         a_to_merge.extend([d for d in a_list if str(a_z) in d])
     # TODO: Replace with real acquisition dates!
-    a_acq_dates = datetime.datetime(2010, 1, 1)
+    a_acq_dates = dt.datetime(2010, 1, 1)
     a_dem = _local_dem_to_xr_dataset(a_to_merge, a_acq_dates)
     a_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['SWISSALTI2010'])
