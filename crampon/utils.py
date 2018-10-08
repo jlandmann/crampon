@@ -275,6 +275,28 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
     return last_begin
 
 
+def get_nash_sutcliffe_efficiency(simulated, observed):
+    """
+    Get the Nash-Sutcliffe efficiency coefficient.
+
+    Parameters
+    ----------
+    simulated: np.array
+        An array of model output or similar.
+    observed: np.array
+        An array of observed values.
+
+    Returns
+    -------
+    nse: float
+        The Nash-Sutcliffe efficiency coefficient between the two series.
+    """
+
+    nse = 1 - np.nansum((simulated - observed) ** 2) / np.nansum(
+        (observed - np.nanmean(observed)) ** 2)
+    return nse
+
+
 class CirrusClient(pm.SSHClient):
     """
     Class for SSH interaction with Cirrus Server at WSL.
@@ -1281,16 +1303,12 @@ def get_local_dems(gdir):
 
     Returns
     -------
-    xr_list: list
-        A list of xr.Datasets containing the found DEMs.
+    None
 
     References
     ----------
     .. [1] http://xarray.pydata.org/en/stable/auto_gallery/plot_rasterio.html#recipes-rasterio
     """
-
-    tmpdir = cfg.PATHS['tmp_dir']
-    mkdir(tmpdir)
 
     # get forest inventory DEMs (quite hard-coded for the LFI file names)
     _ = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
