@@ -3351,10 +3351,63 @@ class SnowFirnCoverArrays(object):
             # recipe to convert list of lists to array
             length = len(sorted(self.grid, key=len, reverse=True)[0])
             grid_array = np.array(
-                [[np.nan] * (length - len(xi)) + [getattr(i, param) for i in xi] for xi in self.grid])
+                [[np.nan] * (length - len(xi)) + [getattr(i, param) for i in
+                                                  xi] for xi in self.grid])
 
             return grid_array
 
+
+def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
+    """
+    Get fresh snow density after Anderson (1976).
+
+    Parameters
+    ----------
+    tair: np.array
+        Air temperature during snowfall (K).
+    rho_min: float
+        Minimum density allowed (kg m-3). Default: 50
+        (Oleson et al. (2004)).
+    df: float
+        Parameter according to Anderson (1976) (K). Default: 1.7
+    ef: float
+        Parameter according to Anderson (1976) (K). Default: 15.
+
+    Returns
+    -------
+    rho_fresh: np.array
+        Density of fresh snow.
+    """
+
+    # TODO: Use equation 17 from Essery (2013)? Probably no, because we already integrate over one day
+    rho_fresh = rho_min + np.clip(
+        df * (tair - cfg.PARAMS['temp_melt'] + ef) ** 1.5, None, 0.)
+
+    return rho_fresh
+
+
+def get_thermal_conductivity_yen(rhos, clambda=2.22, nlambda=1.88):
+    """
+    Compute the thermal conductivity after Yen (1981).
+
+    Parameters
+    ----------
+    rhos: np.array
+        The snow density
+    clambda: float
+        Parameter (W m-1 k-1).
+        Default: 2.22 (Douville et al. (1992)).
+    nlambda: float
+        Parameter (W m-1 k-1).
+        Default: 1.88 (Douville et al. (1992)).
+
+    Returns
+    -------
+    tc: float
+        Thermal conductivity.
+    """
+
+    return clambda * (rhos / cfg.RHO_W) ** nlambda
 
 
 def get_rho_dv():
