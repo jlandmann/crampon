@@ -617,8 +617,8 @@ class PellicciottiModel(DailyMassBalanceModel):
         the precipitation correction factor, PRCP_SOL(z) is the solid
         precipitation at height z in mm w.e., TF is the so called
         temperature factor of the glacier (mm w.e. K-1 d-1), T(z) is the
-        temperature at height z in (deg C), SRF is the so called shortwave
-        radiation factor (m2 mm W-1 d-1), G is the incoming shortwave
+        positive temperature at height z in (deg C), SRF is the so called
+        shortwave radiation factor (m2 mm W-1 d-1), G is the incoming shortwave
         radiation (W m-2) and Tmelt is the temperature threshold where melt #
         occurs (deg C).
 
