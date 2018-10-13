@@ -2195,38 +2195,3 @@ if __name__ == '__main__':
             densify_firn_huss_time.append(after - before)
 
     print('hi')
-
-    # MAYBE THIS METHOD SHOULD BE OUTSIDE THE CLASS => IT'S A CONTROLLER
-    def run_densification(gdir, from_date=None, to_date=None,
-                          recalculate_mb=False):
-        """
-        Run the densification process and subprocesses.
-
-        Parameters
-        ----------
-        from_date
-        to_date
-        recalculate_mb: bool
-            Whether to recalculate the mass balance (computationally
-            expensive!) or - if available - fall back to the saved mass
-            balance in the glacier directory (mb_daily.pkl).
-
-        Returns
-        -------
-
-        """
-
-        # partition the date range into full MB years and the time where we
-        # need the daily model
-
-        # IMPORTANT: This should by lazy: it should only recalculate the MB
-
-        for d in pd.date_range(from_date, to_date):
-            print(d)
-            # if d is the end of the MB year:
-            # self.densify_firn_huss
-            # if d is a day and we are i the part where we use daily models:
-            # self.densify_snow
-
-
-
