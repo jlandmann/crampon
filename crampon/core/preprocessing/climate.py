@@ -267,18 +267,19 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             raise KeyError('Must supply hfile or initialize the crampon'
                            'configuration.')
 
-    for var, mode in product(['TabsD', 'R'], ['verified', 'operational']):
+    for var, mode in product(['TabsD', 'R', 'msgSISD_'],
+                             ['verified', 'operational']):
+        all_file = os.path.join(write_to, '{}_{}_all.nc'.format(var, mode))
         cirrus = utils.CirrusClient()
         r, _ = cirrus.sync_files('/data/griddata', write_to
                                  , globpattern='*{}/daily/{}*/netcdf/*'
                                  .format(mode, var))
 
         # if at least one file was retrieved, assemble everything new
-        if len(r) > 0:
-            flist = glob(os.path.join(write_to,
-                                      'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
-                                      .format(mode, var)))
-
+        flist = glob(os.path.join(write_to,
+                                  'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
+                                  .format(mode, var)))
+        if (len(r) > 0) or ((not os.path.exists(all_file)) and len(flist) > 0):
             # Instead of using open_mfdataset (we need a lot of preprocessing)
             log.info('Concatenating {} {} {} files...'
                      .format(len(flist), var, mode))
@@ -287,27 +288,32 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             log.info('Ensuring time continuity...')
             sda = sda.crampon.ensure_time_continuity()
             sda.encoding['zlib'] = True
-            sda.to_netcdf(os.path.join(write_to, '{}_{}_all.nc'.format(var,
-                                                                       mode)))
+            sda.to_netcdf(all_file)
 
     # update operational with verified
-    for var in ['TabsD', 'R']:
+    for var in ['TabsD', 'R', 'msgSISD_']:
         v_op = os.path.join(write_to, '{}_operational_all.nc'.format(var))
         v_ve = os.path.join(write_to, '{}_verified_all.nc'.format(var))
 
-        data = utils.read_netcdf(v_op, chunks={'time': 50})
-        data = data.crampon.update_with_verified(v_ve)
-
+        # TODO: Remove when msgSISD is finally delivered operationally ?
+        # can be that operational files are missing (msgSISD)
+        try:
+            data = utils.read_netcdf(v_op, chunks={'time': 50})
+            data = data.crampon.update_with_verified(v_ve)
+        except FileNotFoundError:
+            data = utils.read_netcdf(v_ve, chunks={'time': 50})
         data.to_netcdf(os.path.join(write_to, '{}_op_ver.nc'.format(var)))
 
     # combine both
     tfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TabsD')))[0]
     pfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('R')))[0]
+    rfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('msgSISD_')))[
+        0]
     outfile = os.path.join(write_to, 'climate_all.nc')
 
-    log.info('Combining TEMP, PRCP and HGT...')
-    utils.daily_climate_from_netcdf(tfile, pfile, hfile, outfile)
-    log.info('Done combining TEMP, PRCP and HGT.')
+    log.info('Combining TEMP, PRCP, SIS and HGT...')
+    utils.daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile)
+    log.info('Done combining TEMP, PRCP, SIS and HGT.')
 
     return outfile
 

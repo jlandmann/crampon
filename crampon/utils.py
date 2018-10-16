@@ -738,6 +738,16 @@ class MeteoTSAccessor(object):
         if 'RhiresD' in self._obj.variables:
             self._obj.rename({'RhiresD': 'RD'}, inplace=True)
 
+        # radiation: "SIS" & "msg.SIS.D" in one file
+        if ('msg.SIS.D' in self._obj.variables) and \
+                ('SIS' in self._obj.variables):
+            self._obj = self._obj['msg.SIS.D'].combine_first(
+                self._obj.SIS).to_dataset(
+                name='SIS')
+        elif ('msg.SIS.D' in self._obj.variables) and not \
+                ('SIS' in self._obj.variables):
+            self._obj.rename({'msg.SIS.D': 'SIS'}, inplace=True)
+
         # THIS IS ABSOLUTELY TEMPORARY AND SHOULD BE REPLACED
         # THE REASON IS A SLIGHT PRECISION PROBLEM IN THE INPUT DATA, CHANGING
         # AT THE 2014/2015 TRANSITION => WE STANDARDIZE THE COORDINATES BY HAND
@@ -842,7 +852,7 @@ class MeteoTSAccessor(object):
         return self._obj
 
 
-def daily_climate_from_netcdf(tfile, pfile, hfile, outfile):
+def daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile):
     """
     Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
@@ -855,8 +865,10 @@ def daily_climate_from_netcdf(tfile, pfile, hfile, outfile):
     ----------
     tfile: str
         Path to temperature netCDF file.
-    pfile: list
+    pfile: str
         Path to precipitation netCDF file.
+    rfile: str
+        Path to radiation netCDF file.
     hfile: str
         Path to the elevation netCDF file.
     outfile: str
@@ -869,6 +881,7 @@ def daily_climate_from_netcdf(tfile, pfile, hfile, outfile):
 
     temp = read_netcdf(tfile, chunks={'time': 50})
     prec = read_netcdf(pfile, chunks={'time': 50})
+    sis = read_netcdf(rfile, chunks={'time': 50})  # shortwave incoming solar
     hgt = read_netcdf(hfile)
     _, hgt = xr.align(temp, hgt, join='left')
 
@@ -877,9 +890,11 @@ def daily_climate_from_netcdf(tfile, pfile, hfile, outfile):
         temp.rename({'TabsD': 'temp'}, inplace=True)
     if 'RD' in prec.variables:
         prec.rename({'RD': 'prcp'}, inplace=True)
+    if 'SIS' in sis.variables:
+        sis.rename({'SIS': 'sis'}, inplace=True)
 
     # make it one
-    nc_ts = xr.merge([temp, prec, hgt])
+    nc_ts = xr.merge([temp, prec, sis, hgt])
 
     # Units cannot be checked anymore at this place (lost in xarray...)
 
@@ -931,7 +946,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     paths = sorted(files)
     datasets = [read_netcdf(p, chunks, tfunc) for p in paths]
 
-    combined = xr.concat(datasets, dim)
+    combined = xr.auto_combine(datasets, concat_dim=dim)
     return combined
 
 
