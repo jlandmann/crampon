@@ -112,8 +112,6 @@ CBASENAMES['geodetic_dv'] = ('geodetic_dv.csv', _doc)
 CPARAMS['temp_melt'] = 0.
 
 # Our data are quite good, so we want to use the local gradient (5x5 window)
-CPARAMS['temp_use_local_gradient'] = 5
-CPARAMS['prcp_grad'] = +0.0003
 CPATHS['climate_dir'] = os.path.expanduser('~\\documents\\crampon\\data\\meteo')
 CPATHS['hfile'] = os.path.expanduser('~\\documents\\crampon\\data\\DEM\\hgt.nc')
 CPATHS['lfi_worksheet'] = os.path.expanduser('~\\documents\\crampon\\data\\meteo\\ginzler_ws.shp')
@@ -202,6 +200,10 @@ def initialize(file=None):
         'temp_use_local_gradient')
     k = 'temp_local_gradient_bounds'
     oggmcfg.PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
+    oggmcfg.PARAMS['prcp_use_local_gradient'] = cp.as_int(
+        'prcp_use_local_gradient')
+    k = 'prcp_local_gradient_bounds'
+    oggmcfg.PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
     k = 'tstar_search_window'
     oggmcfg.PARAMS[k] = [int(vk) for vk in cp.as_list(k)]
     oggmcfg.PARAMS['use_bias_for_run'] = cp.as_bool('use_bias_for_run')
@@ -238,10 +240,10 @@ def initialize(file=None):
     ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
            'glathida_rgi_links', 'lfi_dir', 'dem_dir', 'grid_dx_method',
            'mp_processes', 'use_multiprocessing', 'use_divides',
+           'temp_use_local_gradient', 'prcp_use_local_gradient',
            'temp_local_gradient_bounds', 'mb_dir',
-           'temp_local_gradient_bounds', 'mb_dir',
-           'topo_interp', 'use_compression', 'bed_shape',
-           'continue_on_error',
+           'prcp_local_gradient_bounds', 'topo_interp', 'use_compression',
+           'bed_shape', 'continue_on_error',
            'use_optimized_inversion_params', 'invert_with_sliding',
            'optimize_inversion_params', 'use_multiple_flowlines',
            'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',

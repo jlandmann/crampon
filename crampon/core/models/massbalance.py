@@ -103,8 +103,8 @@ class DailyMassBalanceModel(MassBalanceModel):
                                 .fillna(value=self.param_ep_func(self.prcp_fac))
             else:
                 self.prcp = nc.variables['prcp'][:] * self.prcp_fac
-            self.tgrad = nc.variables['grad'][:]
-            self.pgrad = cfg.PARAMS['prcp_grad']
+            self.tgrad = nc.variables['tgrad'][:]
+            self.pgrad = nc.variables['pgrad'][:]
             self.ref_hgt = nc.ref_hgt
 
         # Public attrs
@@ -132,12 +132,14 @@ class DailyMassBalanceModel(MassBalanceModel):
                     raise TypeError('Input date type ({}) for elapsed time not'
                                     ' understood'.format(type(date)))
 
-    def get_prcp_sol_liq(self, iprcp, heights, temp):
+    def get_prcp_sol_liq(self, iprcp, ipgrad, heights, temp):
         # Compute solid precipitation from total precipitation
         # the prec correction with the gradient does not exist in OGGM
         npix = len(heights)
-        prcptot = np.ones(npix) * iprcp + self.pgrad * iprcp * (heights -
-                                                                self.ref_hgt)
+        prcptot = np.ones(npix) * iprcp + iprcp * ipgrad * (
+                    heights - self.ref_hgt)
+        # important: we don't take compound interest formula (p could be neg!)
+        prcptot = np.clip(prcptot, 0, None)
         fac = 1 - (temp - self.t_solid) / (self.t_liq - self.t_solid)
         prcpsol = prcptot * np.clip(fac, 0, 1)
         prcpliq = prcptot - prcpsol
@@ -206,6 +208,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         else:
             iprcp = self.prcp_unc[ix] * self.prcp_fac
         itgrad = self.tgrad[ix]
+        ipgrad = self.pgrad[ix]
 
         # For each height pixel:
         # Compute temp tempformelt (temperature above melting threshold)
@@ -213,7 +216,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, heights, temp)
+        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
@@ -393,8 +396,8 @@ class BraithwaiteModel(DailyMassBalanceModel):
                     value=self.param_ep_func(self.prcp_fac))
             else:
                 self.prcp = nc.variables['prcp'][:] * self.prcp_fac
-            self.tgrad = nc.variables['grad'][:]
-            self.pgrad = cfg.PARAMS['prcp_grad']
+            self.tgrad = nc.variables['tgrad'][:]
+            self.pgrad = nc.variables['pgrad'][:]
             self.ref_hgt = nc.ref_hgt
 
         # Public attrs
@@ -445,6 +448,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
+        ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
                 iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
@@ -463,7 +467,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, heights, temp)
+        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
@@ -652,6 +656,7 @@ class PellicciottiModel(DailyMassBalanceModel):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
+        ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
                 iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,

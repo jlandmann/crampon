@@ -168,6 +168,93 @@ def process_custom_climate_data_crampon(gdir):
     lat = nc_ts._nc.variables['lat'][:]
 
     # Gradient defaults
+    use_tgrad = cfg.PARAMS['temp_use_local_gradient']
+    def_tgrad = cfg.PARAMS['temp_default_gradient']
+    tg_minmax = cfg.PARAMS['temp_local_gradient_bounds']
+
+    use_pgrad = cfg.PARAMS['prcp_use_local_gradient']
+    def_pgrad = cfg.PARAMS['prcp_default_gradient']
+    pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
+
+    # get closest grid cell and index
+    ilon = np.argmin(np.abs(lon - gdir.cenlon))
+    ilat = np.argmin(np.abs(lat - gdir.cenlat))
+    ref_pix_lon = lon[ilon]
+    ref_pix_lat = lat[ilat]
+
+    # Some special things added in the crampon function
+    iprcp, itemp, isis, itgrad, ipgrad, ihgt = \
+        utils.joblib_read_climate(fpath, ilon, ilat, def_tgrad, tg_minmax,
+                                  use_tgrad, def_pgrad, pg_minmax, use_pgrad)
+
+    # Set temporal subset for the ts data depending on frequency:
+    # hydro years if monthly data, else no restriction
+    yrs = nc_ts.time.year
+    y0, y1 = yrs[0], yrs[-1]
+    time = nc_ts.time
+    if pd.infer_freq(nc_ts.time) == 'MS':  # month start frequency
+        nc_ts.set_period(t0='{}-10-01'.format(y0), t1='{}-09-01'.format(y1))
+        ny, r = divmod(len(time), 12)
+        if r != 0:
+            raise ValueError('Climate data should be N full years exclusively')
+        gdir.write_monthly_climate_file(time, iprcp, itemp, isis, itgrad,
+                                        ipgrad, ihgt, ref_pix_lon, ref_pix_lat)
+    elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
+        nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
+        ny, r = divmod(len(time), 12)
+        if r != 0:
+            raise ValueError('Climate data should be N full years exclusively')
+        gdir.write_monthly_climate_file(time, iprcp, itemp, isis, itgrad,
+                                        ipgrad, ihgt, ref_pix_lon, ref_pix_lat)
+    elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
+        # Doesn't matter if entire years or not, BUT a correction for y1 to be
+        # the last hydro/glacio year is needed
+        if not '{}-09-30'.format(y1) in nc_ts.time:
+            y1 = yrs[-2]
+        # Ok, this is NO ERROR: we can use the function
+        # ``write_monthly_climate_file`` also to produce a daily climate file:
+        # there is no reference to the time in the function! We should just
+        # change the ``file_name`` keyword!
+        gdir.write_monthly_climate_file(time, iprcp, itemp, isis, itgrad,
+                                        ipgrad, ihgt, ref_pix_lon, ref_pix_lat,
+                                        file_name='climate_daily',
+                                        time_unit=nc_ts._nc.variables['time']
+                                        .units)
+    else:
+        raise NotImplementedError('Climate data frequency not yet understood')
+
+    # for logging
+    end_date = time[-1]
+
+    # metadata
+    out = {'climate_source': fpath, 'hydro_yr_0': y0 + 1,
+           'hydro_yr_1': y1, 'end_date': end_date}
+    gdir.write_pickle(out, 'climate_info')
+
+
+@entity_task(log)
+def process_spinup_climate_data(gdir):
+    """Processes the homogenized station data before 1961.
+
+    Temperature should be extrapolated from the surrounding stations with
+    monthly gradients.
+    Precip correction should be calibrated with winter MBs
+    """
+
+    if not (('climate_file' in cfg.PATHS) and
+            os.path.exists(cfg.PATHS['climate_file'])):
+        raise IOError('Custom climate file {} not found'
+                      .format(cfg.PATHS['climate_file']))
+
+    # read the file
+    fpath = cfg.PATHS['climate_file']
+    nc_ts = salem.GeoNetcdf(fpath)
+
+    # geoloc
+    lon = nc_ts._nc.variables['lon'][:]
+    lat = nc_ts._nc.variables['lat'][:]
+
+    # Gradient defaults
     use_grad = cfg.PARAMS['temp_use_local_gradient']
     def_grad = cfg.PARAMS['temp_default_gradient']
     g_minmax = cfg.PARAMS['temp_local_gradient_bounds']

@@ -952,8 +952,9 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
 
 # can't write it to cache until we have e.g. a date in the climate_all filename
 @MEMORY.cache
-def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
-                                use_grad):
+def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
+                                minmax_tgrad, use_tgrad, default_pgrad,
+                                minmax_pgrad, use_pgrad):
     """
     This is a cracked version of the OGGM function with some extras.
 
@@ -965,100 +966,109 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_grad, minmax_grad,
         Index of a longitude in the netCDF.
     ilat: int
         Index of a latitude in the netCDF.
-    default_grad: float
-        Default temperature gradient (K/m).
-    minmax_grad: tuple
-        Min/Max bounds of the local gradient, in case the grid kernel search
-        delivers strange values.
-    use_grad: int
+    default_tgrad: float
+        Default temperature gradient (K m-1).
+    minmax_tgrad: tuple
+        Min/Max bounds of the local temperature gradient, in case the grid
+        kernel search delivers strange values.
+    use_tgrad: int
         Window edge width of surrounding cells used to determine the local
         temperature gradient. Must be an odd number. If 0,
-        the ``default_grad`` is used.
+        the ``default_tgrad`` is used.
+    default_pgrad: float
+        Default precipitation gradient (m-1).
+    minmax_pgrad: tuple
+        Min/Max bounds of the local precipitation gradient, in case the grid
+        kernel search delivers strange values.
+    use_pgrad: int
+        Window edge width of surrounding cells used to determine the local
+        precipitation gradient. Must be an odd number. If 0,
+        the ``default_pgrad`` is used.
+
 
     Returns
     -------
-    iprcp, itemp, igrad, ihgt:
-    Precipitation, temperature, temperature gradient and elevation
-    at given latitude/longitude indices.
+    iprcp, itemp, isis, itgrad, ipgrad, ihgt:
+    Precipitation, temperature, temperature gradient, shortwave incoming solar
+    radiation and elevation at given latitude/longitude indices.
     """
 
     # check for oddness or zero
-    if not (divmod(use_grad, 2)[1] == 1 or use_grad == 0):
+    if not ((divmod(use_tgrad, 2)[1] == 1 or use_tgrad == 0) or
+            (divmod(use_pgrad, 2)[1] == 1 or use_pgrad == 0)):
         raise ValueError('Window edge width must be odd number or zero.')
 
-    # read the file and data
-    with netCDF4.Dataset(ncpath, mode='r') as nc:
-        temp = nc.variables['temp']
-        prcp = nc.variables['prcp']
-        hgt = nc.variables['hgt']
-        igrad = np.zeros(len(nc.dimensions['time'])) + default_grad
-        iprcp = prcp[:, ilat, ilon]
-        itemp = temp[:, ilat, ilon]
-        ihgt = hgt[ilat, ilon]
+    # get climate at reference cell
+    climate = xr.open_dataset(ncpath)
+    local_climate = climate.isel(dict(lat=ilat, lon=ilon))
+    itgrad = np.zeros(len(climate.time)) + default_tgrad
+    ipgrad = np.zeros(len(climate.time)) + default_pgrad
+    iprcp = local_climate.prcp
+    itemp = local_climate.temp
+    isis = local_climate.sis
+    ihgt = local_climate.hgt
 
-        # check for missing meteo input and fill (temp mean and precip zero)
-        t_miss = np.where(np.isnan(itemp))
-        p_miss = np.where(np.isnan(iprcp))
+    # fill temp and radiation with mean, precip with 0.
+    itemp.resample(time='D', keep_attrs=True).mean('time')
+    isis.resample(time='D', keep_attrs=True).mean('time')
+    iprcp.fillna(0.)
 
-        if t_miss[0].any():
-            log.warning("Temp missing for time {}".format(
-                [i.strftime('%Y-%m-%d') for i in
-                 netCDF4.num2date(nc['time'][t_miss], nc['time'].units,
-                                  nc['time'].calendar)]))
-            for m in t_miss:
-                itemp[m] = (itemp[m - 1] + itemp[m + 1]) / 2.
-                t_load = temp[:]
-                # either mean of before and after, or value of before
-                try:
-                    t_load[m[0], :, :][:] = ((temp[m - 1] + temp[m + 1]) / 2.)[
-                                            :]
-                except IndexError:
-                    t_load[m][0] = temp[m - 1][:]
-                # important until MaskedArrayFutureWarning is implemented!
-                t_load[m[0], :, :][:].mask = temp[m - 1][:].mask
-                temp = t_load.copy()
-                t_load = None
+    # temperature gradient
+    if use_tgrad != 0:
+        # some min/max constants for the window
+        tminw = divmod(use_tgrad, 2)[0]
+        tmaxw = divmod(use_tgrad, 2)[0] + 1
+        
+        tlatslice = slice(ilat - tminw, ilat + tmaxw)
+        tlonslice = slice(ilon - tminw, ilon + tmaxw)
+        
+        ttemp = climate.temp.isel(dict(lat=tlatslice, lon=tlonslice))
+        thgt = climate.hgt.isel(dict(lat=tlatslice, lon=tlonslice))
+        thgt = thgt.values.flatten()
 
-        if p_miss[0].any():
-            log.warning("Precip missing for time {}".format(
-                [i.strftime('%Y-%m-%d') for i in
-                 netCDF4.num2date(nc['time'][p_miss], nc['time'].units,
-                                  nc['time'].calendar)]))
+        for t, loct in enumerate(ttemp.values):
+            # NaNs happen a the grid edges:
+            mask = ~np.isnan(loct)
+            slope, _, _, p_val, _ = stats.linregress(
+                np.ma.masked_array(thgt, ~mask).compressed(),
+                loct[mask].flatten())
+            itgrad[t] = slope if (p_val < 0.01) else default_tgrad
 
-            for n in p_miss:
-                p_load = prcp[:]
-                iprcp[n] = 0.
-                p_load[n[0], :, :][:] = np.zeros_like(p_load[n[0]])[:]
-                p_load[n[0], :, :][:].mask = prcp[n - 1][:].mask  # important!
-                prcp = p_load.copy()
-                p_load = None
+        # apply the boundaries, in case the gradient goes wild
+        itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
 
-        # Temperature gradient
-        if use_grad != 0:
+        # temperature gradient
+        if use_pgrad != 0:
             # some min/max constants for the window
-            minw = divmod(use_grad, 2)[0]
-            maxw = divmod(use_grad, 2)[0] + 1
+            pminw = divmod(use_pgrad, 2)[0]
+            pmaxw = divmod(use_pgrad, 2)[0] + 1
 
-            ttemp = temp[:, ilat-minw:ilat+maxw, ilon-minw:ilon+maxw]
-            thgt = hgt[ilat-minw:ilat+maxw, ilon-minw:ilon+maxw]
-            thgt = thgt.flatten()
+            platslice = slice(ilat - pminw, ilat + pmaxw)
+            plonslice = slice(ilon - pminw, ilon + pmaxw)
 
-            for t, loct in enumerate(ttemp):
-                # this happens a the grid edges:
-                if isinstance(loct, np.ma.masked_array):
-                    slope, _, _, p_val, _ = stats.linregress(
-                        np.ma.masked_array(thgt, loct.mask).compressed(),
-                        loct.flatten().compressed())
-                else:
-                    slope, _, _, p_val, _ = stats.linregress(thgt,
-                                                             loct.flatten())
-                # if the result is
-                igrad[t] = slope if (p_val < 0.01) else default_grad
+            pprcp = climate.prcp.isel(dict(lat=platslice, lon=plonslice))
+            phgt = climate.hgt.isel(dict(lat=platslice, lon=plonslice))
+            phgt = phgt.values.flatten()
+
+            for t, locp in enumerate(pprcp.values):
+                # NaNs happen at grid edges, 0 should be excluded for slope
+                mask = ~np.isnan(locp) & (locp != 0.)
+                if (~mask).all():
+                    continue
+                slope, icpt, _, p_val, _ = stats.linregress(
+                    np.ma.masked_array(phgt, ~mask).compressed(),
+                    locp[mask].flatten())
+                # Todo: Is that a good method?
+                # gradient in % m-1: mean(all prcp values + slope for 1 m)
+                # p=0. happens if there are only two grids cells
+                ipgrad[t] = np.nanmean(((locp[mask].flatten() + slope) /
+                                            locp[mask].flatten()) - 1) if (
+                    (p_val < 0.01) and (p_val != 0.)) else default_pgrad
 
             # apply the boundaries, in case the gradient goes wild
-            igrad = np.clip(igrad, minmax_grad[0], minmax_grad[1])
+            ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
 
-    return iprcp, itemp, igrad, ihgt
+    return iprcp, itemp, isis, itgrad, ipgrad, ihgt
 
 
 # IMPORTANT: overwrite OGGM functions with same name
@@ -1726,19 +1736,62 @@ class GlacierDirectory(object):
     def get_task_status(self, task_name):
         return self.OGGMGD.get_task_status(task_name=task_name)
 
-    def write_monthly_climate_file(self, time, prcp, temp, grad, ref_pix_hgt,
-                                   ref_pix_lon, ref_pix_lat,
+    def write_monthly_climate_file(self, time, prcp, temp, sis, tgrad, pgrad,
+                                   ref_pix_hgt, ref_pix_lon, ref_pix_lat,
                                    time_unit='days since 1801-01-01 00:00:00',
-                                   file_name='climate_monthly',
-                                   filesuffix=''):
-        return self.OGGMGD.write_monthly_climate_file(time=time, prcp=prcp,
-                                                      temp=temp, grad=grad,
-                                                      ref_pix_hgt=ref_pix_hgt,
-                                                      ref_pix_lon=ref_pix_lon,
-                                                      ref_pix_lat=ref_pix_lat,
-                                                      time_unit=time_unit,
-                                                      file_name=file_name,
-                                                      filesuffix=filesuffix)
+                                   file_name='climate_monthly', filesuffix=''):
+        """Creates a netCDF4 file with climate data.
+
+        The biggest part of this function is the same as in OGGM, however we
+        have to add the radiation as additional in-/output.
+        """
+
+        # overwrite as default
+        fpath = self.get_filepath(file_name, filesuffix=filesuffix)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+        with netCDF4.Dataset(fpath, 'w', format='NETCDF4') as nc:
+            nc.ref_hgt = ref_pix_hgt
+            nc.ref_pix_lon = ref_pix_lon
+            nc.ref_pix_lat = ref_pix_lat
+            nc.ref_pix_dis = haversine(self.cenlon, self.cenlat,
+                                       ref_pix_lon, ref_pix_lat)
+
+            dtime = nc.createDimension('time', None)
+
+            nc.author = 'OGGM and CRAMPON'
+            nc.author_info = 'Open Global Glacier Model and Cryospheric ' \
+                             'Monitoring and Prediction Online'
+
+            timev = nc.createVariable('time', 'i4', ('time',))
+            timev.setncatts({'units': time_unit})
+            timev[:] = netCDF4.date2num([t for t in time], time_unit)
+
+            v = nc.createVariable('prcp', 'f4', ('time',), zlib=True)
+            v.units = 'kg m-2'
+            v.long_name = 'total daily precipitation amount'
+            v[:] = prcp
+
+            v = nc.createVariable('temp', 'f4', ('time',), zlib=True)
+            v.units = 'degC'
+            v.long_name = '2m temperature at height ref_hgt'
+            v[:] = temp
+
+            v = nc.createVariable('sis', 'f4', ('time',), zlib=True)
+            v.units = 'W m-2'
+            v.long_name = 'daily mean surface incoming shortwave radiation'
+            v[:] = sis
+
+            v = nc.createVariable('tgrad', 'f4', ('time',), zlib=True)
+            v.units = 'K m-1'
+            v.long_name = 'temperature gradient'
+            v[:] = tgrad
+
+            v = nc.createVariable('pgrad', 'f4', ('time',), zlib=True)
+            v.units = 'm-1'
+            v.long_name = 'precipitation gradient'
+            v[:] = pgrad
 
     def create_gridded_ncdf_file(self, filename):
         """
