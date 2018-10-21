@@ -852,7 +852,8 @@ class MeteoTSAccessor(object):
         return self._obj
 
 
-def daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile):
+def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
+                              outfile):
     """
     Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
@@ -864,7 +865,11 @@ def daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile):
     Parameters
     ----------
     tfile: str
-        Path to temperature netCDF file.
+        Path to mean temperature netCDF file.
+    tminfile: str
+        Path to minimum temperature netCDF file.
+    tmaxfile: str
+        Path to maximum temperature netCDF file.
     pfile: str
         Path to precipitation netCDF file.
     rfile: str
@@ -880,6 +885,8 @@ def daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile):
     """
 
     temp = read_netcdf(tfile, chunks={'time': 50})
+    tmin = read_netcdf(tminfile, chunks={'time': 50})
+    tmax = read_netcdf(tmaxfile, chunks={'time': 50})
     prec = read_netcdf(pfile, chunks={'time': 50})
     sis = read_netcdf(rfile, chunks={'time': 50})  # shortwave incoming solar
     hgt = read_netcdf(hfile)
@@ -888,13 +895,17 @@ def daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile):
     # Rename variables as OGGM likes it
     if 'TabsD' in temp.variables:
         temp.rename({'TabsD': 'temp'}, inplace=True)
+    if 'TminD' in tmin.variables:
+        tmin.rename({'TminD': 'tmin'}, inplace=True)
+    if 'TmaxD' in tmax.variables:
+        tmax.rename({'TmaxD': 'tmax'}, inplace=True)
     if 'RD' in prec.variables:
         prec.rename({'RD': 'prcp'}, inplace=True)
     if 'SIS' in sis.variables:
         sis.rename({'SIS': 'sis'}, inplace=True)
 
     # make it one
-    nc_ts = xr.merge([temp, prec, sis, hgt])
+    nc_ts = xr.merge([temp, tmin, tmax, prec, sis, hgt])
 
     # Units cannot be checked anymore at this place (lost in xarray...)
 
@@ -1005,11 +1016,15 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
     ipgrad = np.zeros(len(climate.time)) + default_pgrad
     iprcp = local_climate.prcp
     itemp = local_climate.temp
+    itmin = local_climate.tmin
+    itmax = local_climate.tmax
     isis = local_climate.sis
     ihgt = local_climate.hgt
 
     # fill temp and radiation with mean, precip with 0.
     itemp.resample(time='D', keep_attrs=True).mean('time')
+    itmin.resample(time='D', keep_attrs=True).mean('time')
+    itmax.resample(time='D', keep_attrs=True).mean('time')
     isis.resample(time='D', keep_attrs=True).mean('time')
     iprcp.fillna(0.)
 
@@ -1068,7 +1083,7 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
             # apply the boundaries, in case the gradient goes wild
             ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
 
-    return iprcp, itemp, isis, itgrad, ipgrad, ihgt
+    return iprcp, itemp, itmin, itmax, isis, itgrad, ipgrad, ihgt
 
 
 # IMPORTANT: overwrite OGGM functions with same name
@@ -1736,8 +1751,9 @@ class GlacierDirectory(object):
     def get_task_status(self, task_name):
         return self.OGGMGD.get_task_status(task_name=task_name)
 
-    def write_monthly_climate_file(self, time, prcp, temp, sis, tgrad, pgrad,
-                                   ref_pix_hgt, ref_pix_lon, ref_pix_lat,
+    def write_monthly_climate_file(self, time, prcp, temp, tmin, tmax, sis,
+                                   tgrad, pgrad, ref_pix_hgt, ref_pix_lon,
+                                   ref_pix_lat,
                                    time_unit='days since 1801-01-01 00:00:00',
                                    file_name='climate_monthly', filesuffix=''):
         """Creates a netCDF4 file with climate data.
@@ -1775,8 +1791,18 @@ class GlacierDirectory(object):
 
             v = nc.createVariable('temp', 'f4', ('time',), zlib=True)
             v.units = 'degC'
-            v.long_name = '2m temperature at height ref_hgt'
+            v.long_name = 'Mean 2m temperature at height ref_hgt'
             v[:] = temp
+
+            v = nc.createVariable('tmin', 'f4', ('time',), zlib=True)
+            v.units = 'degC'
+            v.long_name = 'Minimum 2m temperature at height ref_hgt'
+            v[:] = tmin
+
+            v = nc.createVariable('tmax', 'f4', ('time',), zlib=True)
+            v.units = 'degC'
+            v.long_name = 'Maximum 2m temperature at height ref_hgt'
+            v[:] = tmax
 
             v = nc.createVariable('sis', 'f4', ('time',), zlib=True)
             v.units = 'W m-2'

@@ -183,7 +183,7 @@ def process_custom_climate_data_crampon(gdir):
     ref_pix_lat = lat[ilat]
 
     # Some special things added in the crampon function
-    iprcp, itemp, isis, itgrad, ipgrad, ihgt = \
+    iprcp, itemp, itmin, itmax, isis, itgrad, ipgrad, ihgt = \
         utils.joblib_read_climate(fpath, ilon, ilat, def_tgrad, tg_minmax,
                                   use_tgrad, def_pgrad, pg_minmax, use_pgrad)
 
@@ -197,15 +197,17 @@ def process_custom_climate_data_crampon(gdir):
         ny, r = divmod(len(time), 12)
         if r != 0:
             raise ValueError('Climate data should be N full years exclusively')
-        gdir.write_monthly_climate_file(time, iprcp, itemp, isis, itgrad,
-                                        ipgrad, ihgt, ref_pix_lon, ref_pix_lat)
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itmin, itmax, isis,
+                                        itgrad, ipgrad, ihgt, ref_pix_lon,
+                                        ref_pix_lat)
     elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
         nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
         ny, r = divmod(len(time), 12)
         if r != 0:
             raise ValueError('Climate data should be N full years exclusively')
-        gdir.write_monthly_climate_file(time, iprcp, itemp, isis, itgrad,
-                                        ipgrad, ihgt, ref_pix_lon, ref_pix_lat)
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itmin, itmax, isis,
+                                        itgrad, ipgrad, ihgt, ref_pix_lon,
+                                        ref_pix_lat)
     elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
         # Doesn't matter if entire years or not, BUT a correction for y1 to be
         # the last hydro/glacio year is needed
@@ -215,9 +217,9 @@ def process_custom_climate_data_crampon(gdir):
         # ``write_monthly_climate_file`` also to produce a daily climate file:
         # there is no reference to the time in the function! We should just
         # change the ``file_name`` keyword!
-        gdir.write_monthly_climate_file(time, iprcp, itemp, isis, itgrad,
-                                        ipgrad, ihgt, ref_pix_lon, ref_pix_lat,
-                                        file_name='climate_daily',
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itmin, itmax, isis,
+                                        itgrad, ipgrad, ihgt, ref_pix_lon,
+                                        ref_pix_lat, file_name='climate_daily',
                                         time_unit=nc_ts._nc.variables['time']
                                         .units)
     else:
@@ -354,7 +356,7 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             raise KeyError('Must supply hfile or initialize the crampon'
                            'configuration.')
 
-    for var, mode in product(['TabsD', 'R', 'msgSISD_'],
+    for var, mode in product(['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_'],
                              ['verified', 'operational']):
         all_file = os.path.join(write_to, '{}_{}_all.nc'.format(var, mode))
         cirrus = utils.CirrusClient()
@@ -378,7 +380,7 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             sda.to_netcdf(all_file)
 
     # update operational with verified
-    for var in ['TabsD', 'R', 'msgSISD_']:
+    for var in ['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_']:
         v_op = os.path.join(write_to, '{}_operational_all.nc'.format(var))
         v_ve = os.path.join(write_to, '{}_verified_all.nc'.format(var))
 
@@ -393,14 +395,17 @@ def climate_file_from_scratch(write_to=None, hfile=None):
 
     # combine both
     tfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TabsD')))[0]
+    tminfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TminD')))[0]
+    tmaxfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TmaxD')))[0]
     pfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('R')))[0]
     rfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('msgSISD_')))[
         0]
     outfile = os.path.join(write_to, 'climate_all.nc')
 
-    log.info('Combining TEMP, PRCP, SIS and HGT...')
-    utils.daily_climate_from_netcdf(tfile, pfile, rfile, hfile, outfile)
-    log.info('Done combining TEMP, PRCP, SIS and HGT.')
+    log.info('Combining TEMP, TMIN, TMAX, PRCP, SIS and HGT...')
+    utils.daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile,
+                                    hfile, outfile)
+    log.info('Done combining TEMP, TMIN, TMAX, PRCP, SIS and HGT.')
 
     return outfile
 
