@@ -634,12 +634,12 @@ class MeteoTSAccessor(object):
             freq = pd.infer_freq(self._obj.time.values)
 
         try:
-            resampled = self._obj.resample(freq, dim='time', keep_attrs=True,
+            resampled = self._obj.resample(time=freq, keep_attrs=True,
                                            **kwargs)
         # a TO DO in xarray: if not monotonic, the code throws and error
         except ValueError:
             self._obj = self._obj.sortby('time')
-            resampled = self._obj.resample(freq, dim='time', keep_attrs=True,
+            resampled = self._obj.resample(time=freq, keep_attrs=True,
                                            **kwargs)
         diff_a = len(set(resampled.time.values) - set(self._obj.time.values))
         diff_r = len(set(self._obj.time.values) - set(resampled.time.values))
