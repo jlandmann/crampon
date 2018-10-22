@@ -174,6 +174,8 @@ def initialize(file=None):
     oggmcfg.PATHS['glathida_rgi_links'] = cp['glathida_rgi_links']
     oggmcfg.PATHS['leclercq_rgi_links'] = cp['leclercq_rgi_links']
     oggmcfg.PATHS['mb_dir'] = cp['mb_dir']
+    oggmcfg.PATHS['modelrun_backup_dir_1'] = cp['modelrun_backup_dir_1']
+    oggmcfg.PATHS['modelrun_backup_dir_2'] = cp['modelrun_backup_dir_2']
 
     # run params
     oggmcfg.PARAMS['run_period'] = [int(vk) for vk in cp.as_list('run_period')]
@@ -241,9 +243,9 @@ def initialize(file=None):
            'glathida_rgi_links', 'lfi_dir', 'dem_dir', 'grid_dx_method',
            'mp_processes', 'use_multiprocessing', 'use_divides',
            'temp_use_local_gradient', 'prcp_use_local_gradient',
-           'temp_local_gradient_bounds', 'mb_dir',
-           'prcp_local_gradient_bounds', 'topo_interp', 'use_compression',
-           'bed_shape', 'continue_on_error',
+           'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
+           'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
+           'topo_interp', 'use_compression', 'bed_shape', 'continue_on_error',
            'use_optimized_inversion_params', 'invert_with_sliding',
            'optimize_inversion_params', 'use_multiple_flowlines',
            'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',

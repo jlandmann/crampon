@@ -67,6 +67,23 @@ def daily_tasks(gdirs):
 
     log.info('Starting daily tasks...')
 
+    try_download_new_cirrus_files()
+
+    # before we recalculate climate, delete it from cache
+    utils.joblib_read_climate_crampon.clear()
+    daily_entity_tasks = [
+        tasks.process_custom_climate_data
+    ]
+
+    for task in daily_entity_tasks:
+        execute_entity_task(task, gdirs)
+
+    try_backup(gdirs)
+
+
+# retry for almost one day every half an hour, if fails
+@retry(Exception, tries=45, delay=1800, backoff=1, log_to=log)
+def try_download_new_cirrus_files():
     # This must be FIRST
     cfile = climate_file_from_scratch()
 
@@ -84,14 +101,32 @@ def daily_tasks(gdirs):
                  .format(yesterday_np64))
         raise FileNotFoundError
 
-    # before we recalculate climate, delete it from cache
-    utils.joblib_read_climate_crampon.clear()
-    daily_entity_tasks = [
-        tasks.process_custom_climate_data
-    ]
 
-    for task in daily_entity_tasks:
-        execute_entity_task(task, gdirs)
+def try_backup(gdirs):
+    # try to make a backup
+    try:
+        execute_entity_task(tasks.copy_to_basedir, gdirs,
+                            base_dir=cfg.PATHS['modelrun_backup_dir_1'],
+                            setup='all')
+        log.info('Backup of model run directory completed to'.format(
+            cfg.PATHS['modelrun_backup_dir_1']))
+    except (WindowsError, RuntimeError):
+        if len(cfg.PATHS['modelrun_backup_dir_2']) > 0:
+            execute_entity_task(tasks.copy_to_basedir, gdirs,
+                                base_dir=cfg.PATHS['modelrun_backup_dir_2'],
+                                setup='all')
+            log.info('Backup of model run directory completed to'.format(
+                cfg.PATHS['modelrun_backup_dir_2']))
+        else:
+            log.warning(
+                'Backup of model run directory failed with {} and no '
+                'alternative supplied'.format(
+                    cfg.PATHS['modelrun_backup_dir_1']))
+    except (WindowsError, RuntimeError):
+        log.warning(
+            'Backup of model run directory failed using {} and {}.'.format(
+                cfg.PATHS['modelrun_backup_dir_1'],
+                cfg.PATHS['modelrun_backup_dir_2']))
 
 
 def weekly_tasks(gdirs):
