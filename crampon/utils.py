@@ -1068,16 +1068,17 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
             for t, locp in enumerate(pprcp.values):
                 # NaNs happen at grid edges, 0 should be excluded for slope
                 mask = ~np.isnan(locp) & (locp != 0.)
+                flattened_mask = locp[mask].flatten()
                 if (~mask).all():
                     continue
                 slope, icpt, _, p_val, _ = stats.linregress(
                     np.ma.masked_array(phgt, ~mask).compressed(),
-                    locp[mask].flatten())
+                    flattened_mask)
                 # Todo: Is that a good method?
                 # gradient in % m-1: mean(all prcp values + slope for 1 m)
                 # p=0. happens if there are only two grids cells
-                ipgrad[t] = np.nanmean(((locp[mask].flatten() + slope) /
-                                            locp[mask].flatten()) - 1) if (
+                ipgrad[t] = np.nanmean(((flattened_mask + slope) /
+                                        flattened_mask) - 1) if (
                     (p_val < 0.01) and (p_val != 0.)) else default_pgrad
 
             # apply the boundaries, in case the gradient goes wild
