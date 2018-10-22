@@ -49,8 +49,6 @@ def hourly_tasks(gdirs):
     raise NotImplementedError()
 
 
-# retry for almost one day every half an hour, if fails
-@retry(Exception, tries=45, delay=1800, backoff=1, log_to=log)
 def daily_tasks(gdirs):
     """
     A collection of tasks to perform every day.
@@ -88,7 +86,8 @@ def try_download_new_cirrus_files():
     cfile = climate_file_from_scratch()
 
     # if no news, try later again
-    cmeta = xr.open_dataset(cfile, drop_variables=['temp', 'prcp', 'hgt'])
+    cmeta = xr.open_dataset(cfile, drop_variables=['temp', 'tmin', 'tmax',
+                                                   'prcp', 'sis', 'hgt'])
     yesterday_np64 = np.datetime64(datetime.datetime.today().date() -
                                    datetime.timedelta(1))
 
