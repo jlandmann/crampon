@@ -19,6 +19,7 @@ from oggm.core.climate import process_cru_data
 from crampon.core.preprocessing.climate import process_custom_climate_data
 from oggm.core.climate import process_cesm_data
 
+from oggm.utils import copy_to_basedir
 from oggm.core.climate import apparent_mb
 from oggm.core.inversion import prepare_for_inversion
 from oggm.core.inversion import volume_inversion
