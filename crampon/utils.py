@@ -234,6 +234,54 @@ def closest_date(date, candidates):
     return min(candidates, key=lambda x: abs(x - date))
 
 
+def justify(arr, invalid_val=0, axis=1, side='left'):
+    """
+    Justify a 2D array.
+
+    This actually means that the invalid_val is trimmed at the desired side and
+    padded at the other side so that the shape of the array is kept.
+    Adapted and slightly modified in terms of variable names and PEP8 from
+    stackoverflow [1]_.
+
+    Parameters
+    ----------
+    arr : numpy.ndarray
+        Input array to be justified
+    axis : int
+        Axis along which justification is to be made
+    side : str
+        Direction of justification. It could be 'left', 'right', 'up', 'down'
+        It should be 'left' or 'right' for axis=1 and 'up' or 'down' for
+        axis=0.
+
+    Examples
+    --------
+    >>> test = np.array([[np.nan, np.nan, np.nan, 3., 0., np.nan],
+    >>>                  [np.nan, np.nan, 0., 6., np.nan, np.nan]])
+    >>> justify(test, invalid_val=np.nan, side='right')
+    array([[nan, nan, nan, nan,  3.,  0.],
+       [nan, nan, nan, nan,  0.,  6.]])
+
+    References
+    ----------
+    .. [1] https://stackoverflow.com/questions/44558215/python-justifying-numpy-array.
+    """
+
+    if invalid_val is np.nan:
+        mask = ~np.isnan(arr)
+    else:
+        mask = arr != invalid_val
+    justified_mask = np.sort(mask, axis=axis)
+    if (side == 'up') | (side == 'left'):
+        justified_mask = np.flip(justified_mask, axis=axis)
+    out = np.full(arr.shape, invalid_val)
+    if axis == 1:
+        out[justified_mask] = arr[mask]
+    else:
+        out.T[justified_mask.T] = arr.T[mask.T]
+    return out
+
+
 def get_begin_last_flexyear(date, start_month=10, start_day=1):
     """
     Get the begin date of the most recent/current ("last") flexible
