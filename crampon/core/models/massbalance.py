@@ -1599,33 +1599,6 @@ class SnowFirnCoverArrays(object):
         self.rho = rho_test_new
         self.last_update[insert_ix] = date
 
-        ## DON'T USE THE RETRIEVED INDICES HERE: otherwise overlying mass could be wrong if layers above are by chance firn ( densification(ice lenses by refreezing!)
-        #oswe = np.nansum(self.swe, axis=1)
-        #height_ix = np.where(oswe > 0.)[0]
-        #swe = self.swe
-        #top_layer = self.top_layer
-        #for h in height_ix:
-        #    mass = 0.
-        #    # todo: check if top_layers is really the top layer or one above!
-        #    reverse_layers = np.arange(top_layer[h])[::-1]
-        #    for l in reverse_layers:
-        #
-        #        # TODO: this check for the density can cause problems, if the criteria are not managed centrally
-        #        curr_rho = rho_old[h, l]
-        #        if curr_rho < cfg.PARAMS['snow_firn_threshold']:
-        #            self.rho[h, l] = curr_rho + \
-        #                                  (
-        #                                              curr_rho * cfg.G * mass * deltat / eta0) * \
-        #                                  np.exp(etaa * (temperature[h,l] - Tm_k) - etab *
-        #                                         curr_rho) + deltat * \
-        #                                  curr_rho * snda * np.exp(
-        #                sndb * (temperature[h, l] - Tm_k) - sndc * max(
-        #                    curr_rho - rhoc, 0.))
-        #
-        #            self.last_update[h, l] = date
-        #
-        #        mass += swe[h, l] * 1000
-
         self.remove_ice_layers()
 
     def merge_firn_layers(self, date):
