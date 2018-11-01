@@ -1087,27 +1087,44 @@ class SnowFirnCoverArrays(object):
             raise ValueError('Dimensions of SnowFirnCover and mass to be '
                              'removed must match.')
 
-        while (swe > 0.).any():
-            # remove at indices of self.top_layer where swe > 0.
-            remove_ix = (swe >= self.swe[self.top_layer])
-            reduce_ix = (0. < swe <= self.swe[self.top_layer])
-            reduce_amount = self.swe[self.top_layer] - swe
-            remove_amount = self.swe[self.top_layer]
-            assert reduce_amount > 0.
+        # change sign to positive to make it comparable with positive SWE
+        swe = np.negative(swe)
 
-            self.remove_layer(remove_ix)
-            self.swe[reduce_ix] -= reduce_amount[reduce_ix]
-            swe[reduce_ix] -= reduce_amount[reduce_ix]
-            swe[remove_ix] -= remove_amount[remove_ix]
-            # remove other layers accordingly!?
-            # reduce swe by the amount removed
+        swe = swe[:, None]
+        cum_swe = np.fliplr(np.nancumsum(np.fliplr(self.swe), axis=1))
+        remove_bool = (cum_swe <= swe) & (cum_swe != 0) & ~np.isnan(cum_swe)
+        remove = np.where(remove_bool)
 
+        old_swe = self.swe.copy()
+        # For the first, we assume no percolation or similar
+        self.swe[remove] = np.nan
+        self.rho[remove] = np.nan
+        self.temperature[remove] = np.nan
+        self.liq_content[remove] = np.nan
+        self.status[remove] = ''
+        self.origin[remove] = np.nan
+        self.last_update[remove] = np.nan
 
+        mask = np.ma.array(old_swe, mask=np.invert(
+            (cum_swe <= swe) & (cum_swe != 0) & ~np.isnan(cum_swe)))
+        swe_to_remove = np.nansum(mask, axis=1)
+        swe[:, 0] -= swe_to_remove
 
-            # TODO: replace pseudo-code??? Does it have to refreeze every time if there is potential? Do we need impermable layers for this? Look at SFM2
-            # if self.refreeze_pot > 0.:
-            # let it refreeze
-            # let the latent heat warm the snowpack up
+        top = self.top_layer
+        current_swe_top = self.swe[np.arange(self.n_heights), top]
+        to_reduce = swe[:, 0]
+        new_swe_at_top = current_swe_top - to_reduce
+        current_swe = self.swe.copy()
+        current_swe[np.arange(self.n_heights), top] = new_swe_at_top
+        self.swe = current_swe
+
+        # just to be sure
+        assert not (self.swe < 0.).all()
+
+        # TODO: replace pseudo-code??? Does it have to refreeze every time if there is potential? Do we need impermable layers for this? Look at SFM2
+        # if self.refreeze_pot > 0.:
+        # let it refreeze
+        # let the latent heat warm the snowpack up
 
     def add_height_nodes(self, nodes):
         """
