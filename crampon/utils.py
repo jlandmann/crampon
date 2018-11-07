@@ -247,6 +247,8 @@ def justify(arr, invalid_val=0, axis=1, side='left'):
     ----------
     arr : numpy.ndarray
         Input array to be justified
+    invalid_val: float, None
+        Invalid value to be trimmed.
     axis : int
         Axis along which justification is to be made
     side : str
