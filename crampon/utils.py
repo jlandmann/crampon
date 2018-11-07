@@ -685,14 +685,11 @@ class MeteoTSAccessor(object):
         if not freq:
             freq = pd.infer_freq(self._obj.time.values)
 
-        try:
-            resampled = self._obj.resample(time=freq, keep_attrs=True,
-                                           **kwargs)
-        # a TO DO in xarray: if not monotonic, the code throws and error
-        except ValueError:
-            self._obj = self._obj.sortby('time')
-            resampled = self._obj.resample(time=freq, keep_attrs=True,
-                                           **kwargs)
+        # still a TO DO in xarray 0.11: if not monotonic, error is thrown
+        # https://github.com/pydata/xarray/blob/6d55f99905d664ef73cb708cfe8c52c2c651e8dc/xarray/core/groupby.py#L234
+        self._obj = self._obj.sortby('time')
+        resampled = self._obj.resample(time=freq, keep_attrs=True,
+                                       **kwargs).mean()  # mean = fill with NaN
         diff_a = len(set(resampled.time.values) - set(self._obj.time.values))
         diff_r = len(set(self._obj.time.values) - set(resampled.time.values))
 
