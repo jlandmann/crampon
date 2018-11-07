@@ -749,7 +749,7 @@ class MeteoTSAccessor(object):
 
         # they changed the name of time coordinate....uffa!
         if "REFERENCE_TS" in self._obj.coords:
-            self._obj.rename({"REFERENCE_TS": "time"}, inplace=True)
+            self._obj = self._obj.rename({"REFERENCE_TS": "time"})
 
         # whatever coordinate that is
         if "crs" in self._obj.data_vars:
@@ -772,20 +772,20 @@ class MeteoTSAccessor(object):
 
         # this is the case for the operational files
         if 'x' in self._obj.coords:
-            self._obj.rename({'x': 'lon'}, inplace=True)
+            self._obj = self._obj.rename({'x': 'lon'})
 
         # this is the case for the operational files
         if 'y' in self._obj.coords:
-            self._obj.rename({'y': 'lat'}, inplace=True)
+            self._obj = self._obj.rename({'y': 'lat'})
 
         # Latitude can be switched after 2014
         self._obj = self._obj.sortby('lat')
 
         # make R variable names the same so that we don't get in troubles
         if 'RprelimD' in self._obj.variables:
-            self._obj.rename({'RprelimD': 'RD'}, inplace=True)
+            self._obj = self._obj.rename({'RprelimD': 'RD'})
         if 'RhiresD' in self._obj.variables:
-            self._obj.rename({'RhiresD': 'RD'}, inplace=True)
+            self._obj = self._obj.rename({'RhiresD': 'RD'})
 
         # radiation: "SIS" & "msg.SIS.D" in one file
         if ('msg.SIS.D' in self._obj.variables) and \
@@ -795,7 +795,7 @@ class MeteoTSAccessor(object):
                 name='SIS')
         elif ('msg.SIS.D' in self._obj.variables) and not \
                 ('SIS' in self._obj.variables):
-            self._obj.rename({'msg.SIS.D': 'SIS'}, inplace=True)
+            self._obj = self._obj.rename({'msg.SIS.D': 'SIS'})
 
         # THIS IS ABSOLUTELY TEMPORARY AND SHOULD BE REPLACED
         # THE REASON IS A SLIGHT PRECISION PROBLEM IN THE INPUT DATA, CHANGING
@@ -943,15 +943,15 @@ def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
 
     # Rename variables as OGGM likes it
     if 'TabsD' in temp.variables:
-        temp.rename({'TabsD': 'temp'}, inplace=True)
+        temp = temp.rename({'TabsD': 'temp'})
     if 'TminD' in tmin.variables:
-        tmin.rename({'TminD': 'tmin'}, inplace=True)
+        tmin = tmin.rename({'TminD': 'tmin'})
     if 'TmaxD' in tmax.variables:
-        tmax.rename({'TmaxD': 'tmax'}, inplace=True)
+        tmax = tmax.rename({'TmaxD': 'tmax'})
     if 'RD' in prec.variables:
-        prec.rename({'RD': 'prcp'}, inplace=True)
+        prec = prec.rename({'RD': 'prcp'})
     if 'SIS' in sis.variables:
-        sis.rename({'SIS': 'sis'}, inplace=True)
+        sis = sis.rename({'SIS': 'sis'})
 
     # make it one
     nc_ts = xr.merge([temp, tmin, tmax, prec, sis, hgt])
