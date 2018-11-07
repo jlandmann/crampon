@@ -269,12 +269,14 @@ def justify(arr, invalid_val=0, axis=1, side='left'):
 
     if invalid_val is np.nan:
         mask = ~np.isnan(arr)
-    else:
+    elif (invalid_val is not np.nan) and (invalid_val is not None):
         mask = arr != invalid_val
+    else:
+        mask = ~pd.isnull(arr)
     justified_mask = np.sort(mask, axis=axis)
     if (side == 'up') | (side == 'left'):
         justified_mask = np.flip(justified_mask, axis=axis)
-    out = np.full(arr.shape, invalid_val)
+    out = np.full(arr.shape, invalid_val, dtype=arr.dtype)
     if axis == 1:
         out[justified_mask] = arr[mask]
     else:
