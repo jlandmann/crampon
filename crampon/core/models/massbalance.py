@@ -834,11 +834,10 @@ class SnowFirnCoverArrays(object):
                              range(len(self.init_sh))]
         if temperatures is not None:
             self.init_temperature = temperatures
-            self._tgrid_temperature = temperatures
         else:
-            # initiate with zero deg C, if we don't know better
-            self.init_temperature = np.ones(height_nodes) * 273.16
-            self._tgrid_temperature = np.ones(height_nodes) * 273.16
+            # initiate with NaN
+            self.init_temperature[self.init_swe > 0.] = \
+                (np.ones(height_nodes) * np.nan)[self.init_swe > 0.]
 
         init_array = np.zeros((self.n_heights, np.atleast_2d(self.init_swe).shape[1] + 1))
         init_array.fill(np.nan)
