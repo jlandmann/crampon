@@ -3,6 +3,7 @@ from __future__ import division
 from oggm.core.massbalance import *
 from crampon import cfg
 from crampon.utils import SuperclassMeta, lazy_property, closest_date
+from crampon import utils
 import xarray as xr
 import datetime as dt
 
@@ -1093,12 +1094,37 @@ class SnowFirnCoverArrays(object):
         else:
             remove_ix = self.top_layer
 
-            # TODO: find workaround to not have to set everything to zero
-            self.swe[remove_ix] = np.nan
-            self.rho[remove_ix] = np.nan
-            self.origin[remove_ix] = np.nan
-            self.temperature[remove_ix] = np.nan # TODO: is this clever?
-            self.liq_content[remove_ix] = np.nan
+        self.swe[remove_ix] = np.nan
+        self.rho[remove_ix] = np.nan
+        self.origin[remove_ix] = np.nan
+        self.temperature[remove_ix] = np.nan
+        self.liq_content[remove_ix] = np.nan
+        self.status[remove_ix] = 'nan'
+        self.last_update[remove_ix] = np.nan
+
+        self.remove_unnecessary_array_space()
+
+        # if layer to be removed are at the bottom, justify the arrays
+        if 0 in remove_ix[1]:
+            # This adjusts the position of the layers within the array
+            self.swe = utils.justify(self.swe, invalid_val=np.nan, side='left')
+            self.rho = utils.justify(self.rho, invalid_val=np.nan, side='left')
+            self.temperature = utils.justify(self.temperature,
+                                             invalid_val=np.nan,
+                                             side='left')
+            # invalid_val=None ensures a good handlung of dt objects etc.
+            self._liq_content = utils.justify(self.liq_content,
+                                              invalid_val=None,
+                                              side='left')
+            # soem more hassle with the dates
+            intermed_orig = utils.justify(self.origin, invalid_val=None,
+                                        side='left')
+            intermed_orig[pd.isnull(intermed_orig)] = np.nan
+            self._origin = intermed_orig
+            intermed_last_update = utils.justify(self.last_update,
+                                                 invalid_val=None, side='left')
+            intermed_last_update[pd.isnull(intermed_last_update)] = np.nan
+            self._last_update = intermed_last_update
 
     def melt(self, swe):
         """
