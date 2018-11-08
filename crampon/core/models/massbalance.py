@@ -1319,19 +1319,47 @@ class SnowFirnCoverArrays(object):
         total_rho: float
             The total density of the layer column at each height node.
         """
+        return np.average(self.rho, axis=1, weights=self.swe)
 
-        total_rho = [np.average([l.rho for l in h], weights=[l.sh for l in h])
-                     for h in self.grid]
-        return total_rho
-
-    def get_layer_depths(self, where='center'):
+    def get_accumulated_layer_depths(self, which='center', ix=None):
         """
-        Get the center depths of every layer.
+        Get the depths of every layer.
 
-        The where kwarg should tell if the layer "top"s, "center"s or
-        "bottom"s should be retrieved.
+        Parameters
+        ----------
+        which: str
+            At which position the layer depth shall be calculated. Allowed:
+            "center", "top" and "bottom".
+        ix: np.array
+            Index array telling for which indices the layer depth is desired
         """
-        raise NotImplementedError
+
+        # gives the bottom layer depth
+        ovb_dpth = np.fliplr(np.nancumsum(np.fliplr(self.sh), axis=1))
+
+        # alter for special wishes
+        if which == 'center':
+            # subtract the half of each layer height
+            ovb_dpth -= self.sh / 2.
+        elif which == 'top':
+            ovb_dpth -= np.repeat(np.atleast_2d(
+                self.swe[range(self.sh.shape[0]), self.top_layer]).T,
+                                  ovb_dpth.shape[1], axis=1)
+        elif which == 'bottom':
+            pass
+        else:
+            raise ValueError(
+                '"Where" method for calculating layer depth not understood. '
+                'Allowed are "center", "bottom" and "top".')
+
+        # NaN part becomes negative as with the NaN from NaN subtraction zero
+        # is returned since NumPy 1.9.0
+        ovb_dpth = np.clip(ovb_dpth, 0., None)
+
+        if ix is None:
+            return ovb_dpth
+        else:
+            return ovb_dpth[ix]
 
     def get_overburden_swe(self, ix=None):
         """Get overburden snow water equivalent for a specific layer (m w.e.).
