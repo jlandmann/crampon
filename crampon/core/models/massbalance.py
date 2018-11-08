@@ -1558,25 +1558,36 @@ class SnowFirnCoverArrays(object):
         """
         Update refreezing potential of each layer inplace.
 
+    def apply_refreezing(self, exhaust=False):
+        """
+        Apply refreezing where there is potential.
+
+        There is two options: Either the refreezing is applied according to the
+        available liquid water content or the whole refreezing potential is
+        exhausted.
+
         Parameters
         ----------
-        max_depth: float
-            Maximum depth in meters until which the refreezing potential is
-            calculated. Default: 15.
+        exhaust: bool, optional
+            Whether to exhaust the whole refreezing potential or not. Default:
+            False.
 
         Returns
         -------
         None
         """
 
-        # Update potential inplace
-        for h_node in self.grid:
-            depth = 0.
-            while depth < max_depth:
-                for l in h_node:
-                    l.get_refreezing_potential()
+        # freeze the snow height status (needed later)
+        sh = self.sh
 
-                    depth += l.get_height()
+        if exhaust:
+            # refr. pot. is negative => minus
+            self.swe = self.swe - self.refreezing_potential
+            self.rho = (cfg.RHO_W * self.swe) / sh
+        else:
+            # see what is there in terms of liquid water content & melt at top
+            # let refreeze only this
+            raise NotImplementedError
 
     def densify_firn_huss(self, date, f_firn=2.4, poresclosed_rate=10.,
                           rho_f0_const=False):
