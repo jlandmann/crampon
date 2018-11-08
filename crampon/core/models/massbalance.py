@@ -1076,6 +1076,30 @@ class SnowFirnCoverArrays(object):
         else:
             self.liq_content[range(self.swe.shape[0]), insert_pos] = 0.
 
+    def remove_unnecessary_array_space(self):
+        """
+        Remove all-NaN
+
+        Returns
+        -------
+        None
+        """
+        # IMPORTANT: Keep buffer of one NaN row, otherwise adding a layer at
+        # toplayer+1 one next time adds it at the bottom then!)
+        keep_indices = ~np.isnan(self.rho).all(axis=0)
+        try:
+            keep_indices[-1] = True
+        except IndexError:  # anyway nothing to remove
+            pass
+
+        self.rho = self.rho[:, keep_indices]
+        self.swe = self.swe[:, keep_indices]
+        self.temperature = self.temperature[:, keep_indices]
+        self._origin = self.origin[:, keep_indices]
+        self._status = self._status[:, keep_indices]
+        self._liq_content = self.liq_content[:, keep_indices]
+        self._last_update = self.last_update[:, keep_indices]
+
     def remove_layer(self, ix=None):
         """
         Remove a layer from the snow/firn pack.
