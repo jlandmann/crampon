@@ -1784,6 +1784,29 @@ def get_thermal_conductivity_yen(rhos, clambda=2.22, nlambda=1.88):
     return clambda * (rhos / cfg.RHO_W) ** nlambda
 
 
+def get_snow_thermal_diffusivity(rho, temperature):
+    """
+    Get the thermal diffusivity for snow/firn.
+
+    Parameters
+    ----------
+    rho: np.array
+        Density of the snow/firn.
+    temperature: np.array
+        Temperature of the snow/firn.
+
+    Returns
+    -------
+    alpha: np.array
+        Thermal diffusivity (m2 s-1).
+    """
+    kt = get_thermal_conductivity_yen(rho)  # (W m-1 K-1)
+    # Spec. heat cap. Cuffey & Paterson 2010 p. 400 (J kg-1 K-1)
+    c = 152.5 + 7.122 * temperature
+    alpha = kt / (rho * c)  # thermal diffusivity (m2 s-1)
+    return alpha
+
+
 def get_rho_dv():
     """
     An out wrapper around mass balance and firn model that can calculate the
