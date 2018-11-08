@@ -1251,11 +1251,57 @@ class SnowFirnCoverArrays(object):
 
     def get_total_height(self):
         """
-        Get total height of the firn and snow cover together.
+        Get total height (m) of the firn and snow cover together.
+
+        Returns
+        -------
+        array of size self.n_heights:
+            The total height of the snow and firn cover in meters.
+        """
+        return np.nansum(self.sh, axis=1)
+
+    def get_total_volume(self, widths=None, map_dx=None):
+        """
+        Get total volume of the firn and snow cover together.
+
+        If no flowline widths are given, a unit square meter is assumed.
+        If flowline widths are given, also map_dx has to be given
+
+        Parameters
+        ----------
+        widths: np.array, optional
+            Flowline widths
+        map_dx : float
+            Map resolution (m).
+
+        Returns
+        -------
+
         """
 
-        total_height = [np.sum([l.sh for l in h]) for h in self.grid]
-        return total_height
+        if (widths is not None) and (map_dx is None):
+            raise ValueError('If widths are supplied, then also map_dx needs '
+                             'to be supplied')
+
+        if widths is None:
+            return self.get_total_height()
+        else:
+            return self.get_total_height() * widths * \
+                   cfg.PARAMS['flowline_dx'] * map_dx
+
+
+
+    def get_lost_ice_volume(self):
+        """
+        Get the amount of accumulated ice melt that happened when there was no
+        firn/snow present.
+
+        Together with a second value from a later point in time
+        Returns
+        -------
+
+        """
+        # TODO: we need a variable where accumulated ice loss is stored . By then subtracting the value between two dates we can get the dV for ice
 
     def get_snow_height(self):
         """Get height of snow cover only."""
