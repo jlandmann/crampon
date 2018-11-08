@@ -1040,29 +1040,35 @@ class SnowFirnCoverArrays(object):
             insert_pos = ix
 
         if (insert_pos >= self.swe.shape[1] - 1).any():
-            self._swe = np.lib.pad(self.swe, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
-            self._rho = np.lib.pad(self.rho, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
-            self._origin = np.lib.pad(self.origin, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
-            self._temperature = np.lib.pad(self.temperature, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
-            self._liq_content = np.lib.pad(self.liq_content, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
-            self._last_update = np.lib.pad(self.last_update, ((0, 0), (0, 10)), constant_values=((None, None), (None, np.nan)), mode='constant')
+            shape_0 = self.swe.shape[0]
+            shape_1 = self.swe.shape[1]
+            bigger_array = np.empty((shape_0, shape_1 + 10))
+            bigger_array.fill(np.nan)
 
-        #to_merge = (self.sh <= 0.02)
-        #just_fill = (self.sh > 0.02)
-        #if to_merge.any():
-        #    # fill in where to merge layers
-        #    self.swe[to_merge, insert_pos[to_merge] - 1] = self.swe[to_merge, insert_pos[to_merge]] + swe[to_merge]
-        #    self.rho[to_merge, insert_pos[to_merge] - 1] = (self.rho[to_merge, insert_pos[to_merge]] + rho[to_merge]) / 2.
-        #    self.origin[to_merge, insert_pos[to_merge] - 1] = origin#
-#
-#            # fill in where no need to merge
-#            self.swe[just_fill, insert_pos[just_fill]] = swe[just_fill]
-#            self.rho[just_fill, insert_pos[to_merge]] = rho[just_fill]
-#            self.origin[just_fill, insert_pos[to_merge]] = origin
+            new_swe = bigger_array.copy()
+            new_rho = bigger_array.copy()
+            new_origin = bigger_array.copy().astype(object)
+            new_temperature = bigger_array.copy()
+            new_liq_content = bigger_array.copy()
+            new_last_update = bigger_array.copy().astype(object)
+            new_status = bigger_array.copy().astype(object)
 
-        self.swe[range(self.swe.shape[0]), insert_pos] = swe
-        self.rho[range(self.swe.shape[0]), insert_pos] = rho
-        self.origin[range(self.swe.shape[0]), insert_pos] = origin
+            #status first, because it depends on the others
+            new_status[:shape_0, :shape_1] = self.status
+            self._status = new_status
+            new_swe[:shape_0, :shape_1] = self.swe
+            self._swe = new_swe
+            new_rho[:shape_0, :shape_1] = self.rho
+            self._rho = new_rho
+            new_origin[:shape_0, :shape_1] = self.origin
+            self._origin = new_origin
+            new_temperature[:shape_0, :shape_1] = self.temperature
+            self._temperature = new_temperature
+            new_liq_content[:shape_0, :shape_1] = self.liq_content
+            self._liq_content = new_liq_content
+            new_last_update[:shape_0, :shape_1] = self.last_update
+            self._last_update = new_last_update
+
 
         if temperature is not None:
             self.temperature[
