@@ -982,7 +982,7 @@ class SnowFirnCoverArrays(object):
     @property
     def top_layer(self):
         """
-        A pointer to the top layer in the SnowFirnPack.
+        A pointer to the top layer in the snow and firn pack.
 
         Initially, when there are no layers in the pack, the top index will be
         -1!
@@ -992,7 +992,6 @@ class SnowFirnCoverArrays(object):
         top: np.ndarray
             Array giving the indices of the current top layer.
         """
-        # TODO: Maybe check if the layers are consistent for all properties!?
         layers_bool = np.logical_or(np.isin(self.swe, [0.]),
                                     np.isnan(self.swe))
         top = np.argmax(layers_bool, axis=1) - 1
@@ -1014,7 +1013,7 @@ class SnowFirnCoverArrays(object):
             Indices where the given type occurs.
         """
 
-        # TODO. the rule to determine this is doubled with self.status...but calling self.status here might be expensive!?
+        # TODO: this is doubled with self.status...but calling self.status is 387µs instead of 55µs
         if layertype == 'snow':
             return np.where(self.rho < cfg.PARAMS['snow_firn_threshold'])
         elif layertype == 'firn':
@@ -1035,12 +1034,26 @@ class SnowFirnCoverArrays(object):
         Add a layer to the snow/firn pack.
 
         If no density is given, the fresh snow density will be calculated
-        after Anderson (1973).
+        after Anderson (1973). For this we assume that the air temperature by
+        the time of layer deposition equals the layer temperature
 
         Parameters
         ----------
+        swe: np.array, same shape as self.height_nodes
+            Snow water equivalent (m w.e.) of the layer to be added.
+        rho: np.array, same shape as self.height_nodes or None
+            # Todo: make rho a keyword!?
+            Density (kg m-3) of the layer to be added.
+        origin: datetime.datetime or pd.Timestamp
+            Origin date of the layer to be added.
+        temperature: np.array, same shape as self.height_nodes, optional
+            Temperature of the layer to be added (K). If no temperature is
+            given, we assume 273.15 K (0 deg C).
+        liq_content: np.array, same shape as self.height_nodes, optional
+            Liquid content of the layer to be added (m water). If no liquid
+            content is given, we assume a dry layer (zero liquid content.
         ix: int
-            Where to add the layer. Default: None (top).
+            Indices where to add the layer. Default: None (top).
         """
 
         if len(swe) != self.n_heights:
@@ -1156,7 +1169,7 @@ class SnowFirnCoverArrays(object):
             self._liq_content = utils.justify(self.liq_content,
                                               invalid_val=None,
                                               side='left')
-            # soem more hassle with the dates
+            # some more hassle with the dates
             intermed_orig = utils.justify(self.origin, invalid_val=None,
                                         side='left')
             intermed_orig[pd.isnull(intermed_orig)] = np.nan
@@ -1329,7 +1342,6 @@ class SnowFirnCoverArrays(object):
             return self.get_total_height() * widths * \
                    cfg.PARAMS['flowline_dx'] * map_dx
 
-
     def get_lost_ice_volume(self):
         """
         Get the amount of accumulated ice melt that happened when there was no
@@ -1488,6 +1500,7 @@ class SnowFirnCoverArrays(object):
         None
         """
 
+        # this sets values to NaN
         ice_ix = self.get_type_indices('ice')
         self.remove_layer(ice_ix)
 
@@ -1596,6 +1609,7 @@ class SnowFirnCoverArrays(object):
             # refr. pot. is negative => minus
             self.swe = self.swe - self.refreezing_potential
             self.rho = (cfg.RHO_W * self.swe) / sh
+            # TODO: LET THE TEMPERATURE RISE DUE TO LATENT HEAT OF FUSION!
         else:
             # see what is there in terms of liquid water content & melt at top
             # let refreeze only this
@@ -1624,10 +1638,6 @@ class SnowFirnCoverArrays(object):
         -------
         None
         """
-        #for sfp in self.grid:
-        #    sfp.densify_firn_huss(date, f_firn=f_firn,
-        #                          poresclosed_rate=poresclosed_rate,
-        #                          rho_f0_const=rho_f0_const)
 
         # Todo: remove comment out
         #self.merge_firn_layers(date)
@@ -1693,14 +1703,13 @@ class SnowFirnCoverArrays(object):
 
         # last but not least
         self.remove_ice_layers()
-
-    def _densify_poresclosed_huss(self, rate):
-        """ """
-        # TODO: Implement this function to be called within firn densification functions
-        pass
+        self.remove_unnecessary_array_space()
 
     def densify_huss_derivative(self, date, f_firn=2.4):
         """ Try and implement Reeh"""
+
+
+        raise NotImplementedError
 
         self.merge_firn_layers(date)
 
@@ -1905,6 +1914,7 @@ class SnowFirnCoverArrays(object):
         -------
         None
         """
+        raise NotImplementedError
 
         for h, pack in enumerate(self.grid):
             temp_inds = []
@@ -1961,9 +1971,9 @@ class SnowFirnCoverArrays(object):
         -------
         None
         """
+        raise NotImplementedError
 
         to_merge = np.where(self.sh < min_sh)
-
 
         for h in range(len(self.grid)):
             for l in range(len(self.grid[h]) - 1):
@@ -2126,7 +2136,7 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
     def __init__(self, surface, alpha=None, snow_ix=None, firn_ix=None,
                  ice_ix=None, standard_method_snow='Brock',
                  standard_method_firn=None, standard_method_ice=None,
-                 a_snow_start=0.9, a_firn_start=0.5):
+                 a_snow_init=0.9, a_firn_init=0.5):
         """
         Instantiate a snow and/or firn cover and its necessary methods.
 
@@ -2185,7 +2195,7 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
 
         age_days = (self.snow.age - date).days
         a = a_firn_oerlemans + (a_snow_oerlemans - a_firn_oerlemans) + \
-            np.exp((age_days) / t_star)
+            np.exp(age_days / t_star)
         raise NotImplementedError
 
     def update_ensemble(self):
@@ -2203,16 +2213,6 @@ class Glacier(object, metaclass=SuperclassMeta):
     - snow/firn cover
     -
     """
-
-
-def _custom_cumsum(x):
-    """Cumulative sum along time, skipping NaNs."""
-    return x.cumsum(dim='time', skipna=True)
-
-
-def _custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
-    """Calculate quantiles with user input."""
-    return x.quantile(qs)
 
 
 @xr.register_dataset_accessor('mb')
@@ -2249,16 +2249,6 @@ class MassBalance(object, metaclass=SuperclassMeta):
     def _custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
         """Calculate quantiles with user input."""
         return x.quantile(qs)
-
-    def apply_cumsum(self):
-        """
-        Apply cumsum to mass balance data.
-
-        Returns
-        -------
-        cumsum: xr.Dataset
-            The mass balance dataset as cumulative sum.
-        """
 
     def create_specific(self, MassBalanceModel, from_date=None, to_date=None,
                         write=True):
@@ -2368,7 +2358,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
 class PastMassBalance(MassBalance):
     """
-    A class to handle mass baöan
+    A class to handle mass balances
     """
 
     def __init__(self, gdir, mb_model, dataset=None):
