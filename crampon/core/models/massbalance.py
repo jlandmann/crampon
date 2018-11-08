@@ -6,6 +6,7 @@ from crampon.utils import SuperclassMeta, lazy_property, closest_date
 from crampon import utils
 import xarray as xr
 import datetime as dt
+import cython
 
 
 class DailyMassBalanceModel(MassBalanceModel):
