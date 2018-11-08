@@ -874,9 +874,6 @@ class SnowFirnCoverArrays(object):
 
     @property
     def sh(self):
-        #return self.swe * (np.divide(cfg.RHO_W, self.rho,
-        #                             out=np.zeros_like(self.rho),
-        #                             where=(self.rho != 0)))
         return self.swe * np.divide(cfg.RHO_W, self.rho)
 
     @property
