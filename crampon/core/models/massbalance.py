@@ -904,8 +904,9 @@ class SnowFirnCoverArrays(object):
         ccont: float
             The cold content.
         """
-        ccont = np.negative(cfg.HEAT_CAP_ICE * self.rho * self.sh *
-                            self.temperature)
+
+        ccont = cfg.HEAT_CAP_ICE * (self.rho / cfg.RHO_W) * self.sh * \
+                (self.temperature - 273.15)
         return ccont
 
     @property
