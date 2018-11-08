@@ -906,7 +906,7 @@ class SnowFirnCoverArrays(object):
     @liq_content.setter
     def liq_content(self, value):
         if value is not None:
-            if value > self.swe:
+            if (value > self.swe).any():
                 raise ValueError('Liquid water content of a snow layer cannot '
                                  'be bigger than the snow water equivalent.')
             self._liq_content = value
