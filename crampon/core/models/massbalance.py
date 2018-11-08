@@ -942,18 +942,27 @@ class SnowFirnCoverArrays(object):
         rpot = self.cold_content / cfg.LATENT_HEAT_FUSION_WATER
         return rpot
 
-    # TODO: Find a more intelligent solution than implementing "not allowed" types in a SnowLayer
     @property
     def status(self):
-        if self.rho < cfg.PARAMS['snow_firn_threshold']:
-            return 'snow'
-        elif cfg.PARAMS['snow_firn_threshold'] <= self.rho < cfg.PARAMS[
-            'pore_closeoff']:
-            return 'firn'
-        elif cfg.PARAMS['pore_closeoff'] <= self.rho < cfg.RHO:
-            return 'poresclosed'
-        else:
-            return 'ice'
+        """
+        Status of the "porous medium".
+
+        Can be either of "snow", "firn", "pore_closeoff" or "ice", depending on
+        density thresholds.
+
+        Returns
+        -------
+
+        """
+        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = 'snow'
+        self._status[(cfg.PARAMS['snow_firn_threshold'] <= self.rho) & (
+                self.rho < cfg.PARAMS['pore_closeoff'])] = 'firn'
+        self._status[(cfg.PARAMS[
+                          'pore_closeoff'] <= self.rho) & (
+                                 self.rho < cfg.RHO)] = 'pore_closeoff'
+        self._status[self.rho >= cfg.RHO] = 'ice'
+
+        return self._status
 
     @property
     def n_heights(self):
