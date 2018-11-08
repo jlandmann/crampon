@@ -857,6 +857,10 @@ class SnowFirnCoverArrays(object):
         strrow.fill('')
         self._status = np.hstack((strrow, init_array))
 
+        # for temperature models that don't update layer by layer
+        # must be initialized by hand with the desired form
+        self._regridded_temperature = None
+
     @property
     def swe(self):
         return self._swe
@@ -886,6 +890,14 @@ class SnowFirnCoverArrays(object):
         # if no or positive temperature is given, assume zero degrees Celsius
         self._temperature = value
         #self._temperature[~pd.isnull(value) & (value <= 273.16)] = value[~pd.isnull(value) & (value <= 273.16)]
+
+    @property
+    def regridded_temperature(self):
+        return self._regridded_temperature
+
+    @regridded_temperature.setter
+    def regridded_temperature(self, value):
+        self._regridded_temperature = value
 
     @property
     def liq_content(self):
