@@ -1290,7 +1290,6 @@ class SnowFirnCoverArrays(object):
                    cfg.PARAMS['flowline_dx'] * map_dx
 
 
-
     def get_lost_ice_volume(self):
         """
         Get the amount of accumulated ice melt that happened when there was no
