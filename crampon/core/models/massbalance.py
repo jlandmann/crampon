@@ -1405,6 +1405,36 @@ class SnowFirnCoverArrays(object):
 
         return self.get_overburden_swe(ix) * cfg.RHO_W
 
+    def property_weighted_by_height(self, property):
+        """
+        Produce an array where a property is repeated as often as its layer
+        height prescribes.
+
+        Default is to resolve 1 mm thick layers. Layers thinner than 1 mm are
+        ignored.
+
+        Parameters
+        ----------
+        property: one of the self.properties
+            The property that should be weighted by the layer height, e.g.
+            self.swe or self.rho.
+
+        Returns
+        -------
+        ret_val: np.array
+            An array with repeated values of the property
+        """
+        sh = self.sh * 1000  # 1000 to resolve 1 mm thick layers
+        sh[np.isnan(sh)] = 0.  # np.repeat fails with NaNs
+        lens = sh.astype(int).sum(axis=1)
+        m = int(1.05 * np.max(lens))  # extend 5 % for plotting beauty
+        ret_val = np.zeros((property.shape[0], m))
+        mask = (lens[:, None] > np.arange(m))
+        ret_val[mask] = np.repeat(property.ravel(), sh.astype(int).ravel())
+        ret_val[ret_val == 0] = np.nan
+
+        return ret_val
+
     def remove_ice_layers(self):
         """
         Removes layers a the bottom (only there!) that have exceeded the
