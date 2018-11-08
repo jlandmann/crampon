@@ -1491,15 +1491,50 @@ class SnowFirnCoverArrays(object):
             Lower boundary condition temperature. Default: 273.16 K (temperate
             ice).
 
+    def update_temperature_huss(self, max_depth=5., max_depth_temp=0.,
+                                surface_temp=-5.):
+        """
+        Choose the approach after Huss (2013).
+
+        In Huss (2013), the temperature of the firn layers (firn only!) is not
+        updated directly, only the refreezing potential is calculated. It is
+        assumed that in each year the temperature linearly increases from
+        -5 deg C at the surface to 0 deg C in a depth of 5 m. The calculated
+        refreezing potential is completely used in order to produce temperate
+        firn at the end of the mass budget year.
+        The approach is a major simplification for our model as we (a) cannot
+        quantify the refreezing potential according to the actual temperatures
+        and (b) cannot resolve the refreezing potential for single layers.
+
+        To make sense, the method should be applied around the "end of winter",
+        i.e. roughly end of April in the European Alps.
+
+        Parameters
+        ----------
+        max_depth: float
+            Maximum positive depth (m) until which the temperature profile is
+            calculated. Default: 5 m.
+        max_depth_temp: float
+            Temperature (deg C) assumed at the maximum depth until which the
+            temperature profile is calculated ("max_depth"). Default: 0 deg C.
+        surface_temp: float
+            Temperature (deg C) assumed at the surface. Default: -5 deg C.
+
         Returns
         -------
         None
         """
 
-        # Make a grid until 15 m depth as attribute if not yet exists;
-        total_height = self.get_total_height()
-        if self.get_total_height() < max_depth:
-            self._tgrid_nodes = np.arange(0., total_height, dx)
+        # get center depths
+        depth = self.get_accumulated_layer_depths()
+        temp = np.ones_like(depth)
+        temp[np.isnan(depth)] = np.nan
+        slope = (surface_temp - max_depth_temp) / (-max_depth)
+        temp = slope * depth + surface_temp + 273.15
+        temp = np.clip(temp, None, 273.15)
+        # temperature is now the layer temperature at the center depth
+        self.temperature = temp
+
         else:
             self._tgrid_nodes = np.arange(0., max_depth, dx)
         # temperature boundary condition is zero: temperate ice)
