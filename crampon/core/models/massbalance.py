@@ -839,7 +839,8 @@ class SnowFirnCoverArrays(object):
             self.init_temperature[self.init_swe > 0.] = \
                 (np.ones(height_nodes) * np.nan)[self.init_swe > 0.]
 
-        init_array = np.zeros((self.n_heights, np.atleast_2d(self.init_swe).shape[1] + 1))
+        init_array = np.zeros(
+            (self.n_heights, np.atleast_2d(self.init_swe).shape[1] + 1))
         init_array.fill(np.nan)
 
         # we start putting the initial layer at index 0 (top of array!)
