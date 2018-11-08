@@ -1184,22 +1184,70 @@ class SnowFirnCoverArrays(object):
         """
         If the glaciers advances, this is the way to tell the snow/firn cover.
 
-        For simplicity reasons, the snow/firn cover at the lowest height index
-        is copied to the added node(s).
+        THIS FUNCTION IS NOT YET TESTED AT ALL!
+
+        At the moment, and for simplicity reasons, the snow/firn cover at the
+        lowest height index is copied to the added node(s).
 
         Parameters
         ----------
-        nodes: array-like
+        nodes: array-like, 1D
             The heights that should be added to the existing height nodes.
         """
-        raise NotImplementedError
+
+        # amend also the heights
+        self.height_nodes = np.hstack((nodes, self.height_nodes))
+
+        add_n = len(nodes)
+        pos = 0  # we only add at the bottom
+        self._swe = np.vstack(
+            (np.repeat(np.atleast_2d(self.swe[pos]), add_n, axis=0), self.swe))
+        self._rho = np.vstack(
+            (np.repeat(np.atleast_2d(self.rho[pos]), add_n, axis=0), self.rho))
+        self._origin = np.vstack((np.repeat(np.atleast_2d(self.origin[pos]),
+                                            add_n, axis=0), self.origin))
+        self._temperature = np.vstack((np.repeat(
+            np.atleast_2d(self.temperature[pos]), add_n, axis=0),
+                                       self.temperature))
+        self._regridded_temperature = np.vstack((np.repeat(
+            np.atleast_2d(self.regridded_temperature[pos]), add_n, axis=0),
+                                       self.regridded_temperature))
+        self._liq_content = np.vstack((np.repeat(
+            np.atleast_2d(self.liq_content[pos]), add_n, axis=0),
+                                       self.liq_content))
+        self._last_update = np.vstack((np.repeat(
+            np.atleast_2d(self.last_update[pos]), add_n, axis=0),
+                                       self.last_update))
+        self._status = np.vstack((np.repeat(np.atleast_2d(self.status[pos]),
+                                            add_n, axis=0), self.status))
 
     def remove_height_nodes(self, nodes):
         """
-        If the glacier retreats, this is the way to tell the nosw/firn cover.
+        If the glacier retreats, this is the way to tell the snow/firn cover.
 
-        The question is here is this should take indices or heights (precision problem)
+        THIS FUNCTION IS NOT YET TESTED AT ALL!
+
+        The question is here is this should take indices or heights (precision
+        problem)
+
+        Parameters
+        ----------
+        nodes: array-like, 1D
+            The heights that should be removed from the existing height nodes.
         """
+        self.height_nodes = self.height_nodes
+
+        remove_n = len(nodes)
+        pos = 0
+        self.height_nodes = self.height_nodes[remove_n:]
+        self._swe = self._swe[remove_n:]
+        self._rho = self._rho[remove_n:]
+        self._origin = self._origin[remove_n:]
+        self._temperature = self._temperature[remove_n:]
+        self._regridded_temperature = self._temperature[remove_n:]
+        self._liq_content = self._liq_content[remove_n:]
+        self._last_update = self._last_update[remove_n:]
+        self._status = self._status[remove_n:]
 
     def get_total_height(self):
         """
