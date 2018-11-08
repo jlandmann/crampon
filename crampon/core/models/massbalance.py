@@ -772,8 +772,7 @@ class SnowFirnCoverArrays(object):
     """
 
     def __init__(self, height_nodes, swe, rho, origin, temperatures=None,
-                 pore_close=None, firn_ice_transition=None, refreezing=True,
-                 max_layers=75):
+                 pore_close=None, firn_ice_transition=None, refreezing=True):
         """
         Instantiate a snow and/or firn cover and its necessary methods.
 
@@ -784,13 +783,32 @@ class SnowFirnCoverArrays(object):
         ----------
         height_nodes: array-like
             The heights at which the snow/firn cover should be implemented.
+        swe: np.array, same shape as height_nodes
+            Snow water equivalent of an initial layer (m w.e.).
+        rho: np.array, same shape of height_nodes or None
+            Density of an initial layer (kg m-3). If None, the inital density
+            is set to NaN. # Todo: make condition for rho=None: if swe >0, then determine initial density from temperature
+        origin: datetime.datetime or pd.Timestamp
+            Origin date of the initial layer.
+        temperatures: np.array, same shape of height_nodes, optional
+            Temperatures of initial layer (K). If not given, they will be set
+            to NaN.
+        pore_close: float, optional
+            Pore close-off density (kg m-3). If not given, CRAMPON tries to get
+            in from the parameter file.
+        firn_ice_transition: float, optional
+            Density of the firn-ice transition (kg m-3). If not given, CRAMPON
+            tries to get it from the parameter file (it take the ice density).
+        refreezing: bool, optional
+            Whether to calculate refreezing or not. Default: True (calculate
+            refreezing).
         """
 
         # TODO: SHOULD THERE BE AN "INIT" in front of every parameter? Later we
         # don't use them anymore
         self.height_nodes = height_nodes
         self.init_swe = swe
-        self.init_rho = rho
+        self.init_rho = np.full_like(swe, np.nan) if rho is None else rho
         self.init_sh = self.init_swe * (cfg.RHO_W / self.init_rho)
         self.init_origin = [origin] * self.n_heights
         init_liq_content = np.zeros_like(height_nodes)
@@ -820,12 +838,12 @@ class SnowFirnCoverArrays(object):
             self.init_temperature = np.ones(height_nodes) * 273.16
             self._tgrid_temperature = np.ones(height_nodes) * 273.16
 
-        init_array = np.zeros((self.n_heights, max_layers))
+        init_array = np.zeros((self.n_heights, np.atleast_2d(self.init_swe).shape[1] + 1))
         init_array.fill(np.nan)
 
         # we start putting the initial layer at index 0 (top of array!)
-        self._swe = np.hstack((np.atleast_2d(swe).T, init_array))
-        self._rho = np.hstack((np.atleast_2d(rho).T, init_array))
+        self._swe = np.hstack((np.atleast_2d(self.init_swe).T, init_array))
+        self._rho = np.hstack((np.atleast_2d(self.init_rho).T, init_array))
         self._origin = np.hstack((np.atleast_2d(
             np.array([origin for i in range(self.n_heights)])).T, init_array))
         self._last_update = self._origin.copy()
