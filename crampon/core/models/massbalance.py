@@ -1856,18 +1856,16 @@ class SnowFirnCoverArrays(object):
         # Todo: CHECK HERE IF DATE IS MORE THAN ONE DAY AWAY FROM LAST UPDATE?
         deltat = target_dt
 
-        # Todo: UPDATE TEMPERATURES HERE?
-
         rho_old = self.rho
         temperature = self.temperature
 
         # create cumsum, then subtract top layer swe, clip and convert to mass
         ovb_mass = self.get_overburden_mass()
 
-        rho_test_new = rho_old.copy()
-        # todo: replace here the density threshold choice by the status or apply the firn densification daily....otherwise there is no densification after 550 anymore!
-        insert_ix = (self.swe > 0.) & (self.rho < cfg.PARAMS['snow_firn_threshold'])
-        rho_test_new[insert_ix] = (rho_old + \
+        rho_new = rho_old.copy()
+        insert_ix = (self.swe > 0.) & (self.status == 'snow') & \
+                    (~np.isnan(self.swe))
+        rho_new[insert_ix] = (rho_old + \
                        (
                                rho_old * cfg.G * ovb_mass * deltat / eta0) * \
                        np.exp(etaa * (temperature - Tm_k) - etab *
@@ -1875,10 +1873,8 @@ class SnowFirnCoverArrays(object):
                        rho_old * snda * np.exp(
             sndb * (temperature - Tm_k) - sndc * np.clip(
                 rho_old - rhoc, 0., None)))[insert_ix]
-        self.rho = rho_test_new
+        self.rho = rho_new
         self.last_update[insert_ix] = date
-
-        self.remove_ice_layers()
 
     def merge_firn_layers(self, date):
         """
