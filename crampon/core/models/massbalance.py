@@ -1916,48 +1916,6 @@ class SnowFirnCoverArrays(object):
         """
         raise NotImplementedError
 
-        for h, pack in enumerate(self.grid):
-            temp_inds = []
-            temp_layers = []
-            for l, layer in enumerate(pack):
-                # merge only by density and not by date/age
-                # don't use isinstance, this also returns true for SnowLayer:
-                if (type(self.grid[h][l]) == SnowLayer) and \
-                        self.grid[h][l].rho >= \
-                        cfg.PARAMS['snow_firn_threshold']:
-                    temp_inds.append(l)
-                    temp_layers.append(self.grid[h][l])
-
-            if h == 0:
-                print(h)
-                print(h)
-            if temp_layers:
-                temp_inds.sort(reverse=True)
-                for i in temp_inds:
-                    self.grid[h].pop(i)
-
-                new_swe = sum([t.swe for t in temp_layers])
-                new_rho = sum([t.rho * t.sh for t in temp_layers]) / np.sum(
-                    [t.sh for t in temp_layers])
-                # give them current date (daily model should have run until
-                # then already)
-                new_origin = date
-                # new_origin = np.max([t.last_update for t in temp_layers])
-                # TODO: the temperature should actually go via the energy
-                new_temp = sum(
-                    [t.temperature * t.swe for t in temp_layers]) / np.sum(
-                    [t.swe for t in temp_layers])
-                new_liq = sum([t.liq_content for t in temp_layers])
-                # TODO: Here needs to a snowlayer, otherwise we get too many firn layers.....one should take care that here the factory can be used, but only the firnlayers < 1 year are merged
-                insert_l = FirnLayer(swe=new_swe, rho=new_rho, origin=new_origin,
-                                   temperature=new_temp, liq_content=new_liq)
-                insert_l.init_density = new_rho
-
-                self.grid[h].insert(min(temp_inds), insert_l)
-
-        # HOW TO ENSURE THAT THE LAYERS ARE NOT MERGED WITH OTHER FIRN LAYERS?
-        # INTRODUCE STATUS ATTRIBUTE?
-
     def merge_layers(self, min_sh=0.02):
         """
         Merge similar neighbor layers inplace by a minimum height criterion.
@@ -1973,44 +1931,6 @@ class SnowFirnCoverArrays(object):
         """
         raise NotImplementedError
 
-        to_merge = np.where(self.sh < min_sh)
-
-        for h in range(len(self.grid)):
-            for l in range(len(self.grid[h]) - 1):
-
-                # if we've become too short already
-                try:
-                    self.grid[h][l+1]
-                except IndexError:
-                    continue
-
-                if self.grid[h][l].sh < min_sh:
-                    # update l
-                    layer_one = self.grid[h][l]
-                    layer_two = self.grid[h][l + 1]
-                    new_swe = np.sum([layer_one.swe + layer_two.swe])
-                    new_rho = np.sum([t.rho * t.sh for t in
-                                      [layer_one, layer_two]]) / np.sum(
-                        [t.sh for t in [layer_one, layer_two]])
-                    new_origin = np.max(
-                        [t.last_update for t in [layer_one, layer_two]])
-                    # TODO: the temperature should actually go via the energy
-                    new_temperature = np.sum(
-                        [t.temperature * t.swe for t in
-                         [layer_one, layer_two]]) / np.sum(
-                        [t.swe for t in [layer_one, layer_two]])
-                    new_liq_content = np.sum(
-                        [t.liq_content for t in [layer_one, layer_two]])
-                    insert = SnowLayer(swe=new_swe, rho=new_rho,
-                                       origin=new_origin,
-                                       temperature=new_temperature,
-                                       liq_content=new_liq_content)
-
-                    self.grid[h][l] = insert
-
-                    # remove l+1
-                    self.remove_layer(h, l + 1)
-
     def return_state(self, param='swe', dataset=False):
         """This should be a function that can be called to get the current
         status of the snow/firn cover as numpy arrays or xr.Dataset. If put in
@@ -2019,13 +1939,7 @@ class SnowFirnCoverArrays(object):
         if dataset:
             raise NotImplementedError
         else:
-            # recipe to convert list of lists to array
-            length = len(sorted(self.grid, key=len, reverse=True)[0])
-            grid_array = np.array(
-                [[np.nan] * (length - len(xi)) + [getattr(i, param) for i in
-                                                  xi] for xi in self.grid])
-
-            return grid_array
+            raise NotImplementedError
 
 
 def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
