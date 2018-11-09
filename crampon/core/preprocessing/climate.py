@@ -442,3 +442,32 @@ def get_fraction_of_snowfall_magnusson(temp, t_base=0.54, m_rho=0.31):
     t_rho = (temp - t_base) / m_rho
     fs = 1. / (1. + np.exp(t_rho))
     return fs
+
+
+def get_fraction_of_snowfall_linear(temp, t_all_solid=None, t_all_liquid=None):
+    """
+    Get the fraction of snowfall following a linear gradient.
+
+    Parameters
+    ----------
+    temp: array-like
+        Temperature during the snowfall event (deg C).
+    t_all_solid: float
+        Threshold temperature below which precipitation falls as snow only.
+        Default: None (retrieve from parameter file).
+    t_all_liquid: float
+        Threshold temperature above which precipitation falls as rain only.
+        Default: None (retrieve from parameter file).
+
+    Returns
+    -------
+    fs: float
+        Fraction of snowfall for a given temperature.
+    """
+    if t_all_solid is None:
+        t_all_solid = cfg.PARAMS['temp_all_solid']
+    if t_all_liquid is None:
+        t_all_liquid = cfg.PARAMS['temp_all_liq']
+    fac = 1 - (temp - t_all_solid) / (t_all_liquid - t_all_solid)
+    fs = np.clip(fac, 0, 1)
+    return fs
