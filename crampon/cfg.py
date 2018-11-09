@@ -68,6 +68,7 @@ RHO_W = 1000.  # water density
 LATENT_HEAT_FUSION_WATER = 334000  #(J kg-1)
 HEAT_CAP_ICE = 2050  # (J kg-1 K-1)
 E_FIRN = 21400.  # activation energy for firn (see Reeh et al., 2008) (J mol-1)
+ZERO_DEG_KELVIN = 273.15
 
 G = 9.81  # gravity
 N = 3.  # Glen's law's exponent
@@ -138,6 +139,7 @@ def initialize(file=None):
     global CONTINUE_ON_ERROR
     global GRAVITY_CONST
     global E_FIRN
+    global ZERO_DEG_KELVIN
     global R
     global LATENT_HEAT_FUSION_WATER
     global HEAT_CAP_ICE

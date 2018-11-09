@@ -935,7 +935,7 @@ class SnowFirnCoverArrays(object):
         """
 
         ccont = cfg.HEAT_CAP_ICE * (self.rho / cfg.RHO_W) * self.sh * \
-                (self.temperature - 273.15)
+                (self.temperature - cfg.ZERO_DEG_KELVIN)
         return ccont
 
     @property
@@ -1504,7 +1504,7 @@ class SnowFirnCoverArrays(object):
         ice_ix = self.get_type_indices('ice')
         self.remove_layer(ice_ix)
 
-    def update_temperature(self, date, max_depth=15., deltat=86400, lower_bound=273.16):
+    def update_temperature(self, date, max_depth=15., deltat=86400, lower_bound=cfg.ZERO_DEG_KELVIN):
         """
         Update the temperature profile of the snow/firn pack.
 
@@ -1562,8 +1562,8 @@ class SnowFirnCoverArrays(object):
         temp = np.ones_like(depth)
         temp[np.isnan(depth)] = np.nan
         slope = (surface_temp - max_depth_temp) / (-max_depth)
-        temp = slope * depth + surface_temp + 273.15
-        temp = np.clip(temp, None, 273.15)
+        temp = slope * depth + surface_temp + cfg.ZERO_DEG_KELVIN
+        temp = np.clip(temp, None, cfg.ZERO_DEG_KELVIN)
         # temperature is now the layer temperature at the center depth
         self.temperature = temp
 
@@ -1645,7 +1645,7 @@ class SnowFirnCoverArrays(object):
         # Mean annual surface temperature, 'presumably' firn temperature at 10m
         # depth (Reeh (2008)); set to 273 according to Huss 2013
         # TODO: this should be actually calculated
-        T_ms = 273.  # K
+        T_ms = cfg.ZERO_DEG_KELVIN  # K
 
         # some model constant
         k1 = f_firn * 575. * np.exp(
@@ -1730,7 +1730,7 @@ class SnowFirnCoverArrays(object):
             spec_bal = self.get_overburden_swe(h, l) * cfg.RHO_W / cfg.RHO
 
             # TODO: this should be actually calculated
-            T_ms = 273.  # K
+            T_ms = cfg.ZERO_DEG_KELVIN  # K
 
             # some model constant
             k1 = f_firn * 575. * np.exp(
@@ -1872,7 +1872,7 @@ class SnowFirnCoverArrays(object):
         https://github.com/RichardEssery/FSM2/blob/master/src/SNOW.F90
         """
 
-        Tm_k = cfg.PARAMS['temp_melt'] + 273.16
+        Tm_k = cfg.PARAMS['temp_melt'] + cfg.ZERO_DEG_KELVIN
 
         # Todo: CHECK HERE IF DATE IS MORE THAN ONE DAY AWAY FROM LAST UPDATE?
         deltat = target_dt
