@@ -412,3 +412,33 @@ def climate_file_from_scratch(write_to=None, hfile=None):
 
 # IMPORTANT: overwrite OGGM functions with same name:
 process_custom_climate_data = process_custom_climate_data_crampon
+
+def get_fraction_of_snowfall_magnusson(temp, t_base=0.54, m_rho=0.31):
+    """
+    Get the fraction of snowfall according to [Magnusson et al. (2017)]_.
+
+    Parameters
+    ----------
+    temp: array-like
+        Temperature during the snowfall event (deg C).
+    t_base: float
+        Threshold temperature below which precipitation mostly falls as snow.
+        Default: 0.54 deg C (calibrated by [Magnusson et al. (2017)]_).
+    m_rho: float
+        Temperature that determines the temperature range for mixed
+        precipitation. Default: 0.31 deg C(calibrated by
+        [Magnusson et al. (2017)]_).
+
+    Returns
+    -------
+    fs: float
+        Fraction of snowfall for a given temperature.
+
+    References
+    ----------
+    .. [Magnusson et al. (2017)] https://doi.org/10.1002/2016WR019092
+    """
+
+    t_rho = (temp - t_base) / m_rho
+    fs = 1. / (1. + np.exp(t_rho))
+    return fs
