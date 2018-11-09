@@ -64,6 +64,11 @@ CUMSEC_IN_MONTHS = np.cumsum(SEC_IN_MONTHS)
 BEGINSEC_IN_MONTHS = np.insert(CUMSEC_IN_MONTHS[:-1], [0], 0)
 
 RHO = 900.  # ice density
+RHO_W = 1000.  # water density
+LATENT_HEAT_FUSION_WATER = 334000  #(J kg-1)
+HEAT_CAP_ICE = 2050  # (J kg-1 K-1)
+E_FIRN = 21400.  # activation energy for firn (see Reeh et al., 2008) (J mol-1)
+
 G = 9.81  # gravity
 N = 3.  # Glen's law's exponent
 A = 2.4e-24  # Glen's default creep's parameter
@@ -131,9 +136,15 @@ def initialize(file=None):
     global PATHS
     global NAMES
     global CONTINUE_ON_ERROR
+    global GRAVITY_CONST
+    global E_FIRN
+    global R
+    global LATENT_HEAT_FUSION_WATER
+    global HEAT_CAP_ICE
     global N
     global A
     global RHO
+    global RHO_W
     global RGI_REG_NAMES
     global RGI_SUBREG_NAMES
 
