@@ -741,10 +741,13 @@ class PellicciottiModel(DailyMassBalanceModel):
         return icerate
 
 
-class SnowFirnCoverArrays(object):
-    """ Implements a an interface to a snow and/or firn cover with property arrays.
+class SnowFirnCover(object):
+    """ Implements a an interface to a snow and/or firn cover.
 
-    # TODO: Take care of removing ice layers instantly, so that e.g. the method "get:total_rho" doesn't deliver wrong results
+    The idea is that the basic characteristics of a snow and firn cover, e.g.
+    snow water equivalent and density are object properties. Different methods
+    to densify the layers or to update the layer temperatures are implemented
+    and operations are vectorized whenever possible.
 
     Attributes
     ----------
@@ -2328,8 +2331,8 @@ if __name__ == '__main__':
     init_swe = np.zeros_like(heights)
     init_swe.fill(np.nan)
     init_temperatures = init_swe
-    cover = SnowFirnCoverArrays(heights, swe=init_swe,
-                          rho=np.ones_like(heights)*100.,
+    cover = SnowFirnCover(heights, swe=init_swe,
+                          rho=None,
                           origin=run_time[0],
                           temperatures=init_temperatures,#np.ones_like(heights)*273.16,
                           refreezing=False)
