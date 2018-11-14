@@ -67,6 +67,7 @@ RHO = 900.  # ice density
 RHO_W = 1000.  # water density
 LATENT_HEAT_FUSION_WATER = 334000  #(J kg-1)
 HEAT_CAP_ICE = 2050  # (J kg-1 K-1)
+R = 8.314  # gas constant (J K-1 mol-1)
 E_FIRN = 21400.  # activation energy for firn (see Reeh et al., 2008) (J mol-1)
 ZERO_DEG_KELVIN = 273.15
 
