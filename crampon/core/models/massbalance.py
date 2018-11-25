@@ -1662,11 +1662,8 @@ class SnowFirnCover(object):
         # Todo: Map the gridded temperature back to the original one => a task for np.digitize!?
 
 
-        # Update the temperatures of the layers inplace.
 
-    def update_refreezing_potential(self, max_depth=15.):
         """
-        Update refreezing potential of each layer inplace.
 
     def apply_refreezing(self, exhaust=False):
         """
