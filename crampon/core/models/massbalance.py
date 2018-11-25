@@ -1572,15 +1572,95 @@ class SnowFirnCover(object):
         # temperature is now the layer temperature at the center depth
         self.temperature = temp
 
+    def update_temperature_glogem(self, tair_mean_month, melt_sum, dt=259200,
+                                  simplify_density=False):
+        """
+        Update the temperature as GloGEM does it.
+
+        The snow/firn cover is discretized in ten vertical steps of one meter
+        thickness each. The density is assumed to be increasing from 300 kg m-3
+        at the top to 650 kg m-3 at the bottom. The heat penetration equation
+        is solved such that the temperature of the uppermost layer is the mean
+        monthly air temperature and the equation is only applied during
+        "winter", i.e. according to Huss and Hock (2005) the months with less
+        than 2 mm w.e. of melt. Instead of taking the whole amount of
+        refreezing we try to redistribute it among the existing layers. If the
+        amount of refreezing is exhausted, the layer temperature is set to
+        zero deg C.
+
+        Huss and Hock (2015) write that the temperature is updated ten times
+        per month to ensure numerical stability.
+
+        Parameters
+        ----------
+        tair_mean_month: float
+            Mean 2m air temperature of the month we are integrating within.
+        melt_sum:
+            Sum of melt (m w.e.) happening in the current month
+        dt : float
+            Integration time (s). # Todo: This is dangerous, other solution?
+            Default: 3*86400=259200 s (3 days)
+        simplify_density: bool
+            Whether or not to simplify density. If True, we do what GloGEM
+            assumes: The layer density increases for each meter of depth
+            linearly between 300 kg m-3 and 650 kg m-3. Otherwise the actual
+            modeled density is brought onto the GloGEM temperature grid.
+
+        Returns
+        -------
+
+        """
+
+        # calculate snow hieght after GloGEM
+        #sh_oned = np.atleast_2d(np.ones(int(np.ceil(np.nanmax(self.get_total_height())))))
+        sh_oned = np.atleast_2d(np.ones(10))
+        sh_gg = np.repeat(sh_oned, self.n_heights, axis=0)
+
+        if self.regridded_temperature is not None:
+            told = self.regridded_temperature
         else:
-            self._tgrid_nodes = np.arange(0., max_depth, dx)
-        # temperature boundary condition is zero: temperate ice)
-        if max(self._tgrid_nodes) == max_depth:
-            self._tgrid_temperature[-1] = lower_bound
+            told = sh_gg * cfg.ZERO_DEG_KELVIN
+
+        #if told.shape[1] > sh_gg.shape[1]:
+        #    told = told[:, :sh_gg.shape[1]]
+        #elif told.shape[1] < sh_gg.shape[1]:
+        #    told = np.vstack((np.repeat(sh_oned * cfg.ZERO_DEG_KELVIN, sh_gg.shape[1]-told.shape[1]), told))
+        #else:
+        #    pass
+
+        # GloGEM updates temperature only in Months with >2mm w.e. melt
+        if melt_sum > 0.02:
+            return told
+
+        if simplify_density:
+            rho_gg = np.fliplr(np.repeat(
+                np.atleast_2d(np.linspace(300, 650, 10))[:len(sh_gg)],
+                self.n_heights, axis=0))
         else:
-            self._tgrid_temperature[-1] = self._tgrid_temperature[-2]
-        # Calculate forward the existing temperatures on this grid
-        # map the calculated temperatures into the layer structure
+            rho_gg = np.zeros_like(sh_gg)
+            hgt_cumsum = self.get_accumulated_layer_depths(which='bottom')
+            # iterate over heights
+            for h in range(self.n_heights):
+                # for each height, make bins
+                merge_ix = np.digitize(hgt_cumsum[h], np.cumsum(sh_gg))
+                for i in np.unique(merge_ix):
+                    rho_gg[h, i] = np.average(
+                        self.rho[h][np.where(merge_ix == i)],
+                        weights=self.sh[h][np.where(merge_ix == i)])
+
+        # Set top layer to the mean monthly temperature
+        told[:, -1] = tair_mean_month + cfg.ZERO_DEG_KELVIN
+
+        #rho_for_alpha = rho_gg
+        #rho_for_alpha[:] = 600.
+        #alpha = get_snow_thermal_diffusivity(rho_for_alpha, told)
+        alpha = get_snow_thermal_diffusivity(rho_gg, told)
+        told[:, 1:-1] = told[:, 1:-1] + alpha[:, 1:-1] / sh_gg[:, 1:-1] ** 2 * (
+                told[:, 2:] - 2 * told[:, 1:-1] + told[:, 0:-2]) * dt
+
+        self.regridded_temperature = told
+        # Todo: Map the gridded temperature back to the original one => a task for np.digitize!?
+
 
         # Update the temperatures of the layers inplace.
 
