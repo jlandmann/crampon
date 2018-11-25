@@ -1518,13 +1518,15 @@ class SnowFirnCover(object):
         Parameters
         ----------
         max_depth: float
-            Maximum depth in meters until which the temperature profile is
-            calculated. Default: 15.
-        dx: float
-            Grid spacing for the homogeneous temperature grid. Default: 0.1m
         lower_bound: float
-            Lower boundary condition temperature. Default: 273.16 K (temperate
-            ice).
+            Lower boundary condition temperature (K). Default: 273.15
+            (temperate ice).
+
+        Returns
+        -------
+        None
+        """
+
 
     def update_temperature_huss(self, max_depth=5., max_depth_temp=0.,
                                 surface_temp=-5.):
