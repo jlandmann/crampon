@@ -1661,10 +1661,6 @@ class SnowFirnCover(object):
         self.regridded_temperature = told
         # Todo: Map the gridded temperature back to the original one => a task for np.digitize!?
 
-
-
-        """
-
     def apply_refreezing(self, exhaust=False):
         """
         Apply refreezing where there is potential.
