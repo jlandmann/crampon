@@ -241,14 +241,6 @@ def initialize(file=None):
     from oggm.utils import download_oggm_files
     download_oggm_files()
 
-    # Parse RGI metadata
-    _d = os.path.join(CACHE_DIR, 'oggm-sample-data-master', 'rgi_meta')
-    oggmcfg.RGI_REG_NAMES = pd.read_csv(os.path.join(_d, 'rgi_regions.csv'),
-                                index_col=0)
-    #oggmcfg.RGI_SUBREG_NAMES = pd.read_csv(os.path.join(_d,
-    #                                                    'rgi_subregions.csv'),
-    #                                       index_col=0)
-
     CPARAMS['bgday_hydro'] = cp.as_int('bgday_hydro')
     CPARAMS['bgmon_hydro'] = cp.as_int('bgmon_hydro')
 
