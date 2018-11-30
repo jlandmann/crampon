@@ -2042,10 +2042,13 @@ def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
         Density of fresh snow.
     """
 
-    # TODO: Use equation 17 from Essery (2013)? Probably no, because we already integrate over one day
-    rho_fresh = rho_min + np.clip(df * (tair - (
+    # we do not use eq.17 from Essery(2013), bcz we integrate o. 1 day already
+    curve = np.clip(df * (tair - (
                 cfg.PARAMS['temp_melt'] + cfg.ZERO_DEG_KELVIN) + ef) ** 1.5,
-                                  0., None)
+                    0., None)
+    # NaN happens at low temperatures due to square root
+    curve[np.isnan(curve)] = 0.
+    rho_fresh = rho_min + curve
 
     return rho_fresh
 
