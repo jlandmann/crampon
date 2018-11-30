@@ -2043,8 +2043,9 @@ def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
     """
 
     # TODO: Use equation 17 from Essery (2013)? Probably no, because we already integrate over one day
-    rho_fresh = rho_min + np.clip(
-        df * (tair - cfg.PARAMS['temp_melt'] + ef) ** 1.5, None, 0.)
+    rho_fresh = rho_min + np.clip(df * (tair - (
+                cfg.PARAMS['temp_melt'] + cfg.ZERO_DEG_KELVIN) + ef) ** 1.5,
+                                  0., None)
 
     return rho_fresh
 
