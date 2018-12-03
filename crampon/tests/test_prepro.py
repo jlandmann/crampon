@@ -20,7 +20,7 @@ import xarray as xr
 import crampon.cfg as cfg
 from crampon.core.preprocessing import gis, climate
 from oggm.utils import get_demo_file as get_oggm_demo_file
-from crampon.tests import is_slow, HAS_NEW_GDAL, RUN_PREPRO_TESTS
+from crampon.tests import HAS_NEW_GDAL, RUN_PREPRO_TESTS
 
 
 # General settings

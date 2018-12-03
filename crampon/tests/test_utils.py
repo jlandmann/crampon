@@ -6,11 +6,13 @@ import os
 import shutil
 import logging
 
+import pytest
+
 import pandas as pd
 import datetime
 import numpy as np
 
-from crampon.tests import requires_credentials, requires_vpn, is_download
+from crampon.tests import requires_credentials, requires_vpn
 from crampon import utils
 from crampon import cfg
 from oggm.tests.test_utils import TestDataFiles as OGGMTestDataFiles
@@ -30,7 +32,7 @@ if not os.path.exists(TEST_DIR):
 
 @requires_credentials
 @requires_vpn
-@is_download
+@pytest.mark.internet
 class TestCirrusClient(unittest.TestCase):
 
     def setUp(self):
@@ -115,11 +117,12 @@ class TestMiscFuncs(unittest.TestCase):
     def test_get_begin_last_flexyear(self):
 
         self.assertEqual(
-            utils.get_begin_last_flexyear(datetime.datetime(2018,4,1)),
-            datetime.datetime(2017,10,1))
+            utils.get_begin_last_flexyear(datetime.datetime(2018, 4, 1)),
+            datetime.datetime(2017, 10, 1))
         self.assertEqual(
-            utils.get_begin_last_flexyear(datetime.datetime(2018,4,1), start_month=11, start_day=15),
-            datetime.datetime(2017,11,15))
+            utils.get_begin_last_flexyear(datetime.datetime(2018, 4, 1),
+                                          start_month=11, start_day=15),
+            datetime.datetime(2017, 11, 15))
         self.assertEqual(
             utils.get_begin_last_flexyear(datetime.datetime(2098, 4, 1),
                                           start_month=11, start_day=15),
@@ -135,6 +138,7 @@ class TestMiscFuncs(unittest.TestCase):
 
     @requires_credentials
     @requires_vpn
+    @pytest.mark.internet
     def test_mount_network_drive(self):
 
         drive = r'\\speedy10.wsl.ch\data_15\_PROJEKTE\Swiss_Glacier'
@@ -185,11 +189,11 @@ class CramponTestDataFiles(unittest.TestCase):
         utils.mkdir(cfg.PATHS['working_dir'])
         utils.mkdir(cfg.PATHS['tmp_dir'])
 
-    @is_download
+    @pytest.mark.internet
     def test_get_oggm_demo_files(self):
         return OGGMTestDataFiles.test_download_demo_files
 
-    @is_download
+    @pytest.mark.internet
     def test_get_crampon_demo_file(self):
         # At the moment not implemented
         pass
@@ -220,11 +224,11 @@ class TestMeteoTSAccessor(unittest.TestCase):
     def test_cut_by_glacio_years(self):
         #mtsa_cut = self.mtsa.crampon.cut_by_glacio_years()
 
-        #begin = mtsa_cut.time[0]
+        #begin_mbyear = mtsa_cut.time[0]
         #end = mtsa_cut.time[1]
 
-        #self.assertEqual(begin.month, 10)
-        #self.assertEqual(begin.day, 1)
+        #self.assertEqual(begin_mbyear.month, 10)
+        #self.assertEqual(begin_mbyear.day, 1)
         #self.assertEqual(end.month, 9)
         #self.assertEqual(end.day, 30)
         pass
@@ -328,7 +332,7 @@ class RetryTestCase(unittest.TestCase):
         def fails_once():
             self.counter += 1
             if self.counter < 2:
-                raise RetryableError('failed')
+                raise RetryableError('Testing retry decorator')
             else:
                 return 'success'
 

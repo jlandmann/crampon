@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 # Local imports
 import crampon.utils
-from crampon.tests import requires_internet, RUN_GRAPHIC_TESTS
+from crampon.tests import RUN_GRAPHIC_TESTS
 from crampon import graphics
 from crampon.core.preprocessing import gis
 import crampon.cfg as cfg
