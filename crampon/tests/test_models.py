@@ -40,7 +40,7 @@ class TestMiscModels(unittest.TestCase):
     def test_get_rho_fresh_snow_anderson(self):
 
         # It's actually stupid that with increasing rho_min also the
-        # rho values for gigher temperatures change...but that's the equation.
+        # rho values for higher temperatures change...but that's the equation.
 
         # test for plausible temp range
         temp_range = np.arange(253., 279, 5.)
