@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 
 
 # Joblib
-MEMORY = Memory(cachedir=cfg.CACHE_DIR, verbose=0)
+MEMORY = Memory(location=cfg.CACHE_DIR, verbose=0)
 SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
 
 
