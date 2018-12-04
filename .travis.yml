@@ -1,6 +1,6 @@
 # This is almost a copy from salem, except that python 2.7 is not supported
 language: python
-sudo: false
+sudo: required
 notifications:
   email: false
 
