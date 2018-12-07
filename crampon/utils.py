@@ -1299,7 +1299,7 @@ def mount_network_drive(path, user, log=None):
     return out
 
 
-def _local_dem_to_xr_dataset(to_merge, acq_date, calendar_startyear=0,
+def _local_dem_to_xr_dataset(to_merge, acq_date, dx, calendar_startyear=0,
                              miss_val=np.nan):
     """
     Hard-coded function that reads DEMs into xarray.Datasets and adds metadata.
@@ -1331,6 +1331,12 @@ def _local_dem_to_xr_dataset(to_merge, acq_date, calendar_startyear=0,
 
     # load and merge; overwrite is necessary, as some rasters cover same area
     xr_das = [d.load() for d in xr_das]
+    xr_das = [da.interp(x=np.arange(da.x.min(), da.x.max(), dx),
+              y=np.arange(da.y.max(), da.y.min(), -dx)) for da in xr_das]
+    for da in xr_das:
+        da.attrs.update({'transform':(dx, da.transform[1], da.x.min().item(),
+                                      da.transform[3], -dx, da.y.min().item()),
+                         'res': (dx, dx)})
     try:
         merged = xr.merge(xr_das)
     # this happens for DHM25 on Rhone, for example (overlapping tiles)
@@ -1430,6 +1436,9 @@ def get_local_dems(gdir):
     cdates = np.unique(cdates)
     cyears = np.unique([d.year for d in cdates])
 
+    # get already the dx to which the DEMs should be interpolated later on
+    dx = dx_from_area(gdir.area_km2)
+
     lfi_all = []
     for cd in cyears:
         log.info('Assembling LFI DEMs for {} in {}'.format(gdir.rgi_id, cd))
@@ -1458,7 +1467,7 @@ def get_local_dems(gdir):
             continue
 
         # merge and append
-        lfi_dem = _local_dem_to_xr_dataset(lfi_to_merge, lfi_dates[0])
+        lfi_dem = _local_dem_to_xr_dataset(lfi_to_merge, lfi_dates[0], dx)
 
         # check holes: small => fill, large=> no fill. Check percentage of NaN
         #checked = gis.dem_quality_check(lfi_dem)
@@ -1488,7 +1497,7 @@ def get_local_dems(gdir):
         d_to_merge.extend([d for d in d_list if str(d_z) in d])
     # TODO: Replace with real acquisition dates!
     d_acq_dates = dt.datetime(1970, 1, 1)
-    d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates)
+    d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates, dx)
     d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['DHM25'])
 
@@ -1504,7 +1513,7 @@ def get_local_dems(gdir):
         a_to_merge.extend([d for d in a_list if str(a_z) in d])
     # TODO: Replace with real acquisition dates!
     a_acq_dates = dt.datetime(2010, 1, 1)
-    a_dem = _local_dem_to_xr_dataset(a_to_merge, a_acq_dates)
+    a_dem = _local_dem_to_xr_dataset(a_to_merge, a_acq_dates, dx)
     a_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
                     group=cfg.NAMES['SWISSALTI2010'])
 
@@ -1523,6 +1532,36 @@ def get_cirrus_yesterday():
         yesterday = (now - dt.timedelta(2))
 
     return climfile_yesterday
+
+
+def dx_from_area(area_km2):
+    """
+    Get spatial resolution as a function of glacier area and chosen parameters.
+
+    Parameters
+    ----------
+    area_km2: float
+        Glacier area in square kilometers (km-2).
+
+    Returns
+    -------
+    dx: int
+        Spatial resolution rounded to nearest integer.
+    """
+    dxmethod = cfg.PARAMS['grid_dx_method']
+    if dxmethod == 'linear':
+        dx = np.rint(cfg.PARAMS['d1'] * area_km2 + cfg.PARAMS['d2'])
+    elif dxmethod == 'square':
+        dx = np.rint(cfg.PARAMS['d1'] * np.sqrt(area_km2) + cfg.PARAMS['d2'])
+    elif dxmethod == 'fixed':
+        dx = np.rint(cfg.PARAMS['fixed_dx'])
+    else:
+        raise ValueError('grid_dx_method not supported: {}'.format(dxmethod))
+    # Additional trick for varying dx
+    if dxmethod in ['linear', 'square']:
+        dx = np.clip(dx, cfg.PARAMS['d2'], cfg.PARAMS['dmax'])
+
+    return dx
 
 
 OGGMGlacierDirectory = GlacierDirectory

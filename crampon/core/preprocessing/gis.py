@@ -158,20 +158,8 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     None
     """
 
-    # choose a spatial resolution with respect to the glacier area
-    dxmethod = cfg.PARAMS['grid_dx_method']
     area = gdir.area_km2
-    if dxmethod == 'linear':
-        dx = np.rint(cfg.PARAMS['d1'] * area + cfg.PARAMS['d2'])
-    elif dxmethod == 'square':
-        dx = np.rint(cfg.PARAMS['d1'] * np.sqrt(area) + cfg.PARAMS['d2'])
-    elif dxmethod == 'fixed':
-        dx = np.rint(cfg.PARAMS['fixed_dx'])
-    else:
-        raise ValueError('grid_dx_method not supported: {}'.format(dxmethod))
-    # Additional trick for varying dx
-    if dxmethod in ['linear', 'square']:
-        dx = np.clip(dx, cfg.PARAMS['d2'], cfg.PARAMS['dmax'])
+    dx = utils.dx_from_area(area)
 
     log.debug('(%s) area %.2f km, dx=%.1f', gdir.id, area, dx)
 
