@@ -434,9 +434,9 @@ def get_temperature_at_heights(temp, grad, ref_hgt, heights):
     np.array
         The temperature at the input heights.
     """
-    try:
+    if isinstance(temp, (int, float)):
         return np.ones_like(heights) * temp + grad * (heights - ref_hgt)
-    except ValueError:  # wrong array dimensions
+    else:
         try:
             return np.ones_like(heights) * np.array(temp[:, np.newaxis]) + \
                    np.array(grad[:, np.newaxis]) * (heights - ref_hgt)

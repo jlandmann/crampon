@@ -57,20 +57,23 @@ class TestClimate(unittest.TestCase):
 
     def test_get_temperature_at_heights(self):
         # test float input
-        t_hgt = climate.get_temperature_at_heights(2, 0.0065, 250., 300)
-        np.testing.assert_equal(t_hgt, 2.325)
+        t_hgt = climate.get_temperature_at_heights(5, 0.0065, 2500, 2600)
+        np.testing.assert_equal(t_hgt, 5.65)
 
         # test array input
-        t_hgt = climate.get_temperature_at_heights(np.array([2, 2]),
-                                                 np.array([0.0065, 0.005]),
-                                                 250., np.array([200, 200]))
-        np.testing.assert_equal(t_hgt, np.array([1.675, 1.75]))
+        t_hgt = climate.get_temperature_at_heights(np.array([5, 5]),
+                                                   np.array([0.0065, 0.005]),
+                                                   2500,
+                                                   np.array(
+                                                       [2400, 2600, 2700]))
+        np.testing.assert_equal(t_hgt,
+                                np.array([[4.35, 5.65, 6.3], [4.5, 5.5, 6.]]))
 
         # test xarray input
-        t_hgt = climate.get_temperature_at_heights(xr.DataArray([2, 2]),
+        t_hgt = climate.get_temperature_at_heights(xr.DataArray([5, 5]),
                                                    xr.DataArray(
-                                                       [0.0065, 0.005]),
-                                                   250.,
-                                                   xr.DataArray([200, 200]))
-        self.assertIsInstance(t_hgt, xr.DataArray)
-        np.testing.assert_equal(t_hgt.values, np.array([1.675, 1.75]))
+                                                       [0.0065, 0.005]), 2500,
+                                                   np.array(
+                                                       [2400, 2600, 2700]))
+        np.testing.assert_equal(t_hgt, np.array([[4.35, 5.65, 6.3],
+                                                        [4.5, 5.5, 6.]]))
