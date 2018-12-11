@@ -2056,7 +2056,7 @@ class SnowFirnCover(object):
             raise NotImplementedError
 
 
-def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
+def get_rho_fresh_snow_anderson(tair, rho_min=None, df=1.7, ef=15.):
     """
     Get fresh snow density after Anderson (1976).
 
@@ -2065,8 +2065,10 @@ def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
     tair: np.array
         Air temperature during snowfall (K).
     rho_min: float
-        Minimum density allowed (kg m-3). Default: 50
-        (Oleson et al. (2004)).
+        Minimum density allowed (kg m-3). Default: None (from configuration).
+        With integration steps of approximately one day, probably 100 kg m-3 is
+        a reasonable value, as in contrast to the 50 kg m-3 suggested for
+        really fresh snow right after deposition.
     df: float
         Parameter according to Anderson (1976) (K). Default: 1.7
     ef: float
@@ -2077,6 +2079,9 @@ def get_rho_fresh_snow_anderson(tair, rho_min=50., df=1.7, ef=15.):
     rho_fresh: np.array
         Density of fresh snow.
     """
+
+    if rho_min is None:
+        rho_min = cfg.PARAMS['rho_min_snow']
 
     # we do not use eq.17 from Essery(2013), bcz we integrate o. 1 day already
     curve = np.clip(df * (tair - (
