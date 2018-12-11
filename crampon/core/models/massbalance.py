@@ -1236,6 +1236,42 @@ class SnowFirnCover(object):
         # let it refreeze
         # let the latent heat warm the snowpack up
 
+    def ingest_balance(self, swe_balance, rho, date, temperature=None):
+        """
+        Ingest a mass balance as snow water equivalent.
+
+        Parameters
+        ----------
+        swe_balance: np.array
+            A balance for all height nodes (must have the shape of
+            self.height_nodes) (m w.e. d-1).
+        rho: float or np.array
+            Density of the positive SWE. If array: must have the same shape as
+            swe_balance, but will be clipped to use only positive swe_balance
+            (kg m-3).
+        temperature:
+
+
+        Returns
+        -------
+        None
+        """
+
+        if (swe_balance > 0.).any():
+            swe = np.clip(swe_balance, 0, None)
+            swe[swe == 0.] = np.nan
+
+            rho[pd.isnull(swe)] = np.nan
+
+            if temperature is None:
+                temperature = swe.copy()
+                temperature.fill(cfg.ZERO_DEG_KELVIN)
+            self.add_layer(swe=swe_balance, rho=rho, origin=date,
+                            temperature=temperature)
+
+        if (swe_balance < 0.).any():
+            self.melt(np.clip(swe_balance, None, 0))
+
     def add_height_nodes(self, nodes):
         """
         If the glaciers advances, this is the way to tell the snow/firn cover.
