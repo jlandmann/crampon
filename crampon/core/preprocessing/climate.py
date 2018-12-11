@@ -18,6 +18,7 @@ from crampon import entity_task
 import logging
 from itertools import product
 import salem
+import xarray as xr
 
 # temporary
 from crampon.workflow import execute_entity_task
@@ -412,6 +413,36 @@ def climate_file_from_scratch(write_to=None, hfile=None):
 
 # IMPORTANT: overwrite OGGM functions with same name:
 process_custom_climate_data = process_custom_climate_data_crampon
+
+def get_temperature_at_heights(temp, grad, ref_hgt, heights):
+    """
+    Interpolate a temperature at a reference height to other heights.
+
+    Parameters
+    ----------
+    temp: float, array-like or xarray.DataArray
+        Temperature at the reference height (deg C or K).
+    ref_hgt: float, array-like, xr.DataArray or xr.Dataset
+        Reference height (m).
+    grad: float, array-like or xarray.DataArray
+        The temperature gradient to apply (K m-1).
+    heights: np.array
+        The heights where to interpolate the temperature to.
+
+    Returns
+    -------
+    np.array
+        The temperature at the input heights.
+    """
+    try:
+        return np.ones_like(heights) * temp + grad * (heights - ref_hgt)
+    except ValueError:  # wrong array dimensions
+        try:
+            return np.ones_like(heights) * np.array(temp[:, np.newaxis]) + \
+                   np.array(grad[:, np.newaxis]) * (heights - ref_hgt)
+        except IndexError:  # xarray objects
+            return np.ones_like(heights) * temp.values[:, np.newaxis] + \
+                   grad.values[:, np.newaxis] * (heights - ref_hgt)
 
 def get_fraction_of_snowfall_magnusson(temp, t_base=0.54, m_rho=0.31):
     """
