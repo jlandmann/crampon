@@ -444,6 +444,41 @@ def get_temperature_at_heights(temp, grad, ref_hgt, heights):
             return np.ones_like(heights) * temp.values[:, np.newaxis] + \
                    grad.values[:, np.newaxis] * (heights - ref_hgt)
 
+
+def get_precipitation_at_heights(prcp, pgrad, ref_hgt, heights):
+    """
+    Interpolate precipitation at a reference height to other heights.
+
+    Parameters
+    ----------
+    prcp: float, array-like or xarray.DataArray
+        Precipitation at the reference height (deg C or K).
+    ref_hgt: float, array-like or xarray.DataArray
+        Reference height (m).
+    grad: float, array-like or xarray.DataArray
+        The precipitation gradient to apply (K m-1).
+    heights: np.array
+        The heights where to interpolate the precipitation to.
+
+    Returns
+    -------
+    np.array
+        The precipitation at the input heights.
+    """
+    if isinstance(prcp, (int, float)):
+        return np.ones_like(heights) * prcp + prcp * pgrad * (heights -
+                                                              ref_hgt)
+    else:
+        try:
+            return np.ones_like(heights) * np.array(prcp[:, np.newaxis]) + \
+                   np.array(prcp[:, np.newaxis]) * \
+                   np.array(pgrad[:, np.newaxis]) * (heights -ref_hgt)
+        except IndexError:
+            return np.ones_like(heights) * prcp.values[:, np.newaxis] + \
+                   prcp.values[:, np.newaxis] * pgrad.values[:, np.newaxis] * \
+                   (heights - ref_hgt)
+
+
 def get_fraction_of_snowfall_magnusson(temp, t_base=0.54, m_rho=0.31):
     """
     Get the fraction of snowfall according to [Magnusson et al. (2017)]_.

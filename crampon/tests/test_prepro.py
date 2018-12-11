@@ -77,3 +77,24 @@ class TestClimate(unittest.TestCase):
                                                        [2400, 2600, 2700]))
         np.testing.assert_equal(t_hgt, np.array([[4.35, 5.65, 6.3],
                                                         [4.5, 5.5, 6.]]))
+
+    def test_get_precipitation_at_heights(self):
+        # test float input
+        p_hgt = climate.get_precipitation_at_heights(5, 0.0003, 2500, 2600)
+        np.testing.assert_equal(p_hgt, 5.15)
+
+        # test array input
+        p_hgt = climate.get_precipitation_at_heights(np.array([5, 10]),
+                                                     np.array(
+                                                         [0.0003, 0.0005]),
+                                                     2500,
+                                                     np.array([2600, 2700]))
+        np.testing.assert_equal(p_hgt, np.array([[5.15, 5.3], [10.5, 11.]]))
+
+        # test xr.DataArray input
+        p_hgt = climate.get_precipitation_at_heights(xr.DataArray([5, 10]),
+                                                     xr.DataArray(
+                                                         [0.0003, 0.0005]),
+                                                     2500,
+                                                     np.array([2600, 2700]))
+        np.testing.assert_equal(p_hgt, np.array([[5.15, 5.3], [10.5, 11.]]))
