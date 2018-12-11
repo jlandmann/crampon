@@ -251,14 +251,15 @@ def initialize(file=None):
            'temp_use_local_gradient', 'prcp_use_local_gradient',
            'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
            'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
-           'topo_interp', 'use_compression', 'bed_shape', 'continue_on_error',
-           'use_optimized_inversion_params', 'invert_with_sliding',
-           'optimize_inversion_params', 'use_multiple_flowlines',
-           'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
-           'tstar_search_window', 'use_bias_for_run', 'run_period',
-           'prcp_scaling_factor', 'use_intersects', 'filter_min_slope',
-           'auto_skip_task', 'correct_for_neg_flux', 'problem_glaciers',
-           'bgmon_hydro', 'bgday_hydro', 'run_mb_calibration']
+           'precip_ratio_method', 'topo_interp', 'use_compression',
+           'bed_shape', 'continue_on_error', 'use_optimized_inversion_params',
+           'invert_with_sliding', 'optimize_inversion_params',
+           'use_multiple_flowlines', 'leclercq_rgi_links', 'optimize_thick',
+           'mpi_recv_buf_size', 'tstar_search_window', 'use_bias_for_run',
+           'run_period', 'prcp_scaling_factor', 'use_intersects',
+           'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
+           'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
+           'run_mb_calibration']
     for k in ltr:
         cp.pop(k, None)
 
