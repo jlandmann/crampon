@@ -66,10 +66,11 @@ class TestMiscModels(unittest.TestCase):
 
     def test_get_rho_fresh_snow_anderson(self):
 
-        # for standard setting
+        # for rho_min = 50
         desired = np.array([50., 50., 68.15772897, 102.55369631, 147.28336893,
                             200.34524185])
-        result = massbalance.get_rho_fresh_snow_anderson(self.test_temp)
+        result = massbalance.get_rho_fresh_snow_anderson(self.test_temp,
+                                                         rho_min=50.)
         np.testing.assert_almost_equal(desired, result)
 
         # for higher min_rho
