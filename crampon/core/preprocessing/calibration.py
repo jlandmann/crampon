@@ -282,7 +282,8 @@ def to_minimize_braithwaite_fixedratio_wonly(x, gdir, measured, mu_ice,
 
 
 def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
-                                             conv_thresh=0.005, it_thresh=50):
+                                             conv_thresh=0.005, it_thresh=50,
+                                             filesuffix=''):
     """
     A function to calibrate those glaciers that have a glaciological mass
     balance in GLAMOS.
@@ -302,6 +303,9 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
         iterations. This criterion is used when after the given number of
         iteration the convergence threshold hasn't been reached. Default: Abort
         after 50 iterations.
+    filesuffix: str
+        Filesuffix for calibration file. Use mainly for experiments. Default:
+        no suffx (empty string).
 
     Returns
     -------
@@ -320,7 +324,9 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
                         (measured.date1 < pd.Timestamp(np.max(cmeta.time).values))]
 
     try:
-        cali_df = pd.read_csv(gdir.get_filepath('calibration'), index_col=0,
+        cali_df = pd.read_csv(gdir.get_filepath('calibration',
+                                                filesuffix=filesuffix),
+                              index_col=0,
                               parse_dates=[0])
         # think about an outer join of the date indices here
     except FileNotFoundError:
@@ -346,7 +352,8 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
             cali_df.loc[row.date0:row.date1, 'mu_ice'] = np.nan
             cali_df.loc[row.date0:row.date1, 'mu_snow'] = np.nan
             cali_df.loc[row.date0:row.date1, 'prcp_fac'] = np.nan
-            cali_df.to_csv(gdir.get_filepath('calibration'))
+            cali_df.to_csv(gdir.get_filepath('calibration',
+                                             filesuffix=filesuffix))
             continue
 
         # say what we are doing
@@ -413,7 +420,7 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
         cali_df.loc[row.date0:row.date1, 'mu_ice'] = spinupres.x[0]
         cali_df.loc[row.date0:row.date1, 'mu_snow'] = spinupres.x[0] * ratio_s_i
         cali_df.loc[row.date0:row.date1, 'prcp_fac'] = prcp_fac_guess
-        cali_df.to_csv(gdir.get_filepath('calibration'))
+        cali_df.to_csv(gdir.get_filepath('calibration', filesuffix=filesuffix))
 
         # get history for next run
         heights, widths = gdir.get_inversion_flowline_hw()
