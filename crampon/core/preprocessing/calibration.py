@@ -12,6 +12,7 @@ import crampon.cfg as cfg
 from crampon import workflow
 from crampon import tasks
 from crampon.core.models.massbalance import BraithwaiteModel
+from crampon import utils
 
 import logging
 
@@ -496,6 +497,109 @@ def artificial_snow_init(gdir, aar=0.66, max_swe=1.5):
 
     #return snow_distr
 
+
+def compile_firn_core_metainfo():
+    """
+    Compile a pandas Dataframe with metainformation about firn cores available.
+
+    The information contains and index name (a shortened version of the core
+    name), an ID, core top height, latitude and longitude of the drilling site,
+    drilling date (as exact as possible; for missing months and days JAN-01 is
+    assumed), mean accumulation rate and mean accumulation rate uncertainty (if
+    available).
+
+    Returns
+    -------
+    data: pandas.Dataframe
+        The info compiled in a dataframe.
+    """
+    data = pd.read_csv(cfg.PATHS['firncore_dir'] + '\\firncore_meta.csv')
+
+    return data
+
+
+def make_massbalance_at_firn_core_sites(core_meta, reset=False):
+    """
+    Makes the mass balance at the firn core drilling sites.
+
+    At the moment, this function uses the BraithwaiteModel, but soon it should
+    probably changed to the PellicciottiModel.
+
+    Parameters
+    ----------
+    core_meta: pd.Dataframe
+        A dataframe containing metainformation about the firn cores, explicitly
+        an 'id", "height", "lat", "lon"
+    reset: bool
+        Whether to reset the GlacierDirectory
+
+    Returns
+    -------
+
+    """
+    if reset:
+        for i, row in core_meta.iterrows():
+            print(row.id)
+            gdir = utils.idealized_gdir(np.array([row.height]),
+                                        np.ndarray([int(1.)]), map_dx=1.,
+                                        identifier=row.id, name=i,
+                                        coords=(row.lat, row.lon), reset=reset)
+
+            tasks.process_custom_climate_data(gdir)
+
+            # Start with any params and then trim on accum rate later
+            mb_model = BraithwaiteModel(gdir, mu_ice=10., mu_snow=5.,
+                                        prcp_fac=1.0, bias=0.)
+
+            mb = []
+            for date in mb_model.tspan_meteo:
+                # Get the mass balance and convert to m per day
+                tmp = mb_model.get_daily_mb(np.array([row.height]),
+                                            date=date) * cfg.SEC_IN_DAY * \
+                      cfg.RHO / cfg.RHO_W
+                mb.append(tmp)
+
+            mb_ds = xr.Dataset({'MB': (['time', 'n'], np.array(mb))},
+                               coords={
+                                   'time': pd.to_datetime(
+                                       mb_model.time_elapsed),
+                                   'n': (['n'], [1])},
+                               attrs={'id': gdir.rgi_id,
+                                      'name': gdir.name})
+            gdir.write_pickle(mb_ds, 'mb_daily')
+
+            new_mb = fit_core_mb_to_mean_acc(gdir, core_meta)
+
+            gdir.write_pickle(new_mb, 'mb_daily_rescaled')
+
+
+def fit_core_mb_to_mean_acc(gdir, c_df):
+    """
+    Fit a calculated mass balance at an ice core site to a mean accumulation.
+
+    Parameters
+    ----------
+    gdir: crampon.GlacierDirectory
+        The (idealized) glacier directory for which the mass balance shall be
+        adjusted.
+    c_df: pandas.Dataframe
+        The dataframe with accumulation information about the ice core. Needs
+        to contain a "mean_acc" and an "id" column.
+
+    Returns
+    -------
+    new_mb: xarray.Dataset
+        The new, fitted mass balance.
+    """
+    old_mb = gdir.read_pickle('mb_daily')
+    mean_mb = old_mb.apply(np.nanmean)
+
+    mean_acc = c_df.loc[c_df.id == gdir.rgi_id].mean_acc.values[0] / 365.25
+
+    factor = mean_mb.apply(lambda x: x / mean_acc).MB.values
+    new_mb = old_mb.apply(lambda x: x / factor)
+
+    return new_mb
 
 def fake_dynamics(gdir, dh_max=-5., da_chg=0.01):
     """
