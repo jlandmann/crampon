@@ -349,6 +349,21 @@ def get_nash_sutcliffe_efficiency(simulated, observed):
     return nse
 
 
+def parse_credentials_file(credfile=None):
+    if credfile is None:
+        credfile = os.path.join(os.path.abspath(os.path.dirname(
+            os.path.dirname(__file__))), '.credentials')
+
+    try:
+        cr = ConfigObj(credfile, file_error=True)
+    except (ConfigObjError, IOError) as e:
+        log.critical('Credentials file could not be parsed (%s): %s',
+                     credfile, e)
+        sys.exit()
+
+    return cr
+
+
 class CirrusClient(pm.SSHClient):
     """
     Class for SSH interaction with Cirrus Server at WSL.
@@ -370,23 +385,12 @@ class CirrusClient(pm.SSHClient):
         self.sftp_open = False
         self.ssh_open = False
 
-        if credfile is None:
-            credfile = os.path.join(os.path.abspath(os.path.dirname(
-                os.path.dirname(__file__))), '.credentials')
+        self.cr = parse_credentials_file(credfile)
 
         try:
-            cr = ConfigObj(credfile, file_error=True)
-        except (ConfigObjError, IOError) as e:
-            log.critical('Credentials file could not be parsed (%s): %s',
-                         credfile, e)
-            sys.exit()
-
-        self.cr = cr
-
-        try:
-            self.client = self.create_connect(cr['cirrus']['host'],
-                                              cr['cirrus']['user'],
-                                              cr['cirrus']['password'])
+            self.client = self.create_connect(self.cr['cirrus']['host'],
+                                              self.cr['cirrus']['user'],
+                                              self.cr['cirrus']['password'])
         except:
             raise OSError('Are you in WSL VPN network?')
 
