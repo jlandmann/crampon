@@ -693,7 +693,11 @@ class MeteoTSAccessor(object):
         # https://github.com/pydata/xarray/blob/6d55f99905d664ef73cb708cfe8c52c2c651e8dc/xarray/core/groupby.py#L234
         self._obj = self._obj.sortby('time')
         resampled = self._obj.resample(time=freq, keep_attrs=True,
-                                       **kwargs).mean()  # mean = fill with NaN
+                                       **kwargs).mean()
+        if "R" in self._obj.variables:  # fill gaps with zero
+            resampled.fillna(0.)
+        else: # interpolate linearly # todo also for sunshine?
+            resampled = resampled.interpolate_na('time')  # mean = fill with NaN
         diff_a = len(set(resampled.time.values) - set(self._obj.time.values))
         diff_r = len(set(self._obj.time.values) - set(resampled.time.values))
 
