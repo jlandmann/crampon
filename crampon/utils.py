@@ -801,6 +801,11 @@ class MeteoTSAccessor(object):
                 ('SIS' in self._obj.variables):
             self._obj = self._obj.rename({'msg.SIS.D': 'SIS'})
 
+        # R contains really low values (partly smaller than 0.0001mm)
+        # Christoph Frei says everything smaller than 0.1 can be cut off
+        if 'RD' in self._obj.variables:
+            self._obj = self._obj.where(self._obj.RD >= 0.1, 0.)
+
         # THIS IS ABSOLUTELY TEMPORARY AND SHOULD BE REPLACED
         # THE REASON IS A SLIGHT PRECISION PROBLEM IN THE INPUT DATA, CHANGING
         # AT THE 2014/2015 TRANSITION => WE STANDARDIZE THE COORDINATES BY HAND
