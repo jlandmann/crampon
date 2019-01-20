@@ -275,6 +275,50 @@ class DailyMassBalanceModel(MassBalanceModel):
         mbs_wavg = np.average(mbs, weights=widths)
         return mbs_wavg
 
+    def get_monthly_mb(self, heights, year=None, fl_id=None):
+        """Monthly mass-balance at given altitude(s) for a moment in time.
+        Units: [m s-1], or meters of ice per second
+        Note: `year` is optional because some simpler models have no time
+        component.
+        Parameters
+        ----------
+        heights: ndarray
+            the atitudes at which the mass-balance will be computed
+        year: float, optional
+            the time (in the "hydrological floating year" convention)
+        fl_id: float, optional
+            the index of the flowline in the fls array (might be ignored
+            by some MB models)
+        Returns
+        -------
+        the mass-balance (same dim as `heights`) (units: [m s-1])
+        """
+
+        month_mb = None
+
+    def get_annual_mb(self, heights, year=None, fl_id=None):
+        """Like `self.get_monthly_mb()`, but for annual MB.
+        For some simpler mass-balance models ``get_monthly_mb()` and
+        `get_annual_mb()`` can be equivalent.
+        Units: [m s-1], or meters of ice per second
+        Note: `year` is optional because some simpler models have no time
+        component.
+        Parameters
+        ----------
+        heights: ndarray
+            the atitudes at which the mass-balance will be computed
+        year: float, optional
+            the time (in the "floating year" convention)
+        fl_id: float, optional
+            the index of the flowline in the fls array (might be ignored
+            by some MB models)
+        Returns
+        -------
+        the mass-balance (same dim as `heights`) (units: [m s-1])
+        """
+
+        raise NotImplementedError()
+
     def generate_climatology(self, write_out=True, n_exp=1):
         """
         EXPERIMENTAL!
