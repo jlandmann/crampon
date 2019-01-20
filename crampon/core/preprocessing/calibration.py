@@ -66,11 +66,12 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
 
     # No idea why, but header=0 doesn't work
     # date_parser doesn't work, because of corrupt dates....sigh...
-    colnames = ['id', 'date0', 'date_s', 'date1', 'Winter', 'Annual']
+    colnames = ['id', 'date0', 'date_f', 'date_s', 'date1', 'Winter', 'Annual']
     measured = pd.read_csv(mb_file,
                            skiprows=4, sep=' ', skipinitialspace=True,
-                           usecols=[0, 1, 3, 4, 5, 6], header=None,
-                           names=colnames, dtype={'date_s': str})
+                           usecols=[0, 1, 2, 3, 4, 5, 6], header=None,
+                           names=colnames, dtype={'date_s': str,
+                                                  'date_f': str})
 
     # Skip wrongly constructed MB (and so also some corrupt dates)
     measured = measured[~measured.id.isin([0, 7, 8])]
@@ -83,7 +84,13 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
             measured.loc[k, 'date_s'] = date_parser(
                 '{}{}{}'.format(measured.loc[k, 'date1'].year,
                                 str(row.date_s)[:2], str(row.date_s)[2:4]))
-        except ValueError:  # date parsing fails
+        except (ValueError, KeyError):  # date parsing fails or has "0000"
+            measured = measured[measured.index != k]
+        try:
+            measured.loc[k, 'date_f'] = date_parser(
+                '{}{}{}'.format(measured.loc[k, 'date0'].year,
+                                str(row.date_f)[:2], str(row.date_f)[2:4]))
+        except (ValueError, KeyError):  # date parsing fails or has "0000"
             measured = measured[measured.index != k]
 
     # convert mm w.e. to m w.e.
