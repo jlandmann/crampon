@@ -1258,7 +1258,7 @@ def get_zones_from_worksheet(worksheet, id_col, gdir=None, shape=None,
     if gdir is not None:
         try:
             gdf = gpd.read_file(gdir.get_filepath('outlines_ts'))
-        except OSError:  # no such file or directory
+        except:  # no such file or directory: bad practice, but no
             gdf = gpd.read_file(gdir.get_filepath('outlines'))
     if shape is not None:
         gdf = gpd.read_file(shape)
