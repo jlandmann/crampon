@@ -1307,8 +1307,9 @@ def mount_network_drive(path, user, log=None):
         msg = 'Network drive {} successfully connected'.format(path)
         log.info(msg) if log else print(msg)
     else:
-        raise ConnectionError('Network drive {} connection failed'
-                              .format(path))
+        msg = 'Network drive {} connection failed'.format(path)
+        log.warn(msg) if log else print(msg)
+
     return out
 
 
@@ -1420,7 +1421,10 @@ def get_local_dems(gdir):
     """
 
     # get forest inventory DEMs (quite hard-coded for the LFI file names)
-    _ = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
+    out = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
+
+    if out != 0:
+        cfg.PATHS['lfi_dir'] = '..\\data\\DEM\\LFI'
 
     # neither os nor pathlib works, so quick'n'dirty:
     lfi_dem_list = glob.glob(cfg.PATHS['lfi_dir']+'\\TIFF\\*.tif')
