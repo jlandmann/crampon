@@ -114,15 +114,6 @@ CBASENAMES['mb_daily_rescaled'] =('mb_daily_rescaled.pkl', 'abc')
 _doc = 'A CSV with geodetic volume changes.'
 CBASENAMES['geodetic_dv'] = ('geodetic_dv.csv', _doc)
 
-
-# OGGM changed it to -1., let's first see what Fabi writes in his paper
-CPARAMS['temp_melt'] = 0.
-
-# Our data are quite good, so we want to use the local gradient (5x5 window)
-CPATHS['climate_dir'] = os.path.expanduser('~\\documents\\crampon\\data\\meteo')
-CPATHS['hfile'] = os.path.expanduser('~\\documents\\crampon\\data\\DEM\\hgt.nc')
-CPATHS['lfi_worksheet'] = os.path.expanduser('~\\documents\\crampon\\data\\meteo\\ginzler_ws.shp')
-
 # some more standard names, for less hardcoding
 NAMES['DHM25'] = 'dhm25'
 NAMES['SWISSALTI2010'] = 'alti'
@@ -181,7 +172,11 @@ def initialize(file=None):
     oggm_static_paths()
 
     oggmcfg.PATHS['dem_file'] = cp['dem_file']
+    oggmcfg.PATHS['hfile'] = cp['hfile']
     oggmcfg.PATHS['climate_file'] = cp['climate_file']
+    oggmcfg.PATHS['climate_dir'] = cp['climate_dir']
+    oggmcfg.PATHS['lfi_worksheet'] = cp['lfi_worksheet']
+    oggmcfg.PATHS['firncore_dir'] = cp['firncore_dir']
     oggmcfg.PATHS['lfi_dir'] = cp['lfi_dir']
     oggmcfg.PATHS['dem_dir'] = cp['dem_dir']
     oggmcfg.PATHS['wgms_rgi_links'] = cp['wgms_rgi_links']
@@ -245,8 +240,9 @@ def initialize(file=None):
     CPARAMS['bgmon_hydro'] = cp.as_int('bgmon_hydro')
 
     # Delete non-floats
-    ltr = ['working_dir', 'dem_file', 'climate_file', 'wgms_rgi_links',
-           'glathida_rgi_links', 'lfi_dir', 'dem_dir', 'grid_dx_method',
+    ltr = ['working_dir', 'dem_file', 'climate_file', 'climate_dir',
+           'wgms_rgi_links', 'glathida_rgi_links', 'firncore_dir', 'lfi_dir',
+           'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method',
            'mp_processes', 'use_multiprocessing', 'use_divides',
            'temp_use_local_gradient', 'prcp_use_local_gradient',
            'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
