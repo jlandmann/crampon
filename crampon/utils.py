@@ -1507,7 +1507,8 @@ def get_local_dems(gdir):
     d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25'] +
                        '*\\*.agr')
     d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
-                                       '*' + cfg.NAMES['DHM25'] + '*.shp'))
+                                       '*' + cfg.NAMES['DHM25'].upper() +
+                                       '*.shp'))
     d_zones = get_zones_from_worksheet(d_ws_path[0], 'zone', gdir=gdir)
     d_to_merge = []
     for d_z in d_zones:
@@ -1523,7 +1524,8 @@ def get_local_dems(gdir):
     a_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+
                        cfg.NAMES['SWISSALTI2010']+'*\\*.agr')
     a_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
-                                       '*'+cfg.NAMES['SWISSALTI2010']+'*.shp'))
+                                       '*'+cfg.NAMES['SWISSALTI2010'].upper()
+                                       +'*.shp'))
     a_zones = get_zones_from_worksheet(a_ws_path[0], 'zone', gdir=gdir)
     a_to_merge = []
     for a_z in a_zones:
