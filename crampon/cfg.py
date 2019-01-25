@@ -206,6 +206,9 @@ def initialize(file=None):
     oggmcfg.PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
     oggmcfg.PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
 
+    # Mass balance
+    oggmcfg.PARAMS['ratio_mu_snow_ice'] = cp['ratio_mu_snow_ice']
+
     # Climate
     oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_int(
         'temp_use_local_gradient')
@@ -215,6 +218,7 @@ def initialize(file=None):
         'prcp_use_local_gradient')
     k = 'prcp_local_gradient_bounds'
     oggmcfg.PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
+    oggmcfg.PARAMS['precip_ratio_method'] = cp['precip_ratio_method']
     k = 'tstar_search_window'
     oggmcfg.PARAMS[k] = [int(vk) for vk in cp.as_list(k)]
     oggmcfg.PARAMS['use_bias_for_run'] = cp.as_bool('use_bias_for_run')
