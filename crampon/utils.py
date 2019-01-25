@@ -1504,7 +1504,7 @@ def get_local_dems(gdir):
 
     # get DHM25 DEMs
     log.info('Assembling DHM25 DEM for {}'.format(gdir.rgi_id))
-    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25'] +
+    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25'].upper() +
                        '*\\*.agr')
     d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                        '*' + cfg.NAMES['DHM25'].upper() +
@@ -1522,7 +1522,7 @@ def get_local_dems(gdir):
     # get SwissALTI3D DEMs
     log.info('Assembling SwissALTI3D DEM for {}'.format(gdir.rgi_id))
     a_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+
-                       cfg.NAMES['SWISSALTI2010']+'*\\*.agr')
+                       cfg.NAMES['SWISSALTI2010'].upper()+'*\\*.agr')
     a_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                        '*'+cfg.NAMES['SWISSALTI2010'].upper()
                                        +'*.shp'))
