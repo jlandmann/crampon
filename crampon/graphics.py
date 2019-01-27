@@ -2,6 +2,8 @@ from __future__ import division
 
 from crampon.utils import entity_task, global_task
 from crampon import utils
+from crampon import workflow
+import xarray as xr
 import logging
 from matplotlib.ticker import NullFormatter
 from oggm.graphics import *
@@ -578,3 +580,72 @@ def plot_animated_swe(mb_model):
                                   fargs=(mb_model, line, time_text),
                                   interval=10, repeat_delay=1.)
     return ani
+
+def plot_topo_per_glacier(start_year=2005, end_year=None):
+    """
+    Make plot of Switzerland telling how many DEMs there are per glacier.
+
+    Parameters
+    ----------
+    start_year: int
+        Year when to start counting DEMs. Default: 2005 (start of National
+        Forest Inventory Flights).
+    end_year: int or None
+        Year when to stop counting DEMs. Default: None (take all since
+        start_year until present).
+
+    Returns
+    -------
+
+    """
+
+    gdirs = workflow.init_glacier_regions()
+    gdf = None
+
+    # project everything in WGS84
+    proj_epsg_number = 4326
+
+    for g in gdirs:
+        try:
+            shp = gpd.read_file(g.get_filepath('outlines'))
+            shp_wgs84 = shp.to_crs(epsg=proj_epsg_number)
+            dems = xr.open_dataset(g.get_filepath('homo_dem_ts'))
+            years = np.array([t.dt.year for t in dems.time])
+            if end_year:
+                years = years[np.where(start_year <= years <= end_year)]
+            else:
+                years = years[np.where(start_year <= years)]
+
+            if gdf is None:
+                gdf = shp_wgs84
+            else:
+                gdf = gdf.append(shp_wgs84)
+            gdf.loc[gdf.RGIId == g.rgi_id, 'n_dems'] = len(years)
+        except FileNotFoundError:
+            continue
+
+    fig, ax = plt.subplots()
+    ds = salem.open_xr_dataset(cfg.PATHS['hfile'])
+    ds_sub = ds.salem.subset(corners=((45.7321, 47.2603), (6.79963, 10.4279)),
+                             crs=salem.wgs84)
+    smap = ds_sub.salem.get_map()
+    _ = smap.set_topography(ds_sub.hgt)
+    smap.visualize(ax=ax)
+    points = gdf.to_crs(epsg=4326).copy()
+    points['geometry'] = points['geometry'].centroid
+    points['grid_x'], points['grid_y'] = smap.grid.transform(
+        points.geometry.x.values, points.geometry.y.values)
+    colors = matplotlib.colors.Normalize(vmin=0.0, vmax=max(points.n_dems))
+    for n_dems in range(int(max(points.n_dems))):
+        points_sel = points.loc[points.n_dems == n_dems]
+        ax.scatter(points_sel.grid_x, points_sel.grid_y,
+                   color=plt.cm.get_cmap('Reds')(colors(int(n_dems))),
+                   label=str(n_dems), s=50)
+    if end_year:
+        leg_title = 'DEMs per glacier from {} to {}'.format(start_year,
+                                                            end_year)
+    else:
+        leg_title = 'DEMs per glacier since {}'.format(start_year)
+    plt.legend(title=leg_title, loc=4, ncol=int(max(points.n_dems)),
+               handletextpad=0.3, handlelength=0.7, framealpha=0.9)
+
