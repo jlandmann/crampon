@@ -412,5 +412,23 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     glacier_grid.to_json(gdir.get_filepath('glacier_grid'))
     gdir.write_pickle(dem_source_list, 'dem_source')
 
+    # write homo dem time series
+    homo_dem_ts = xr.Dataset({'height': (['time', 'y', 'x'],
+                                     np.array(homo_dems))},
+                         coords={
+                             'x': np.linspace(dst_transform[2],
+                                              dst_transform[2] + nx *
+                                              dst_transform[0], nx),
+                             'y': np.linspace(dst_transform[5],
+                                              dst_transform[5] + ny *
+                                              dst_transform[4], ny),
+                             'time': homo_dates},
+                         attrs={'id': gdir.rgi_id, 'name': gdir.name,
+                                'res': dx})
+    homo_dem_ts = homo_dem_ts.sortby('time')
+    homo_dem_ts.to_netcdf(gdir.get_filepath('homo_dem_ts'))
+
+    _ = get_geodetic_deltav(gdir)
+
 # Important, overwrite OGGM function
 define_glacier_region = define_glacier_region_crampon
