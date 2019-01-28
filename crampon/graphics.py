@@ -628,8 +628,11 @@ def plot_topo_per_glacier(start_year=2005, end_year=None):
     ds = salem.open_xr_dataset(cfg.PATHS['hfile'])
     ds_sub = ds.salem.subset(corners=((45.7321, 47.2603), (6.79963, 10.4279)),
                              crs=salem.wgs84)
-    smap = ds_sub.salem.get_map()
+    smap = ds_sub.salem.get_map(countries=False)
     _ = smap.set_topography(ds_sub.hgt)
+    smap.set_shapefile(os.path.join(cfg.PATHS['data_dir'],'outlines',
+                                    'VEC200_LANDESGEBIET_LV03.shp'),
+                       edgecolor='k', facecolor='None')
     smap.visualize(ax=ax)
     points = gdf.to_crs(epsg=4326).copy()
     points['geometry'] = points['geometry'].centroid
