@@ -7,6 +7,7 @@ from crampon import utils
 import xarray as xr
 import datetime as dt
 import cython
+from crampon.core.preprocessing import climate
 
 
 class DailyMassBalanceModel(MassBalanceModel):
@@ -120,6 +121,8 @@ class DailyMassBalanceModel(MassBalanceModel):
             self.tgrad = nc.variables['tgrad'][:]
             self.pgrad = nc.variables['pgrad'][:]
             self.ref_hgt = nc.ref_hgt
+
+        self.meteo = climate.GlacierMeteo(self.gdir)
 
         # Public attrs
         self.temp_bias = 0.
