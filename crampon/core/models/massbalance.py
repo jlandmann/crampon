@@ -959,6 +959,66 @@ class PellicciottiModel(BraithwaiteModel):
         return icerate
 
 
+class OerlemansModel(DailyMassBalanceModel):
+    """ This class implements the melt model by Oerlemans (2001).
+
+    Attributes
+    ----------
+    """
+
+    cali_params_list = ['c0', 'c1', 'prcp_fac']
+
+    def __init__(self):
+        raise NotImplementedError
+
+    def get_daily_mb(self, heights, date=None, **kwargs):
+        """
+        Calculates the daily mass balance for given heights.
+
+        The mass balance equation stems from Oerlemans (2001):
+
+        Qm = (1 - alpha(z) * SIS(z) + c0 + c1 * T(z)
+        M = PRCP_FAC * PRCP_SOL(z) - (Qm * deltat) / (Lf * RhoW)
+
+
+        where Qm is the energy available for melt (W m-2), alpha(z) is the
+        albedo of the glacier surface, SIS(z) is the shortwave incoming solar
+        radiation, c0 an empirical factor (W m-2), c1 and empirical factor
+        (W m-2 K-1), T(z) is the air temperature at height z in (deg C),
+        PRCP_FAC is the precipitation correction factor, PRCP_SOL(z) is the
+        solid precipitation at height z in mm w.e.,
+        #Todo: Is this true? If we take daily temperatures we could also set deltat to one and then get a melt rate in m w.e. d-1!?
+        deltat the integration time
+        step (s), Lf the latent heat of fusion (J kg-1) and RhoW the density of
+        water (kg m-3).
+
+        The result of the model equation is thus a mass balance in mm w.e. d-1,
+        however, for context reasons (dynamical part of the model), the mass
+        balance is returned in m ice s-1, using the ice density as given in the
+        configuration file. ATTENTION, the mass balance given is not yet
+        weighted with the glacier geometry! For this, see method
+        `get_daily_specific_mb`.
+
+        Parameters
+        ----------
+        heights: ndarray
+            Heights at which mass balance should be calculated.
+        date: datetime.datetime
+            Date at which mass balance should be calculated.
+        **kwargs: dict-like, optional
+            Arguments passed to the pd.DatetimeIndex.get_loc() method that
+            selects the fitting melt parameters from the melt parameter
+            attributes.
+
+        Returns
+        -------
+        ndarray:
+            Glacier mass balance at the respective heights in m ice s-1.
+        """
+
+        # index of the date of MB calculation
+        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
@@ -983,8 +1043,6 @@ class PellicciottiModel(BraithwaiteModel):
         tempformelt = self.get_tempformelt(temp)
         prcpsol, _ = self.get_prcp_sol_liq(iprcp, heights, temp)
 
-        # TODO: What happens when `date` is out of range of the cali df index?
-        # THEN should it take the mean or raise an error?
         if isinstance(self.tf, pd.Series):
             try:
                 mu_ice = self.tf.iloc[
@@ -1014,17 +1072,13 @@ class PellicciottiModel(BraithwaiteModel):
         else:
             bias = self.bias
 
-        # Get snow distribution from yesterday and determine snow/ice from it;
-        # this makes more sense as temp is from 0am-0am and precip from 6am-6am
-        snowdist = np.where(self.snow[-1] > 0.)
-        mu_comb = np.zeros_like(self.snow[-1])
-        mu_comb[:] = mu_ice
-        np.put(mu_comb, snowdist, mu_snow)
 
-        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
-        mb_day = prcpsol - mu_comb * tempformelt - bias
+        qmelt = (1 - alpha) * sis + d * temp
 
-        mb_day = self.t * T + self.srf * (1 - self.albedo.get_alpha()) * G
+        # Todo: IS this true? Or is dt = 86400?
+        dt = 1
+        meltrate = (qmelt * dt) / (cfg.LATENT_HEAT_FUSION_WATER * cfg.RHO_W)
+        mb_day = prcpsol #- meltrate?
 
         self.time_elapsed = date
         snow_cond = self.update_snow(date, mb_day)
