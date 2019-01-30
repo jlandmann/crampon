@@ -771,6 +771,8 @@ class HockModel(BraithwaiteModel):
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
 
+
+class PellicciottiModel(BraithwaiteModel):
     """ This class implements the melt model by Pellicciotti et al. (2005).
 
     Attributes
@@ -779,35 +781,41 @@ class HockModel(BraithwaiteModel):
         An albedo object managing the albedo ageing.
     """
 
-    def __init__(self):
+    cali_params_list = ['tf', 'srf', 'prcp_fac']
 
-        super.__init__()
-        self.albedo = GlacierAlbedo() #TODO: implement Albedo object
+    def __init__(self, gdir, tf=None, srf=None, bias=None,
+                 prcp_fac=None, snow_init=None, filename='climate_daily',
+                 filesuffix=''):
 
-    def get_alpha(self, snow, date):
-        """
-        Calculates the albedo for the snow on the glacier.
+        super().__init__(gdir, bias=bias, prcp_fac=prcp_fac,
+                         filename=filename, filesuffix=filesuffix)
 
-        The approach could be after Brock et al. 2000 with values of
-        Pellicciotti et al. 2005 (see Gabbi et al. 2014). However, the sum of
-        maximum temperatures since the last snowfall would be needed (we only
-        have the daily mean so far).
+        self.albedo = GlacierAlbedo(self.heights) #TODO: implement Albedo object
 
+        cali_df = pd.read_csv(gdir.get_filepath('calibration'), index_col=0,
+                              parse_dates=[0])
 
-        Parameters
-        ----------
-        snow: pd.DataFrame()
-            The glacier's snow characteristics as defined in the ``snow``
-            attribute.
-        date: datetime.datetime
-            Date for which the albedo should be calculated.
+        if tf is None:
+            self.tf = cali_df['tf_pellicciotti']
+        else:
+            self.tf = tf
+        if srf is None:
+            self.srf = cali_df['srf_pellicciotti']
+        else:
+            self.srf = srf
 
-        Returns
-        -------
-        ndarray
-            An array with the albedo.
-        """
-        return NotImplementedError
+        if snow_init is None:
+            self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
+            self.snow = np.atleast_2d(np.zeros_like(self.heights))
+        else:
+            self.snow_init = np.atleast_2d(snow_init)
+            self.snow = np.atleast_2d(snow_init)
+
+        # todo: we assume the snow is fresh: is this a goofd assumption when sno cover can be handed over?
+        #self.days_since_snowfall = np.zeros_like(self.heights)
+
+        # get positive temperature sum since snowfall
+        self.tpos_since_snowfall = np.zeros_like(self.heights)
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -855,7 +863,101 @@ class HockModel(BraithwaiteModel):
         """
 
         # index of the date of MB calculation
-        ix = pd.DatetimeIndex(self.tspan_meteo).get_loc(date, **kwargs)
+        # Todo: Timeit and compare with solution where the dtindex becomes a parameter
+        ix = self.meteo.get_loc(date)
+
+        # Read timeseries
+        # Todo: what to do with the bias? We don't calculate temp this way anymore
+        #itemp = self.meteo.tmean[ix] + self.temp_bias
+        #itgrad = self.meteo.tgrad[ix]
+        #iprcp_unc = self.meteo.prcp[ix]
+        #ipgrad = self.meteo.pgrad[ix]
+        isis = self.meteo.sis[ix]
+
+        tempformelt = self.meteo.get_tmean_for_melt_at_heights(date, cfg.PARAMS['temp_melt'], heights)
+        # Todo: make precip calculation method a member of cfg.PARAMS
+        prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date, heights)
+
+        if isinstance(self.prcp_fac, pd.Series):
+            try:
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
+                                                                      **kwargs)]
+            except KeyError:
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
+            if pd.isnull(iprcp_fac):
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
+            iprcp_corr = prcpsol_unc * iprcp_fac
+        else:
+            iprcp_corr = prcpsol_unc * self.prcp_fac
+
+        if isinstance(self.tf, pd.Series):
+            try:
+                tf_now = self.tf.iloc[
+                    self.tf.index.get_loc(date, **kwargs)]
+            except KeyError:
+                tf_now = self.param_ep_func(self.tf)
+            if pd.isnull(tf_now):
+                tf_now = self.param_ep_func(self.tf)
+        else:
+            tf_now = self.tf
+
+        if isinstance(self.srf, pd.Series):
+            try:
+                srf_now = self.srf.iloc[
+                    self.srf.index.get_loc(date, **kwargs)]
+            except KeyError:
+                srf_now = self.param_ep_func(self.srf)
+            if pd.isnull(srf_now):
+               srf_now = self.param_ep_func(self.srf)
+        else:
+            srf_now = self.srf
+
+        if isinstance(self.bias, pd.Series):
+            bias = self.bias.iloc[
+                self.bias.index.get_loc(date, **kwargs)]
+            # TODO: Think of clever solution when no bias (=0)?
+        else:
+            bias = self.bias
+
+        # todo: geting efficiently pos t sum between doesn't work with arrays???
+        self.tpos_since_snowfall[iprcp_corr > 0.] = 0
+        self.tpos_since_snowfall[iprcp_corr <= 0.] += \
+            climate.get_temperature_at_heights(self.meteo.tmax[ix],
+                                               self.meteo.tgrad[ix],
+                                               self.meteo.ref_hgt,
+                                               self.heights)[iprcp_corr <= 0.]
+        albedo = self.albedo.update_brock(t_acc=self.tpos_since_snowfall)
+
+
+        # todo: where to put the bias here?
+        # Pellicciotti(2005): melt really only occurs when temp is above Tt
+        Tt = 1.  # Todo: Is this true? I think it should be -1! Ask Francesca if it's a typo in her paper!
+        melt_day = tf_now * tempformelt + srf_now * (1 - albedo) * isis
+        melt_day[tempformelt <= Tt] = 0.
+
+        mb_day = iprcp_corr - melt_day
+
+        self.time_elapsed = date
+        #snow_cond = self.update_snow(date, mb_day)
+
+        #self.days_since_snowfall[mb_day > 0.] = 0.
+        #self.days_since_snowfall[mb_day <= 0.] += 1.
+
+        ## cheap removal of snow before density model kicks in
+        #try:
+        #    # check MB pos
+        #    inds = np.where((self.snow[-1] - self.snow[-366]) >= 0.)
+        #    self.snow[-1][inds] = np.clip(self.snow[-1][inds] -
+        #                                  np.clip(self.snow[-365][inds] -
+        #                                          self.snow[-366][inds], 0.,
+        #                                          None), 0., None)
+        #except IndexError:  # when date not yet exists
+        #    pass
+
+        # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
+        icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
+        return icerate
+
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
