@@ -18,7 +18,7 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
-                 param_ep_func=np.nanmean):
+                 heights_widths=(None, None), param_ep_func=np.nanmean):
 
         """
         Model to calculate the daily mass balance of a glacier.
@@ -31,6 +31,9 @@ class DailyMassBalanceModel(MassBalanceModel):
         prcp_fac:
         filename:
         filesuffix:
+        # todo: wouldn't it rather make sense to make a gdir from beginning on that has only fewer heights? Conflict with stability of flow approach?!!
+        heights_widths: tuple
+            Heights and widths if not those from the gdir shall be taken
         param_ep_func: numpy arithmetic function
             Method to use for extrapolation when there are no calibrated
             parameters available for the time step where the mass balance
@@ -74,7 +77,14 @@ class DailyMassBalanceModel(MassBalanceModel):
         # temporary solution: Later this should be more flexible: Either the
         # update should happen in the mass balance method directly or the
         # heights/widths should be multitemporal
-        self.heights, self.widths = gdir.get_inversion_flowline_hw()
+        if (heights_widths[0] is not None) and (heights_widths[1] is not None):
+            self.heights, self.widths = heights_widths
+        elif (heights_widths[0] is None) and (heights_widths[1] is None):
+            self.heights, self.widths = gdir.get_inversion_flowline_hw()
+        else:
+            raise ValueError('You must provide either both heights and '
+                             'widths or nothing (take heights/widths from '
+                             'gdir).')
 
         # overwrite/add some OGGM stuff
         self.m = None
@@ -376,11 +386,14 @@ class BraithwaiteModel(DailyMassBalanceModel):
     cali_params_list = ['mu_ice', 'mu_snow', 'prcp_fac']
 
     def __init__(self, gdir, mu_ice=None, mu_snow=None, bias=None,
-                 prcp_fac=None, snow_init=None, filename='climate_daily',
+                 prcp_fac=None, snow_init=None, snowcover= None,
+                 heights_widths=(None, None),
+                 filename='climate_daily',
                  filesuffix=''):
 
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
-                         filename=filename, filesuffix=filesuffix)
+                         filename=filename, heights_widths=heights_widths,
+                         filesuffix=filesuffix)
 
         if mu_ice is None:
             cali_df = pd.read_csv(gdir.get_filepath('calibration'),
