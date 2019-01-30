@@ -2889,6 +2889,160 @@ class CurrentYearMassBalance(MassBalance):
         super().__init__(gdir, mb_model, dataset=dataset)
 
 
+def run_snowfirnmodel_with_options(gdir, run_start, run_end,
+                                   mb=None,
+                                   reclassify_heights=None,
+                                   snow_densify='anderson',
+                                   snow_densify_kwargs=None,
+                                   firn_densify='huss',
+                                   firn_densify_kwargs= None,
+                                   temp_update='huss',
+                                   temp_update_kwargs=None,
+                                   merge_layers=0.05):
+    """
+    Run the SnowFirnCover using the given options.
+
+    Parameters
+    ----------
+    gdir. crampon.GlacierDirectory
+        The GlacierDirectory to caculate the densification for.
+    run_start: datetime.datetime
+        Start date for model run.
+    run_end: datetime.datetime
+        End date for model run.
+    mb: xarray.Dataset
+        # Todo: make this more felxible: one should also be able to let the MB calculate online
+        The mass balance time series. Default: None (calculate the MB
+        durign the model run).
+    reclassify_heights: float or None
+        Whether to reclassify the glacier flowline heights. This can
+        significantly decrease the time to run the model. If a number is
+        given, this number determines the elevation bin height used for
+        reclassification. Default: None (no reclassification, i.e. the
+        concatenated flowline surface heights are used for modeling).
+    snow_densify: str
+        Option which snow densification model to calibrate. Possible:
+        'anderson' (uses the Anderson 1976 densification equation).
+    snow_densify_kwargs: dict
+        Keyword accepted by the chosen snow densification method.
+    firn_densify: str
+        Option which firn densification model to calibrate. Possible:
+        'huss' (uses the Huss 2013/Reeh 2008 densification equation) and
+        'barnola' (uses Barnola 1990).
+    firn_densify_kwargs: dict
+        Keywords accepted by the chosen firn densification method.
+    temp_update: str
+        Option which temperature update model to use. Possible: 'exact'
+        (models the exact daily temperature penetration thourgh the
+        snowpack - super slow!), 'huss' (uses the Huss 2013 temperature
+        update), 'glogem' (Huss and Hock 2015) and 'carslaw' (uses Carslaw
+        1959 - very slow!).
+    temp_update_kwargs: dict
+        Keywords accepted by the chosen temperature update method.
+    merge_layers: float
+        Minimum layer height (m) to which incoming layers shall be merged.
+
+    Returns
+    -------
+
+    """
+
+
+    run_time = pd.date_range(run_start, run_end)
+    meteo = climate.GlacierMeteo(gdir)
+    tmonmean = meteo.get_mean_month_temperature()
+
+    if reclassify_heights:
+        heights, widths = utils.reclassify_heights_widths(gdir,
+                                                          elevation_bin=reclassify_heights)
+        # just to make the plots look nicer
+        heights = heights[::-1]
+        widths = widths[::-1]
+    else:
+        heights, widths = gdir.get_inversion_flowline_hw()
+
+    if mb is None:
+        day_model = BraithwaiteModel(gdir, bias=0.,
+                                     snow_init=np.zeros_like(heights))
+
+    init_swe = np.zeros_like(heights)
+    init_swe.fill(np.nan)
+    init_temp = init_swe
+    cover = SnowFirnCover(heights, swe=init_swe, rho=None,
+                          origin=run_time[0], temperatures=init_temp,
+                          refreezing=False)
+
+    for date in run_time:
+
+        # Get the mass balance and convert to m w.e. per day
+        if mb is None:
+            tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * \
+                  cfg.RHO / cfg.RHO_W
+        else:
+            tmp = mb.sel(time=date).MB.values
+
+        swe = tmp.copy()
+        rho = np.ones_like(tmp) * get_rho_fresh_snow_anderson(
+            meteo.meteo.sel(time=date).temp.values + cfg.ZERO_DEG_KELVIN)
+        temperature = swe.copy()
+        if temp_update.lower() == 'exact':
+            # Todo: place real temperature here
+            temperature[~pd.isnull(swe)] = \
+                meteo.get_tmean_at_heights(date, heights)[~pd.isnull(swe)]
+        temperature[~pd.isnull(swe)] = cfg.ZERO_DEG_KELVIN
+
+        cover.ingest_balance(swe, rho, date, temperature)
+
+        # SNOW DENSIFICATION
+        if snow_densify.lower() == 'anderson':
+            cover.densify_snow_anderson(date, **snow_densify_kwargs)
+
+        # TEMPERATURE UPDATE
+        if temp_update.lower() == 'exact':
+            # REGULAR TEMPERATURE UPDATE (SUPER SLOW)
+            cover.update_temperature(date, **temp_update_kwargs)
+            cover.apply_refreezing()
+        elif temp_update.lower() == 'huss':
+            if date.day == 30 and date.month == 4:
+                cover.update_temperature_huss(**temp_update_kwargs)
+                cover.apply_refreezing(exhaust=True)
+        elif temp_update.lower() == 'glogem':
+            raise NotImplementedError
+            if (date.day % 3 == 0.) and date.month in [11, 12, 1, 2, 3]:
+                meantemp = tmonmean.sel(time='{}-{}'.format(date.year,
+                                                              date.month),
+                                          method='nearest').temp.values
+                cover.update_temperature_glogem(meantemp, 0.01, **temp_update_kwargs)
+                cover.apply_refreezing()
+        elif temp_update.lower() == 'carslaw':
+            raise NotImplementedError
+            if date.day == 30 and date.month == 4:
+                duration = 120
+                mean_winter_temp = meteo.sel(time=slice(date-dt.timedelta(days=120), date)).temp.mean()
+                cover.update_temperature_carslaw(mean_winter_temp, duration, **temp_update_kwargs)
+                # Todo: this should also be handed over
+                cover.apply_refreezing(exhaust=True)
+        else:
+            raise ValueError('The chosen temperature update method {} '
+                             'does not exist.'.format(temp_update))
+
+        # FIRN DENSIFICATION
+        if firn_densify.lower() == 'huss':
+            if date.month == 10 and date.day == 1:
+                #print('Densifying Firn')
+                cover.densify_firn_huss(date, **firn_densify_kwargs)
+                if date.year % 10 == 0:
+                    print(date)
+        elif firn_densify.lower() == 'barnola':
+            if date.month == 10 and date.day == 1:
+                cover.densify_firn_barnola(date, **firn_densify_kwargs)
+        else:
+            raise ValueError('The chosen firn densification method {} '
+                             'does not exist.'.format(temp_update))
+
+    return cover
+
+
 if __name__ == '__main__':
     import geopandas as gpd
     from crampon import workflow
