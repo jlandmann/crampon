@@ -106,7 +106,8 @@ class DailyMassBalanceModel(MassBalanceModel):
             time = netCDF4.num2date(self.nc_time[:], self.nc_time.units)
 
             # identify the time span
-            self.span_meteo = time
+            self.tspan_meteo = time
+            self.tspan_meteo_dtindex = pd.DatetimeIndex(time)
 
             # Read timeseries
             self.temp = nc.variables['temp'][:]
@@ -209,7 +210,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         """
 
         # index of the date of MB calculation
-        ix = pd.DatetimeIndex(self.span_meteo).get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
@@ -450,6 +451,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
             # identify the time span
             self.tspan_meteo = time
+            self.tspan_meteo_dtindex = pd.DatetimeIndex(time)
             # self.years = np.unique([y.year for y in self.nc_time])
 
             # Read timeseries
@@ -509,7 +511,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
         """
 
         # index of the date of MB calculation
-        ix = pd.DatetimeIndex(self.tspan_meteo).get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
