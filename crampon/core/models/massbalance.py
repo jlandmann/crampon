@@ -6,6 +6,7 @@ from crampon.utils import SuperclassMeta, lazy_property, closest_date
 from crampon import utils
 import xarray as xr
 import datetime as dt
+from enum import IntEnum, unique
 import cython
 from crampon.core.preprocessing import climate
 
@@ -1099,6 +1100,15 @@ class OerlemansModel(DailyMassBalanceModel):
         return icerate
 
 
+@unique
+class CoverTypes(IntEnum):
+    """Available types of a cover."""
+    snow = 0
+    firn = 1
+    poresclosed = 2
+    ice = 3
+
+
 class SnowFirnCover(object):
     """ Implements a an interface to a snow and/or firn cover.
 
@@ -1326,13 +1336,16 @@ class SnowFirnCover(object):
         -------
 
         """
-        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = 'snow'
-        self._status[(cfg.PARAMS['snow_firn_threshold'] <= self.rho) & (
-                self.rho < cfg.PARAMS['pore_closeoff'])] = 'firn'
-        self._status[(cfg.PARAMS[
-                          'pore_closeoff'] <= self.rho) & (
-                                 self.rho < cfg.RHO)] = 'pore_closeoff'
-        self._status[self.rho >= cfg.RHO] = 'ice'
+
+        self._status = np.empty_like(self.swe)  # ensure size
+        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = CoverTypes['snow'].value
+        self._status[(cfg.PARAMS['snow_firn_threshold'] <= self.rho) &
+                     (self.rho < cfg.PARAMS['pore_closeoff'])] = \
+            CoverTypes['firn'].value
+        self._status[
+            (cfg.PARAMS['pore_closeoff'] <= self.rho) &
+            (self.rho < cfg.RHO)] = CoverTypes['poresclosed'].value
+        self._status[self.rho >= cfg.RHO] = CoverTypes['ice'].value
 
         return self._status
 
@@ -2356,7 +2369,8 @@ class SnowFirnCover(object):
         ovb_mass = self.get_overburden_mass()
 
         rho_new = rho_old.copy()
-        insert_ix = (self.swe > 0.) & (self.status == 'snow') & \
+        insert_ix = (self.swe > 0.) & \
+                    (self.status == CoverTypes['snow'].value) & \
                     (~np.isnan(self.swe))
         rho_new[insert_ix] = (rho_old + \
                        (
