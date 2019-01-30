@@ -172,6 +172,7 @@ def initialize(file=None):
     oggm_static_paths()
 
     oggmcfg.PATHS['dem_file'] = cp['dem_file']
+    oggmcfg.PATHS['data_dir'] = cp['data_dir']
     oggmcfg.PATHS['hfile'] = cp['hfile']
     oggmcfg.PATHS['climate_file'] = cp['climate_file']
     oggmcfg.PATHS['climate_dir'] = cp['climate_dir']
@@ -246,7 +247,7 @@ def initialize(file=None):
     # Delete non-floats
     ltr = ['working_dir', 'dem_file', 'climate_file', 'climate_dir',
            'wgms_rgi_links', 'glathida_rgi_links', 'firncore_dir', 'lfi_dir',
-           'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method',
+           'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method', 'data_dir',
            'mp_processes', 'use_multiprocessing', 'use_divides',
            'temp_use_local_gradient', 'prcp_use_local_gradient',
            'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
