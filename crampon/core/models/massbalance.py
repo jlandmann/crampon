@@ -14,6 +14,8 @@ class DailyMassBalanceModel(MassBalanceModel):
     Extension of OGGM's MassBalanceModel, able to calculate daily mass balance.
     """
 
+    cali_params_list = ['mu_star', 'prcp_fac']
+
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
                  param_ep_func=np.nanmean):
@@ -370,6 +372,8 @@ class DailyMassBalanceModel(MassBalanceModel):
 
 
 class BraithwaiteModel(DailyMassBalanceModel):
+
+    cali_params_list = ['mu_ice', 'mu_snow', 'prcp_fac']
 
     def __init__(self, gdir, mu_ice=None, mu_snow=None, bias=None,
                  prcp_fac=None, snow_init=None, filename='climate_daily',
