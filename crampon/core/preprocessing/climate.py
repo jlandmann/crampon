@@ -362,7 +362,7 @@ def climate_file_from_scratch(write_to=None, hfile=None):
         all_file = os.path.join(write_to, '{}_{}_all.nc'.format(var, mode))
         cirrus = utils.CirrusClient()
         r, _ = cirrus.sync_files('/data/griddata', write_to
-                                 , globpattern='*{}/daily/{}*/netcdf/*'
+                                 , globpattern='*{}/daily/{}*[!swissgrid]/netcdf/*'
                                  .format(mode, var))
 
         # if at least one file was retrieved, assemble everything new
