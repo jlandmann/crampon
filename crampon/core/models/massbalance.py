@@ -1522,9 +1522,10 @@ class SnowFirnCover(object):
             new_temperature = bigger_array.copy()
             new_liq_content = bigger_array.copy()
             new_last_update = bigger_array.copy().astype(object)
-            new_status = bigger_array.copy().astype(object)
+            new_age_days = bigger_array.copy()
+            new_status = bigger_array.copy()
 
-            #status first, because it depends on the others
+            # status first, because it depends on the others
             new_status[:shape_0, :shape_1] = self.status
             self._status = new_status
             new_swe[:shape_0, :shape_1] = self.swe
@@ -1576,6 +1577,7 @@ class SnowFirnCover(object):
         self._status = self._status[:, keep_indices]
         self._liq_content = self.liq_content[:, keep_indices]
         self._last_update = self.last_update[:, keep_indices]
+        self._age_days = self.age_days[:, keep_indices]
 
     def remove_layer(self, ix=None):
         """
@@ -1599,6 +1601,7 @@ class SnowFirnCover(object):
         self.liq_content[remove_ix] = np.nan
         self.status[remove_ix] = 'nan'
         self.last_update[remove_ix] = np.nan
+        self.age_days[remove_ix] = np.nan
 
         self.remove_unnecessary_array_space()
 
@@ -1610,6 +1613,8 @@ class SnowFirnCover(object):
             self.temperature = utils.justify(self.temperature,
                                              invalid_val=np.nan,
                                              side='left')
+            self.age_days = utils.justify(self.age_days, invalid_val=np.nan,
+                                          side='left')
             # invalid_val=None ensures a good handlung of dt objects etc.
             self._liq_content = utils.justify(self.liq_content,
                                               invalid_val=None,
@@ -1656,6 +1661,7 @@ class SnowFirnCover(object):
         self.status[remove] = ''
         self.origin[remove] = np.nan
         self.last_update[remove] = np.nan
+        self.age_days[remove] = np.nan
 
         mask = np.ma.array(old_swe, mask=np.invert(
             (cum_swe <= swe) & (cum_swe != 0) & ~np.isnan(cum_swe)))
@@ -1698,6 +1704,8 @@ class SnowFirnCover(object):
         -------
         None
         """
+        # Todo: This is a stupid thing: where should this go? should we make "add_layer" and "melt" private methods so that one *has* to use ingest_swe_balance (ensure that age_days is increased by one each time!)
+        self.age_days += 1.
 
         if (swe_balance > 0.).any():
             swe = np.clip(swe_balance, 0, None)
