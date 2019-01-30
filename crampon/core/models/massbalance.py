@@ -2535,9 +2535,9 @@ def get_rho_fresh_snow_anderson(tair, rho_min=None, df=1.7, ef=15.):
         rho_min = cfg.PARAMS['rho_min_snow']
 
     # we do not use eq.17 from Essery(2013), bcz we integrate o. 1 day already
-    curve = np.clip(df * (tair - (
+    curve = np.array(np.clip(df * (tair - (
                 cfg.PARAMS['temp_melt'] + cfg.ZERO_DEG_KELVIN) + ef) ** 1.5,
-                    0., None)
+                    0., None))
     # NaN happens at low temperatures due to square root
     curve[np.isnan(curve)] = 0.
     rho_fresh = rho_min + curve
