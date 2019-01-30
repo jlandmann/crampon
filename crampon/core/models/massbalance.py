@@ -1145,7 +1145,8 @@ class SnowFirnCover(object):
     """
 
     def __init__(self, height_nodes, swe, rho, origin, temperatures=None,
-                 pore_close=None, firn_ice_transition=None, refreezing=True):
+                 liq_content=None, last_update=None, pore_close=None,
+                 firn_ice_transition=None, refreezing=True):
         """
         Instantiate a snow and/or firn cover and its necessary methods.
 
@@ -1156,16 +1157,21 @@ class SnowFirnCover(object):
         ----------
         height_nodes: array-like
             The heights at which the snow/firn cover should be implemented.
-        swe: np.array, same shape as height_nodes
+        swe: np.array, shape of first dimension same as height_nodes
             Snow water equivalent of an initial layer (m w.e.).
-        rho: np.array, same shape of height_nodes or None
+        rho: np.array, same shape swe or None
             Density of an initial layer (kg m-3). If None, the inital density
             is set to NaN. # Todo: make condition for rho=None: if swe >0, then determine initial density from temperature
-        origin: datetime.datetime or pd.Timestamp
+        origin: datetime.datetime or np.array with same shape as swe
             Origin date of the initial layer.
-        temperatures: np.array, same shape of height_nodes, optional
+        temperatures: np.array, same shape as swe, optional
             Temperatures of initial layer (K). If not given, they will be set
             to NaN.
+        liq_content: np.array, same shape as swe, optional
+            Liquid content of given initial layers (m w.e.). If not given, it
+            will be set to zero.
+        last_update: np.array, same shape as swe, optional
+            Last update of the initial layers.
         pore_close: float, optional
             Pore close-off density (kg m-3). If not given, CRAMPON tries to get
             in from the parameter file.
@@ -1183,10 +1189,24 @@ class SnowFirnCover(object):
         self.init_swe = swe
         self.init_rho = np.full_like(swe, np.nan) if rho is None else rho
         self.init_sh = self.init_swe * (cfg.RHO_W / self.init_rho)
-        self.init_origin = [origin] * self.n_heights
-        init_liq_content = np.zeros_like(height_nodes)
-        init_liq_content.fill(np.nan)
-        self.init_liq_content = init_liq_content
+        if isinstance(origin, dt.datetime):
+            self.init_origin = [origin] * self.n_heights
+        else:
+            self.init_origin = origin
+        if liq_content is None:
+            init_liq_content = np.zeros_like(swe)
+            init_liq_content.fill(np.nan)
+            self.init_liq_content = init_liq_content
+        else:
+            self.init_liq_content = liq_content
+
+        if last_update is None:
+            self.init_last_update = self.init_origin
+        else:
+            self.init_last_update = last_update
+
+        # todo: we assume the snow is fresh - should we introduce a kwarg to be able to start at any state?
+        self.init_age_days = np.zeros_like(self.init_swe)
 
         # parameters
         self.refreezing = refreezing
@@ -1201,33 +1221,65 @@ class SnowFirnCover(object):
             self.firn_ice_transition = firn_ice_transition
 
         # Init homog. grid for temperature modeling: zero at top, + downwards
-        self._tgrid_nodes = [np.array([0., self.init_sh[i]]) for i in
-                             range(len(self.init_sh))]
+        #self._tgrid_nodes = [np.array([0., self.init_sh[i]]) for i in
+        #                     range(len(self.init_sh))]
         if temperatures is not None:
             self.init_temperature = temperatures
         else:
             # initiate with NaN
-            self.init_temperature[self.init_swe > 0.] = \
-                (np.ones(height_nodes) * np.nan)[self.init_swe > 0.]
+            self.init_temperature = \
+                (np.ones_like(self.init_swe) * np.nan)
 
         init_array = np.zeros(
             (self.n_heights, np.atleast_2d(self.init_swe).shape[1] + 1))
         init_array.fill(np.nan)
 
         # we start putting the initial layer at index 0 (top of array!)
-        self._swe = np.hstack((np.atleast_2d(self.init_swe).T, init_array))
-        self._rho = np.hstack((np.atleast_2d(self.init_rho).T, init_array))
-        self._origin = np.hstack((np.atleast_2d(
-            np.array([origin for i in range(self.n_heights)])).T, init_array))
-        self._last_update = self._origin.copy()
-        self._temperature = np.hstack((
-            np.atleast_2d(self.init_temperature).T, init_array))
-        self._liq_content = np.hstack(
-            (np.ones_like(np.atleast_2d(self.init_liq_content).T), init_array))
-        strrow = np.atleast_2d(swe).T.astype(str)
-        strrow.fill('')
-        self._status = np.hstack((strrow, init_array))
-
+        try:
+            self._swe = np.hstack((np.atleast_2d(self.init_swe).T, init_array))
+            self._rho = np.hstack((np.atleast_2d(self.init_rho).T, init_array))
+            if isinstance(origin, dt.datetime):
+                self._origin = np.hstack((np.atleast_2d(
+                    np.array([origin for i in range(self.n_heights)])).T,
+                                          init_array))
+            else:
+                self._origin = np.hstack(
+                    (np.atleast_2d(self.init_origin).T, init_array))
+            self._last_update = np.hstack((
+                np.atleast_2d(self.init_last_update).T, init_array))
+            self._temperature = np.hstack((
+                np.atleast_2d(self.init_temperature).T, init_array))
+            self._liq_content = np.hstack(
+                (np.ones_like(np.atleast_2d(self.init_liq_content).T),
+                 init_array))
+            self._age_days = np.hstack((np.atleast_2d(self.init_age_days).T,
+                                        init_array))
+            init_status = np.atleast_2d(swe).T
+            self._status = np.hstack((np.atleast_2d(init_status), init_array))
+        except ValueError:  # wrong dimensions: try without transpose
+            self._swe = np.hstack((np.atleast_2d(self.init_swe), init_array))
+            self._rho = np.hstack((np.atleast_2d(self.init_rho), init_array))
+            if isinstance(origin, dt.datetime):
+                self._origin = np.hstack((np.atleast_2d(
+                    np.array([origin for i in range(self.n_heights)])),
+                                          init_array))
+            else:
+                self._origin = np.hstack(
+                    (np.atleast_2d(self.init_origin), init_array))
+            self._last_update = np.hstack(
+                (np.atleast_2d(self.init_last_update),
+                 init_array))
+            self._temperature = np.hstack((
+                np.atleast_2d(self.init_temperature), init_array))
+            self._liq_content = np.hstack(
+                (np.atleast_2d(self.init_liq_content),
+                 init_array))
+            self._age_days = np.hstack((np.atleast_2d(self.init_age_days),
+                                        init_array))
+            #strrow = np.atleast_2d(swe).astype(str)
+            init_status = np.atleast_2d(swe)
+            #strrow.fill('')
+            self._status = np.hstack((np.atleast_2d(init_status), init_array))
         # for temperature models that don't update layer by layer
         # must be initialized by hand with the desired form
         self._regridded_temperature = None
@@ -1258,9 +1310,7 @@ class SnowFirnCover(object):
 
     @temperature.setter
     def temperature(self, value):
-        # if no or positive temperature is given, assume zero degrees Celsius
         self._temperature = value
-        #self._temperature[~pd.isnull(value) & (value <= 273.16)] = value[~pd.isnull(value) & (value <= 273.16)]
 
     @property
     def regridded_temperature(self):
@@ -1288,9 +1338,25 @@ class SnowFirnCover(object):
     def origin(self):
         return self._origin
 
+    @origin.setter
+    def origin(self, value):
+        self._origin = value
+
     @property
     def last_update(self):
         return self._last_update
+
+    @last_update.setter
+    def last_update(self, value):
+        self._last_update = value
+
+    @property
+    def age_days(self):
+        return self._age_days
+
+    @age_days.setter
+    def age_days(self, value):
+        self._age_days = value
 
     @property
     def cold_content(self):
