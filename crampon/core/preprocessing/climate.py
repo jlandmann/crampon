@@ -708,7 +708,7 @@ def get_temperature_at_heights(temp, grad, ref_hgt, heights):
     np.array
         The temperature at the input heights.
     """
-    if isinstance(temp, (int, float)):
+    if isinstance(temp, (int, float, np.float32)):
         return np.ones_like(heights) * temp + grad * (heights - ref_hgt)
     else:
         try:
@@ -739,7 +739,7 @@ def get_precipitation_at_heights(prcp, pgrad, ref_hgt, heights):
     np.array
         The precipitation at the input heights.
     """
-    if isinstance(prcp, (int, float)):
+    if isinstance(prcp, (int, float, np.float32)):
         return np.ones_like(heights) * prcp + prcp * pgrad * (heights -
                                                               ref_hgt)
     else:
