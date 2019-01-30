@@ -2592,18 +2592,32 @@ def get_snow_thermal_diffusivity(rho, temperature):
     return alpha
 
 
-def get_rho_dv():
+def get_rho_dv(v_f1, v_f2, rho_f1, rho_f2, delta_v):
     """
-    An out wrapper around mass balance and firn model that can calculate the
-    density of volume change.
+    Calculate the density of volume change à la Farinotti.
+
+    Parameters
+    ----------
+    v_f1: float
+        Firn/snow volume at time 1 (m3).
+    v_f2: float
+        Firn/snow volume at time 2 (m3).
+    rho_f1: float
+        Firn/snow density of the volume at time 1 (kg m-3).
+    rho_f2: float
+        Firn/snow density of the volume at time 2 (kg m-3).
+    delta_v: float
+        Volume change of snow, firn and ice (!) between time 1 and time 2 (m3).
 
     Returns
     -------
-
+    rho_dv: float
+        Density of the volume change between time 1 and time 2 (kg m-3).
     """
     # get the volume for each point on the flowline.
-
-    raise NotImplementedError
+    rho_dv = (v_f2 - v_f1 + delta_v) * (cfg.RHO - rho_f2) / delta_v + v_f1 * (
+                rho_f1 - rho_f2) / delta_v + rho_f2
+    return rho_dv
 
 
 class GlacierAlbedo(object, metaclass=SuperclassMeta):
