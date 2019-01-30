@@ -1599,7 +1599,7 @@ class SnowFirnCover(object):
         self.origin[remove_ix] = np.nan
         self.temperature[remove_ix] = np.nan
         self.liq_content[remove_ix] = np.nan
-        self.status[remove_ix] = 'nan'
+        self.status[remove_ix] = np.nan
         self.last_update[remove_ix] = np.nan
         self.age_days[remove_ix] = np.nan
 
@@ -1658,7 +1658,7 @@ class SnowFirnCover(object):
         self.rho[remove] = np.nan
         self.temperature[remove] = np.nan
         self.liq_content[remove] = np.nan
-        self.status[remove] = ''
+        self.status[remove] = np.nan
         self.origin[remove] = np.nan
         self.last_update[remove] = np.nan
         self.age_days[remove] = np.nan
