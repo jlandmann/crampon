@@ -5,9 +5,8 @@ from __future__ import division
 import os
 from glob import glob
 import crampon.cfg as cfg
-from crampon.core.models.massbalance import DailyMassBalanceModel
 from crampon import utils
-from crampon.utils import GlacierDirectory
+from crampon.utils import lazy_property
 import itertools
 import scipy.optimize as optimize
 import matplotlib.pyplot as plt
@@ -413,6 +412,281 @@ def climate_file_from_scratch(write_to=None, hfile=None):
 
 # IMPORTANT: overwrite OGGM functions with same name:
 process_custom_climate_data = process_custom_climate_data_crampon
+
+
+class GlacierMeteo(object):
+    """
+    Interface to the meteorological data belonging to a glacier geometry.
+    """
+
+    def __init__(self, gdir):
+        """
+        Instantiate the GlacierMeteo object.
+
+        It is ~15x faster to get all variables as arrays and then retrieve the
+        index location of the desired date every time than getting is directly
+        from the xarray object.
+
+        Parameters
+        ----------
+        gdir: :py:class:`crampon.GlacierDirectory`
+            The GlacierDirectory object for which the GlacierMeteo object
+            shall be set up.
+        """
+        self.gdir = gdir
+        self._heights = self.gdir.get_inversion_flowline_hw()[0]
+        self.meteo = xr.open_dataset(self.gdir.get_filepath('climate_daily'))
+        self.index = self.meteo.time.to_index()
+        self.tmean = self.meteo.temp.values
+        self.tmin = self.meteo.tmin.values
+        self.tmax = self.meteo.tmax.values
+        self.prcp = self.meteo.prcp.values
+        self.sis = self.meteo.sis.values
+        self.pgrad = self.meteo.pgrad.values
+        self.tgrad = self.meteo.tgrad.values
+        self.ref_hgt = self.meteo.ref_hgt
+        self._days_since_solid_precipitation = None
+
+    @property
+    def heights(self):
+        return self._heights
+
+    @lazy_property
+    def days_since_solid_precipitation(self, heights, min_amount=0.002,
+                                      method=None, **kwargs):
+        """
+        Lazy-evaluated number of days since there was solid precipitation.
+
+
+        Parameters
+        ----------
+        date: datetime.datetime
+            Date for which to retrieve the days since last snowfall, including
+            the date itself.
+        heights: np.array
+            Heights where the days since last snowfall shall be determined.
+        min_amount: float
+            Minimum amount of solid precipitation (m w.e.) used as threshold
+            for a solid precipitation event. Default: 0.002 m.w.e. (corresponds
+            to roughly 2 cm fresh snow height, a threshold used in Oerlemans
+            1998 to characterize a snowfall event. Probably this value should
+            be adjusted according to the error of the precipitation input).
+        method: str
+            Method to use for determination of solid precipitation. Allowed:
+            "linear" and "magnusson". Default: None (from configuration).
+        **kwargs: dict
+            Keywords accepted be the chosen method to determine solid
+            precipitation.
+
+        Returns
+        -------
+        last_solid_day: float
+            Days since last day with solid precipitation.
+        """
+        raise NotImplementedError
+        dssp = np.ones((len(heights), len(self.tmean)))
+        for i in range(len(self.tmean)):
+            precip_s, _ = self.get_precipitation_liquid_solid(date, method=method,
+                                                              **kwargs)
+            where_precip_s = np.where(precip_s >= min_amount)
+            dssp[i, where_precip_s] = 0
+
+    def get_loc(self, date):
+        """
+        Get index location of a date.
+
+        Parameters
+        ----------
+        date: datetime.datetime
+            A date in the index
+
+        Returns
+        -------
+        The location of the date in the index as integer.
+        """
+        return self.index.get_loc(date)
+
+    def get_tmean_at_heights(self, date, heights=None):
+
+        if heights is None:
+            heights = self.heights
+
+        date_index = self.get_loc(date)
+        temp = self.tmean[date_index]
+        tgrad = self.tgrad[date_index]
+        temp_at_hgts = get_temperature_at_heights(temp, tgrad, self.ref_hgt,
+                                                  heights)
+
+        return temp_at_hgts
+
+    def get_tmean_for_melt_at_heights(self, date, t_melt=None, heights=None):
+        """
+        Calculate the temperature for melt.
+
+        By default, the inversion fowline heights from the GlacierDirectory
+        are used, but heighst can also be supplied as keyword.
+
+        Parameters
+        ----------
+        date: datetime.datetime
+            Date for which the temperatures for melt shall be calculated.
+        t_melt: float
+            Temperature threshold when melt occurs (deg C).
+        heights: np.array
+            Heights at which to evaluate the temperature for melt. Default:
+            None (take the heights of the GlacierDirectory inversion flowline).
+
+        Returns
+        -------
+        np.array
+            Array with temperatures above melt threshold, clipped to zero.
+        """
+
+        temp_at_hgts = self.get_tmean_at_heights(date, heights)
+        above_melt = temp_at_hgts - t_melt
+        return np.clip(above_melt, 0, None)
+
+    def get_positive_tmax_sum_between(self, date1, date2, heights):
+        """
+        Calculate accumulated positive maximum temperatures since a given date.
+
+        Used particularly for albedo ageing after Brock (2000).
+
+        Parameters
+        ----------
+        date1: datetime.datetime
+            Date since when the positive temperature sum shall be calculated.
+        date2: datetime.datetime
+            Date until when the positive temperature sum shall be calculated.
+        heights: np.array
+            Heights at which to get the positive maximum temperature sum.
+
+        Returns
+        -------
+        pos_tsum: float
+            Sum of positive maximum temperatures in the interval between date1
+            and date2.
+        """
+
+        interval = self.meteo.sel(time=slice(date1, date2))
+        interval_at_heights = get_temperature_at_heights(
+            interval.tmax.values.T,
+            interval.tgrad.values.T,
+            self.ref_hgt,
+            heights)
+        pos_t = np.clip(interval_at_heights, 0, None)
+        pos_tsum = np.nansum(pos_t, axis=0)
+
+        return pos_tsum
+
+    def get_mean_annual_temperature_at_heights(self, heights):
+        """
+        Get mean annual temperature at heights.
+
+        The function uses a given temperature at a reference height and a
+        linear temperature gradient approach.
+
+        Parameters
+        ----------
+        heights: float, array-like xr.DataArray or xr.Dataset
+            Heights where to get the annual mean temperature.
+
+        Returns
+        -------
+        t_at_heights: same as input
+            The temperature distributed to the given heights.
+        """
+
+        atemp = self.meteo.temp.resample(time='AS').mean(dim='time')
+        agrad = self.meteo.tgrad.resample(time='AS').mean(dim='time')
+        t_at_heights = get_temperature_at_heights(atemp, agrad, self.ref_hgt,
+                                                  heights)
+        return t_at_heights
+
+    def get_mean_winter_temperature(self):
+        """
+        Calculate the mean temperature of the "winter" months.
+
+        Winter months are defined as # Todo: define winter months
+        This method should be used to model temperature penetration into the
+        snow/firn pack after Carslaw (1959).
+
+        Returns
+        -------
+
+        """
+
+        raise NotImplementedError
+
+    def get_mean_month_temperature(self):
+        """
+        Calculate the mean monthly temperature.
+
+        Returns
+        -------
+        mmt: xr.DataArray
+            The resampled monthly temperature
+        """
+        return self.meteo.temp.resample(time='MS').mean(dim='time')
+
+    def get_precipitation_liquid_solid(self, date, heights=None, method=None,
+                                       **kwargs):
+        """
+        Get solid and liquid fraction of precipitation.
+
+        Parameters
+        ----------
+        date: datetime.datetime
+            Date for which to retrieve liquid/solid precipitation.
+        heights: np.array
+            Heights for which to retrieve solid and liquid precipitation.
+        method: str
+            Method with which to calculate the liquid and solid shares of
+            precipitation. Allowed methods: 'magnusson' (after
+            [Magnusson et al. (2017)]_) and 'linear' (linear gradient between
+            temperature thresholds). If None, method is determined from
+            configuration file.
+        **kwargs: keyword, value pairs, optional
+            Keywords accepted by the method to determine the fraction of solid
+            precipitation.
+        Returns
+        -------
+        prcpsol, prcpliq: np.array, np.array
+            Arrays with solid and liquid precipitation.
+
+        References
+        ----------
+        .. [Magnusson et al. (2017)] https://doi.org/10.1002/2016WR019092
+        """
+
+        if heights is None:
+            heights = self.heights
+        if method is None:
+            method = cfg.PARAMS['precip_ratio_method']
+
+        date_index = self.get_loc(date)
+        prcp = self.prcp[date_index]
+        pgrad = self.pgrad[date_index]
+        prcptot = get_precipitation_at_heights(prcp, pgrad, self.ref_hgt,
+                                               heights)
+
+        # important: we don't take compound interest formula (p could be neg!)
+        prcptot = np.clip(prcptot, 0, None)
+        tm_hgts = self.get_tmean_at_heights(date, heights)
+        if method.lower() == 'magnusson':
+            # todo: instead of calculatng the temp_at_heights again one should make temp_at_heights a kwarg (otherwis get_loc is called two times => cost-intensive)
+            frac_solid = get_fraction_of_snowfall_magnusson(tm_hgts, **kwargs)
+        elif method.lower() == 'linear':
+            frac_solid = get_fraction_of_snowfall_linear(tm_hgts, **kwargs)
+        else:
+            raise ValueError('Solid precipitation fraction method not '
+                             'recognized. Allowed are "magnusson" and '
+                             '"linear".')
+        prcpsol = prcptot * frac_solid
+        prcpliq = prcptot - prcpsol
+
+        return prcpsol, prcpliq
+
 
 def get_temperature_at_heights(temp, grad, ref_hgt, heights):
     """
