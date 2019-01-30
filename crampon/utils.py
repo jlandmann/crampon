@@ -349,6 +349,18 @@ def get_nash_sutcliffe_efficiency(simulated, observed):
     return nse
 
 
+def reclassify_heights_widths(gdir, elevation_bin=10.):
+    heights, widths = gdir.get_inversion_flowline_hw()
+
+    height_classes = np.arange(nicenumber(min(heights), 10, lower=True),
+                               nicenumber(max(heights), 10, lower=True),
+                               elevation_bin)
+    height_bins = np.digitize(heights, height_classes)
+    new_widths = [sum(widths[np.where(height_bins == i)]) for i in
+                  range(1, max(height_bins + 1))]
+    return height_classes, new_widths
+
+
 def parse_credentials_file(credfile=None):
     if credfile is None:
         credfile = os.path.join(os.path.abspath(os.path.dirname(
