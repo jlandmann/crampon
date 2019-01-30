@@ -286,8 +286,8 @@ class DailyMassBalanceModel(MassBalanceModel):
             return np.asarray(out)
 
         # m w.e. d-1
-        mbs = self.get_daily_mb(heights, date=date, **kwargs) * cfg.SEC_IN_DAY * cfg.RHO /\
-              1000.
+        mbs = self.get_daily_mb(heights, date=date, **kwargs) * \
+              cfg.SEC_IN_DAY * cfg.RHO / cfg.RHO_W
         mbs_wavg = np.average(mbs, weights=widths)
         return mbs_wavg
 
