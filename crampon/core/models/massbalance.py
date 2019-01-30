@@ -627,14 +627,150 @@ class BraithwaiteModel(DailyMassBalanceModel):
         return snow_today
 
 
-class HockModel(DailyMassBalanceModel):
+class HockModel(BraithwaiteModel):
     """ This class implements the melt model by Hock (1999)."""
+
+    cali_params_list = ['mu_hock', 'a_ice', 'a_snow', 'prcp_fac']
 
     def __init__(self):
         raise NotImplementedError
 
+    def get_daily_mb(self, heights, date=None, **kwargs):
+        """
+        Calculates the daily mass balance for given heights.
 
-class PellicciottiModel(DailyMassBalanceModel):
+        At the moment the mass balance equation is the simplest formulation:
+
+        MB(z) = PRCP_FAC * PRCP_SOL(z) - (mu_hock + mu_{snow/ice} * I_pot) * max(T(z) - Tmelt, 0)
+
+        where MB(z) is the mass balance at height z in mm w.e., PRCP_FAC is
+        the precipitation correction factor, PRCP_SOL(z) is the solid
+        precipitation at height z in mm w.e., mu_hock is a melt factor
+        ( mm d-1 K-1), a_{snow/ice} is the radiation coefficient for snow and
+        ice, respectively, I_pot is the potential clear-sky direct solar
+        radiation. T(z) is the temperature and height z in (deg C) and Tmelt
+        is the temperature threshold where melt occurs (deg C).
+
+        The result of the model equation is thus a mass balance in mm w.e. d.1,
+        however, for context reasons (dynamical part of the model), the mass
+        balance is returned in m ice s-1, using the ice density as given in the
+        configuration file. ATTENTION, the mass balance given is not yet
+        weighted with the glacier geometry! For this, see method
+        `get_daily_specific_mb`.
+
+        Parameters
+        ----------
+        heights: ndarray
+            Heights at which mass balance should be calculated.
+        date: datetime.datetime
+            Date at which mass balance should be calculated.
+        **kwargs: dict-like, optional
+            Arguments passed to the pd.DatetimeIndex.get_loc() method that
+            selects the fitting melt parameters from the melt parameter
+            attributes.
+
+        Returns
+        -------
+        ndarray:
+            Glacier mass balance at the respective heights in m ice s-1.
+        """
+
+        # index of the date of MB calculation
+        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+
+        # Read timeseries
+        itemp = self.temp[ix] + self.temp_bias
+        itgrad = self.tgrad[ix]
+        ipgrad = self.pgrad[ix]
+        if isinstance(self.prcp_fac, pd.Series):
+            try:
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
+                                                                      **kwargs)]
+            except KeyError:
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
+            if pd.isnull(iprcp_fac):
+                iprcp_fac = self.param_ep_func(self.prcp_fac)
+            iprcp = self.prcp_unc[ix] * iprcp_fac
+        else:
+            iprcp = self.prcp_unc[ix] * self.prcp_fac
+
+        # For each height pixel:
+        # Compute temp and tempformelt (temperature above melting threshold)
+        npix = len(heights)
+        temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
+
+        tempformelt = self.get_tempformelt(temp)
+        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+
+        # TODO: What happens when `date` is out of range of the cali df index?
+        # THEN should it take the mean or raise an error?
+        if isinstance(self.mu_hock, pd.Series):
+            try:
+                mu_hock = self.mu_hock.iloc[
+                    self.mu_hock.index.get_loc(date, **kwargs)]
+            except KeyError:
+                mu_hock = self.param_ep_func(self.mu_hock)
+            if pd.isnull(mu_hock):
+                mu_hock = self.param_ep_func(self.mu_hock)
+        else:
+            mu_hock = self.mu_hock
+
+        if isinstance(self.a_ice, pd.Series):
+            try:
+                a_ice = self.a_ice.iloc[
+                    self.a_ice.index.get_loc(date, **kwargs)]
+            except KeyError:
+                a_ice = self.param_ep_func(self.a_ice)
+            if pd.isnull(a_ice):
+                a_ice = self.param_ep_func(self.a_ice)
+        else:
+            a_ice = self.a_ice
+
+        if isinstance(self.a_snow, pd.Series):
+            try:
+                a_snow = self.a_snow.iloc[
+                    self.a_snow.index.get_loc(date, **kwargs)]
+            except KeyError:
+                a_snow = self.param_ep_func(self.a_snow)
+            if pd.isnull(a_snow):
+                a_snow = self.param_ep_func(self.a_snow)
+        else:
+            a_snow = self.a_snow
+
+        if isinstance(self.bias, pd.Series):
+            bias = self.bias.iloc[
+                self.bias.index.get_loc(date, **kwargs)]
+            # TODO: Think of clever solution when no bias (=0)?
+        else:
+            bias = self.bias
+
+        # Get snow distribution from yesterday and determine snow/ice from it;
+        # this makes more sense as temp is from 0am-0am and precip from 6am-6am
+        snowdist = np.where(self.snowcover.age_days[range(
+            self.snowcover.n_heights), self.snowcover.top_layer] <= 365)
+        a_comb = np.zeros_like(self.snowcover.height_nodes)
+        a_comb[:] = a_ice
+        np.put(a_comb, snowdist, a_snow)
+
+        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
+        mb_day = prcpsol - (mu_hock + a_comb * i_pot) * tempformelt - bias
+
+        self.time_elapsed = date
+
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            temp + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+
+        # remove old snow to make model faster
+        if date.day == 1:  # this is a good compromise in terms of time
+            oldsnowdist = np.where(self.snowcover.age_days > 365)
+            self.snowcover.remove_layer(ix=oldsnowdist)
+
+        # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
+        icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
+        return icerate
+
     """ This class implements the melt model by Pellicciotti et al. (2005).
 
     Attributes
