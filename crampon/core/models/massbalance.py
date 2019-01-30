@@ -1500,6 +1500,11 @@ class SnowFirnCover(object):
             raise ValueError('Dimensions of SnowFirnCover and mass to be '
                              'added must match.')
 
+        if rho is None:
+            rho = np.ones_like(swe)
+            rho[swe == 0.] = np.nan
+            rho = get_rho_fresh_snow_anderson(temperature)
+
         if ix is None:
             insert_pos = self.top_layer + 1
         else:
