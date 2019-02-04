@@ -391,7 +391,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
     cali_params_list = ['mu_ice', 'mu_snow', 'prcp_fac']
 
     def __init__(self, gdir, mu_ice=None, mu_snow=None, bias=None,
-                 prcp_fac=None, snow_init=None, snowcover= None,
+                 prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
                  filename='climate_daily',
                  filesuffix=''):
@@ -436,10 +436,20 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
         if snow_init is None:
             self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
-            self.snow = np.atleast_2d(np.zeros_like(self.heights))
         else:
             self.snow_init = np.atleast_2d(snow_init)
-            self.snow = np.atleast_2d(snow_init)
+
+        # todo: REPLACE THIS! It's just for testing
+        rho_init = np.zeros_like(self.snow_init)
+        rho_init.fill(100.)
+        origin_date = dt.datetime(1961, 1, 1)
+        if snowcover is None:
+            self.snowcover = SnowFirnCover(self.heights, self.snow_init,
+                                           rho_init, origin_date)
+        else:
+            self.snowcover = snowcover
+
+        self._snow = np.nansum(self.snowcover.swe, axis=1)
 
         # Read file
         fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
@@ -471,6 +481,19 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
         # Public attrs
         self.temp_bias = 0.
+
+    # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
+    @property
+    def snow(self):
+        return np.nansum(self.snowcover.swe, axis=1)
+
+    @property
+    def snowcover(self):
+        return self._snowcover
+
+    @snowcover.setter
+    def snowcover(self, value):
+        self._snowcover = value
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -572,8 +595,9 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
         # Get snow distribution from yesterday and determine snow/ice from it;
         # this makes more sense as temp is from 0am-0am and precip from 6am-6am
-        snowdist = np.where(self.snow[-1] > 0.)
-        mu_comb = np.zeros_like(self.snow[-1])
+        snowdist = np.where(self.snowcover.age_days[range(
+            self.snowcover.n_heights), self.snowcover.top_layer] <= 365)
+        mu_comb = np.zeros_like(self.snowcover.height_nodes)
         mu_comb[:] = mu_ice
         np.put(mu_comb, snowdist, mu_snow)
 
@@ -581,18 +605,16 @@ class BraithwaiteModel(DailyMassBalanceModel):
         mb_day = prcpsol - mu_comb * tempformelt - bias
 
         self.time_elapsed = date
-        snow_cond = self.update_snow(date, mb_day)
 
-        # cheap removal of snow before density model kicks in
-        try:
-            # check MB pos
-            inds = np.where((self.snow[-1] - self.snow[-366]) >= 0.)
-            self.snow[-1][inds] = np.clip(self.snow[-1][inds] -
-                                          np.clip(self.snow[-365][inds] -
-                                                  self.snow[-366][inds], 0.,
-                                                  None), 0., None)
-        except IndexError: # when date not yet exists
-            pass
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            temp + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+
+        # remove old snow to make model faster
+        if date.day == 1:  # this is a good compromise in terms of time
+            oldsnowdist = np.where(self.snowcover.age_days > 365)
+            self.snowcover.remove_layer(ix=oldsnowdist)
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
