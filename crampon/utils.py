@@ -1312,8 +1312,15 @@ def mount_network_drive(path, user, log=None):
     out: int
         0 if mounting succeeded, 1 if failed.
     """
-    out = subprocess.call(r'net use {} {}'.format(path, user),
-                          stdout=subprocess.PIPE, shell=True)
+    if os.name == 'nt':
+        command = r'net use {} {}'.format(path, user)
+    elif os.name == 'posix':
+        command = r'dbus-launch bash && gvfs-mount {}@{}'.format(user, path)
+    else:
+        raise ValueError('Don\'t know how to mount a network drive on your '
+                         'operating system "{}"'.format(os.name))
+
+    out = subprocess.call(command, stdout=subprocess.PIPE, shell=True)
 
     if out == 0:
         msg = 'Network drive {} successfully connected'.format(path)
