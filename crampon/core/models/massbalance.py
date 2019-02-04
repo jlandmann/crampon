@@ -1562,6 +1562,8 @@ class SnowFirnCover(object):
             self._liq_content = new_liq_content
             new_last_update[:shape_0, :shape_1] = self.last_update
             self._last_update = new_last_update
+            new_age_days[:shape_0, :shape_1] = self.age_days
+            self._age_days = new_age_days
 
 
         if temperature is not None:
