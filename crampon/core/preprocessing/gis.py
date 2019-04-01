@@ -4,9 +4,11 @@ from distutils.version import LooseVersion
 from salem import Grid, wgs84
 import os
 import numpy as np
+import pandas as pd
 import pyproj
 import logging
 import xarray as xr
+import itertools
 from crampon import entity_task
 from crampon import utils
 import crampon.cfg as cfg
@@ -17,6 +19,7 @@ import salem
 from oggm.core.gis import gaussian_blur, multi_to_poly,\
     _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks
 from oggm.utils import get_topo_file
+from scipy import stats
 
 import rasterio
 from rasterio.warp import reproject, Resampling
@@ -428,7 +431,80 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     homo_dem_ts = homo_dem_ts.sortby('time')
     homo_dem_ts.to_netcdf(gdir.get_filepath('homo_dem_ts'))
 
-    _ = get_geodetic_deltav(gdir)
+    _ = calculate_geodetic_deltav(gdir)
 
 # Important, overwrite OGGM function
 define_glacier_region = define_glacier_region_crampon
+
+
+def calculate_geodetic_deltav(gdir, fill_threshold=0.1):
+    """
+    Calculate all possible difference grids and geodetic volume changes.
+
+    Parameters
+    ----------
+    gdir: :py:class:`crampon.GlacierDirectory`
+        Glacier directory to get the geodetic volume changes for.
+    fill_threshold: float
+        Maximum allowed ratio of good to missing pixel values. Default: 0.1
+        (10%). If this value is exceeded, no geodetic volume change will be
+        calculated.
+
+    Returns
+    -------
+    gvc_df: pandas.Dataframe
+        Dataframe containing the geodetic volume changes and the dates 1 and 2
+        of the underlying DEMs.
+    """
+
+    dems = xr.open_dataset(gdir.get_filepath('homo_dem_ts'))
+
+    # select ROI
+    # todo: this should become multitemporal later
+    dems_sel = dems.salem.roi(shape=gdir.get_filepath('outlines'))
+    gvc_df = pd.DataFrame()
+
+    ix = 0
+    for d1, d2 in itertools.combinations(dems_sel.height, 2):
+        # only go forward in time
+        if d1.time.item() > d2.time.item():
+            continue
+
+        diff = d2 - d1
+
+        # fill gaps with with mean
+        mean_hgt = (d1 + d2) / 2.
+        glacier_mask = (~np.isnan(d1) & ~np.isnan(d2))
+        missing_mask = np.ma.masked_array(glacier_mask,
+                                          mask=gdir.grid.region_of_interest(
+                                              shape=gdir.get_filepath(
+                                                  'outlines')).astype(bool))
+
+        # if NaNs are more than the fill threshold, continue
+        fill_ratio = round(
+            len(missing_mask.nonzero()[0]) / missing_mask.count(), 3)
+        print(fill_ratio)
+        if fill_ratio > fill_threshold:
+            continue
+
+        slope, itcpt, _, p_val, _ = stats.linregress(
+            np.ma.masked_array(mean_hgt.values,
+                               ~missing_mask.mask).compressed(),
+            diff.values[missing_mask.mask].flatten())
+        diff.values[missing_mask.mask] = (
+                    itcpt + slope * mean_hgt.values[missing_mask.mask]) if \
+            (p_val < 0.01) else np.nan
+
+        # calculate dV assuming that missing cells have the average dV
+        dv = np.nansum(diff) * dems_sel.res ** 2
+
+        print(dv.item())
+
+        gvc_df.loc[ix, 'dv'] = round(dv.item())
+        gvc_df.loc[ix, 'date0'] = pd.Timestamp(d1.time.item())
+        gvc_df.loc[ix, 'date1'] = pd.Timestamp(d2.time.item())
+        gvc_df.loc[ix, 'fill_ratio'] = fill_ratio
+
+        ix += 1
+
+    gvc_df.to_csv(gdir.get_filepath('geodetic_dv'))
