@@ -1305,6 +1305,7 @@ class SnowFirnCover(object):
         # for temperature models that don't update layer by layer
         # must be initialized by hand with the desired form
         self._regridded_temperature = None
+        self._ice_melt = np.zeros_like(swe)
 
     @property
     def swe(self):
@@ -1458,6 +1459,20 @@ class SnowFirnCover(object):
                                     np.isnan(self.swe))
         top = np.argmax(layers_bool, axis=1) - 1
         return top
+
+    @property
+    def ice_melt(self):
+        """
+
+        Returns
+        -------
+
+        """
+        return self._ice_melt
+
+    @ice_melt.setter
+    def ice_melt(self, value):
+        self._ice_melt = value
 
     def get_type_indices(self, layertype):
         """
@@ -1855,7 +1870,7 @@ class SnowFirnCover(object):
             return self.get_total_height() * widths * \
                    cfg.PARAMS['flowline_dx'] * map_dx
 
-    def get_lost_ice_volume(self):
+    def get_lost_ice_volume(self, widths, map_dx):
         """
         Get the amount of accumulated ice melt that happened when there was no
         firn/snow present.
@@ -1865,7 +1880,7 @@ class SnowFirnCover(object):
         -------
 
         """
-        # TODO: we need a variable where accumulated ice loss is stored . By then subtracting the value between two dates we can get the dV for ice
+        return self.ice_melt * widths * cfg.PARAMS['flowline_dx'] * map_dx
 
     def get_snow_height(self):
         """Get height of snow cover only."""
