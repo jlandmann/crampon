@@ -4,11 +4,13 @@ import warnings
 import crampon.utils
 
 import unittest
+import pytest
 import os
 import glob
 import shutil
 
 import shapely.geometry as shpg
+from fiona.errors import DriverError
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -98,3 +100,67 @@ class TestClimate(unittest.TestCase):
                                                      2500,
                                                      np.array([2600, 2700]))
         np.testing.assert_equal(p_hgt, np.array([[5.15, 5.3], [10.5, 11.]]))
+
+
+class TestGlacierMeteo(unittest.TestCase):
+
+    def setUp(self):
+        cfg.initialize()
+
+        # test directory
+        self.testdir = os.path.join(cfg.PATHS['test_dir'], 'tmp_prepro')
+        if not os.path.exists(self.testdir):
+            os.makedirs(self.testdir)
+        self.clean_dir()
+        # Todo: this can only be done once we have a lightweight test dataset
+        try:
+            gdir = crampon.utils.GlacierDirectory('RGI50-11.A10G05')
+            self.gmeteo = climate.GlacierMeteo(self.gdir)
+        except DriverError:
+            self.gdir = None
+
+    def tearDown(self):
+        self.rm_dir()
+
+    def rm_dir(self):
+        shutil.rmtree(self.testdir)
+
+    def clean_dir(self):
+        shutil.rmtree(self.testdir)
+        os.makedirs(self.testdir)
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_days_since_solid_precipitation(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_loc(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_tmean_at_heights(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_tmean_for_melt_at_heights(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_positive_tmax_sum_between(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_mean_annual_temperature_at_heights(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_mean_winter_temperature(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_mean_month_temperature(self):
+        pass
+
+    @pytest.mark.skip(reason='No lightweight test dataset yet')
+    def test_get_precipitation_liquid_solid(self):
+        pass
