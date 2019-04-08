@@ -427,7 +427,8 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
                                               dst_transform[4], ny),
                              'time': homo_dates},
                          attrs={'id': gdir.rgi_id, 'name': gdir.name,
-                                'res': dx, 'pyproj_srs': proj4_str})
+                                'res': dx, 'pyproj_srs': proj4_str,
+                                'transform': dst_transform})
     homo_dem_ts = homo_dem_ts.sortby('time')
     homo_dem_ts.to_netcdf(gdir.get_filepath('homo_dem_ts'))
 
