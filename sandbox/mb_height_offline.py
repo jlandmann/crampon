@@ -67,7 +67,9 @@ if __name__ == '__main__':
 
     for g in gdirs:
 
-        day_model = BraithwaiteModel(g, bias=0.)
+        mb_model = BraithwaiteModel
+
+        day_model = mb_model(g, bias=0.)
         heights, widths = g.get_inversion_flowline_hw()
 
         # number of experiments (list!)
@@ -78,8 +80,7 @@ if __name__ == '__main__':
         bgmon_hydro = cfg.PARAMS['bgmon_hydro']
         bgday_hydro = cfg.PARAMS['bgday_hydro']
 
-        cali_df = pd.read_csv(g.get_filepath('calibration'), index_col=0,
-                              parse_dates=[0])
+        cali_df = g.get_calibration(mb_model)
         begin_clim = dt.datetime(1961, 9, 1)
         end_clim = dt.datetime(2017, 12, 31)
 

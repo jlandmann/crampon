@@ -1603,6 +1603,40 @@ def dx_from_area(area_km2):
     return dx
 
 
+def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
+    """
+    Get all possible calibration parameters from past calibration.
+
+    This is useful for single-model mass balance predictions as it generates
+    uncertainty. It uses itertools.product to mix the calibrated parameters.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon:GlacierDirectory`
+        The glacier directory to get the parameter combination for.
+    mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
+    as_list: bool
+        True if the result returned should be a list.
+
+    Returns
+    -------
+    p_comb: itertools.product or list
+        An itertools.product instance with the parameter combinations, or, if
+        set to True, a list.
+    """
+
+    cali_df = gdir.get_calibration(mb_model)
+
+    cali_filtered = cali_df.filter(regex=mb_model.__name__)
+    cali_sel = cali_filtered.drop_duplicates().dropna().values
+
+    param_prod = product(*cali_sel.T)
+    if as_list is True:
+        return list(param_prod)
+    else:
+        return param_prod
+
+
 OGGMGlacierDirectory = GlacierDirectory
 
 
@@ -1869,6 +1903,29 @@ class GlacierDirectory(object):
         return self.OGGMGD.write_pickle(var=var, filename=filename,
                                         use_compression=use_compression,
                                         filesuffix=filesuffix)
+
+    def get_calibration(self, mb_model=None):
+        """
+        Read the glacier calibration as a pandas.DataFrame.
+
+        Parameters
+        ----------
+        mb_model: `py:class:crampon.core.massbalance.MassBalanceModel`
+            Model to filter the calibration for.
+
+        Returns
+        -------
+        df: pandas.Dataframe
+            Parameter calibration for the glacier directory.
+        """
+
+        df = pd.read_csv(self.get_filepath('calibration'), index_col=0,
+                         parse_dates=[0])
+
+        if mb_model is None:
+            return df
+        else:
+            return df.filter(regex=mb_model.__name__)
 
     def get_inversion_flowline_hw(self):
         return self.OGGMGD.get_inversion_flowline_hw()

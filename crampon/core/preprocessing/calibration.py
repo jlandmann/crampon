@@ -13,6 +13,7 @@ from crampon import workflow
 from crampon import tasks
 from crampon.core.models.massbalance import BraithwaiteModel, \
     run_snowfirnmodel_with_options
+from crampon.core.models import massbalance
 from collections import OrderedDict
 from crampon import utils
 import copy
@@ -101,6 +102,328 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
     measured['Winter'] = measured['Winter'] / 1000.
 
     return measured
+
+
+def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1, *args, winteronly=False, run_hist=None, scov=None, unc=None, **kwargs):
+    """
+    A try to generalize an objective function valid for all MassBalanceModels.
+
+    Parameters
+    ----------
+    x: tuple
+        Parameters to optimize. The parameters must be given exactly in the
+        order of the mb_model.cali_params attribute.
+    gdir: `py:class:crampon:GlacierDirectory`
+        The glacier directory to calibrate.
+    mb_model: `crampon.core.models.MassBalanceModel`
+        The model to use for calibration
+    measured: pandas.DataFrame
+        DataFrame with measured glaciological mass balances.
+    y0: int
+        Start year of the calibration period. The exact begin_mbyear date is
+        taken from the day of the annual balance campaign in the `measured`
+        DataFrame. If not given, the date is taken from the minimum date in the
+        DataFrame of the measured values.
+    y1: int
+        Start year of the calibration period. The exact end date is taken
+        from the day of the annual balance campaign in the `measured`
+        DataFrame. If not given, the date is taken from the maximum date in the
+        DataFrame of the measured values.
+    *args: tuple
+    **kwargs: dict
+        Keyword arguments accepted by the function.
+
+    Returns
+    -------
+    err: list
+        The residuals (squaring is done by scipy.optimize.least_squares).
+    """
+
+    # Here the awkward part comes:
+    # Pack x again to an OrderedDict that can be passed to the mb_model
+    if winteronly:
+        calip_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k in ['prcp_fac']], x))
+        other_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k not in ['prcp_fac']], [v for k, v in kwargs.items() if ((k in mb_model.cali_params_guess.keys()) and (k not in ['prcp_fac']))]))
+    else:
+        calip_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k not in ['prcp_fac']], x))
+        other_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k in ['prcp_fac']], [v for k, v in kwargs.items() if k in ['prcp_fac']]))  # prcp_fac is the only excluded for the annual calibration
+
+    params = {**calip_dict, **other_dict}
+
+    # todo: cover the case of Braithwaite, where mu_snow has to be defined by the ratio?
+    # => no, this should happen inside the mb_model!, as mu_snow is also in BraithwaiteModel.cali_params
+
+    # todo: maybe discontinue the opton to cut the df: this is actually only for good for testing, otherwise rarely used
+    measured_cut = measured[measured.date0.dt.year >= y0]
+    measured_cut = measured_cut[measured_cut.date1.dt.year <= y1]
+    assert len(measured_cut == 1)
+
+    # make entire MB time series
+    if winteronly:
+        min_date = measured[measured.date_f.dt.year == y0].date_f.values[0]
+        if y1:
+            max_date = measured[measured.date1.dt.year == y1].date_s.values[0]
+        else:
+            max_date = max(measured.date0.max(), measured.date_s.max(),
+                           measured.date1.max() - dt.timedelta(days=1))
+    else:
+        # we take the min of date0 and the found min date from the winter cali
+        min_date = measured[measured.date_f.dt.year == y0].date0.values[0]
+        if y1:
+            max_date = measured[measured.date1.dt.year == y1].date1.values[0] - \
+                       pd.Timedelta(days=1)
+        else:
+            max_date = max(measured.date_f.max(), measured.date_s.max(),
+                           measured.date1.max() - dt.timedelta(days=1))
+
+    calispan = pd.date_range(min_date, max_date, freq='D')
+
+    heights, widths = gdir.get_inversion_flowline_hw()
+    # todo:
+    day_model = mb_model(gdir, **params, bias=0.)
+
+    # IMPORTANT
+    if run_hist is not None:
+        day_model.time_elapsed = run_hist
+    if scov is not None:
+        day_model.snowcover = copy.deepcopy(scov)
+
+    mb = []
+    for date in calispan:
+        tmp = day_model.get_daily_specific_mb(heights, widths, date=date)
+        mb.append(tmp)
+
+    mb_ds = xr.Dataset({'MB': (['time'], mb)},
+                       coords={'time': pd.to_datetime(calispan)})
+
+    # if we have melt in winter between the field dates this pushes prcp_fac
+    # up! as we can't measure melt in the winter campaign anyway, we just
+    # subtract it away when tuning the winter balance!
+    minimum = np.nanmin(np.nancumsum(mb))
+
+    err = []
+    for ind, row in measured_cut.iterrows():
+
+        curr_err = None
+        if winteronly:
+            # TODO: Is this correct to change?
+            wspan = pd.date_range(row.date_f, row.date_s, freq='D')
+            wsum = mb_ds.sel(time=wspan).apply(np.sum)
+
+            # correct for melt at the beginning of the winter season
+            # todo: is this still correct?????
+            curr_err = row.Winter - (wsum.MB.values + np.abs(minimum))
+        else:
+            # annual sum
+            if not winteronly:
+                span = pd.date_range(row.date0, row.date1 - pd.Timedelta(days=1),
+                                     freq='D')
+                asum = mb_ds.sel(time=span).apply(np.sum)
+
+                correction = 0
+
+                # todo: this doesn't work like this: we will probably detect a wrong minimum!?
+                if unc:
+                    curr_err = (row.Annual - (
+                                asum.MB.values + np.abs(correction))) / unc
+                else:
+                    curr_err = (row.Annual - (asum.MB.values + np.abs(correction)))
+
+        err.append(curr_err)
+
+    return err
+
+
+def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
+                                          it_thresh=50, **kwargs):
+    """
+    A function to calibrate those glaciers that have a glaciological mass
+    balance in GLAMOS.
+
+    Parameters
+    ----------
+    gdir: py:class:`crampon.GlacierDirectory`
+        The GlacierDirectory of the glacier to be calibrated.
+    mb_model: py:class:`crampon.core.massbalance.MassBalanceModel`
+        The mass balance model to calibrate parameters for.
+    conv_thresh: float
+        Abort criterion for the iterative calibration, defined as the absolute
+        gradient of the calibration parameters between two iterations. Default:
+         Abort when the absolute gradient is smaller than 0.005.
+    it_thresh: float
+        Abort criterion for the iterative calibration by the number of
+        iterations. This criterion is used when after the given number of
+        iteration the convergence threshold hasn't been reached. Default: Abort
+        after 50 iterations.
+    **kwargs: dict
+        Keyword arguments accepted by the mass balance model.
+
+    Returns
+    -------
+    None
+    """
+    # todo: find a good solution for ratio_s_i
+    # todo: do not always hard-code 'mb_model.__name__ + '_' +'
+    # todo go through generalized objective function and see if winter/annual mb works ok
+
+    # Get measured MB and we can't calibrate longer than our meteo history
+    measured = get_measured_mb_glamos(gdir)
+    if measured.empty:
+        log.error('No calibration values left for {}'.format(gdir.rgi_id))
+        return
+    cmeta = xr.open_dataset(gdir.get_filepath('climate_daily'),
+                            drop_variables=['temp', 'prcp', 'hgt', 'grad'])
+    measured = measured[(measured.date0 > pd.Timestamp(np.min(cmeta.time).values)) &
+                        (measured.date1 < pd.Timestamp(np.max(cmeta.time).values))]
+
+    # Find out what we will calibrate
+    to_calibrate_csv = [mb_model.__name__ + '_' + i for i in
+                        mb_model.cali_params_guess.keys()]
+
+    # Is there already a calibration where we just can append, or new file
+    try:
+        cali_df = gdir.get_calibration(mb_model)
+    # think about an outer join of the date indices here
+    except FileNotFoundError:
+        cali_df = pd.DataFrame(columns=to_calibrate_csv,
+                               index=pd.date_range(measured.date0.min(),
+                                                   measured.date1.max()))
+
+    # we don't know initial snow and time of run history
+    run_hist_field = None  # at the new field date (date0)
+    run_hist_minday = None  # at the minimum date as calculated by Matthias
+    scov_minday = None
+    scov_field = None
+
+    for i, row in measured.iterrows():
+
+        heights, widths = gdir.get_inversion_flowline_hw()
+
+        grad = 1
+        r_ind = 0
+
+        # Check if we are complete
+        if pd.isnull(row.Winter) or pd.isnull(row.Annual):
+            log.warning(
+                'Mass balance {}/{} not complete. Skipping calibration'.format(
+                    row.date0.year, row.date1.year))
+            for name in to_calibrate_csv:
+                cali_df.loc[row.date0:row.date1, name] = np.nan
+            cali_df.to_csv(gdir.get_filepath('calibration'))
+            continue
+
+        # say what we are doing
+        log.info('Calibrating budget year {}/{}'.format(row.date0.year,
+                                                        row.date1.year))
+
+        # initial_guess
+        param_dict = mb_model.cali_params_guess
+
+        while grad > conv_thresh:
+
+            # log status
+            log.info('{}TH ROUND, grad={}, PARAMETERS: {}'
+                     .format(r_ind, grad, param_dict.__repr__()))
+
+            # get an odict with all but prcp_fac
+            all_but_prcp_fac = [(k, v) for k, v in param_dict.items()
+                                if k not in ['prcp_fac']]
+
+            # start with cali on winter MB and optimize only prcp_fac
+            spinupres_w = optimize.least_squares(
+                to_minimize_mass_balance_calibration,
+                x0=np.array([param_dict['prcp_fac']]),
+                xtol=0.001,
+                bounds=(0.1, 5.),
+                verbose=2, args=(gdir, mb_model, measured, row.date0.year,
+                                 row.date1.year),
+                kwargs={'run_hist': run_hist_minday, 'scov': scov_minday,
+                        'winteronly': True, **OrderedDict(all_but_prcp_fac)})
+
+            # log status
+            log.info('After winter cali, prcp_fac:{}'.format(spinupres_w.x[0]))
+            param_dict['prcp_fac'] = spinupres_w.x[0]
+
+            # take optimized prcp_fac and optimize melt param(s) with annual MB
+            # todo: find a good solution to give bounds to the values?
+            spinupres = optimize.least_squares(
+                to_minimize_mass_balance_calibration,
+                x0=np.array([j for i, j in all_but_prcp_fac]),
+                xtol=0.001,
+                verbose=2, args=(gdir, mb_model, measured, row.date0.year,
+                                 row.date1.year),
+                kwargs={'winteronly': False, 'run_hist': run_hist_field,
+                        'scov': scov_field,
+                        'prcp_fac': param_dict['prcp_fac']})
+
+            # update all but prcp_fac
+            for j, d_i in enumerate(all_but_prcp_fac):
+                param_dict[d_i[0]] = spinupres.x[j]
+
+            # Check whether abort or go on
+            r_ind += 1
+            grad_test_param = all_but_prcp_fac[0][1]  # take 1st, for example
+            grad = np.abs(grad_test_param - spinupres.x[0])
+            if r_ind > it_thresh:
+                warn_it = 'Iterative calibration reached abort criterion of' \
+                          ' {} iterations and was stopped at a parameter ' \
+                          'gradient of {} for {}.'.format(r_ind, grad,
+                                                          grad_test_param)
+                log.warning(warn_it)
+                break
+
+        # Report result
+        log.info('After whole cali:{}, grad={}'.format(param_dict.__repr__(),
+                                                       grad))
+
+        # Write in cali df
+        for k, v in list(param_dict.items()):
+            cali_df.loc[row.date0:row.date1, mb_model.__name__ + '_' + k] = v
+        if isinstance(mb_model, massbalance.BraithwaiteModel):
+            cali_df.loc[row.date0:row.date1,
+            mb_model.__name__ + '_' + 'mu_snow'] = cali_df.loc[
+                                                   row.date0:row.date1,
+                                                   mb_model.__name__ + '_' + 'mu_ice'] * mb_model.ratio_s_i
+        if isinstance(mb_model, massbalance.HockModel):
+            cali_df.loc[row.date0:row.date1,
+            mb_model.__name__ + '_' + 'a_snow'] = cali_df.loc[
+                                                   row.date0:row.date1,
+                                                   mb_model.__name__ + '_' + 'a_ice'] * mb_model.ratio_s_i
+        cali_df.to_csv(gdir.get_filepath('calibration'))
+
+        # prepare history for next round
+        curr_model = mb_model(gdir, bias=0.)
+
+        if scov_field is not None:
+            curr_model.time_elapsed = run_hist_minday
+            curr_model.snowcover = copy.deepcopy(scov_field)
+
+        mb = []
+        if i < len(measured) - 1:
+            end_date = max(row.date1, measured.iloc[i+1].date_f)  # max of field and fall date
+        else:  # last row
+            end_date = row.date1
+
+        forward_time = pd.date_range(row.date0, end_date)
+        for date in forward_time:
+            tmp = curr_model.get_daily_specific_mb(heights, widths, date=date)
+            mb.append(tmp)
+
+            if date == row.date1:
+                run_hist_field = curr_model.time_elapsed[:-1]  # same here
+                scov_field = copy.deepcopy(curr_model.snowcover)
+            try:
+                if date == measured.iloc[i+1].date_f:
+                    run_hist_minday = curr_model.time_elapsed[:-1]  # same here
+                    scov_minday = copy.deepcopy(curr_model.snowcover)
+            except IndexError:
+                if date == row.date1:
+                    run_hist_minday = curr_model.time_elapsed[:-1]  # same here
+                    scov_minday = copy.deepcopy(curr_model.snowcover)
+
+        # todo: this is not correct: we would have to choose the dates between date_f and date1
+        error = measured.loc[i].Annual - np.cumsum(mb[:len(forward_time)])[-1]
+        log.info('ERROR to measured MB:{}'.format(error))
 
 
 def to_minimize_braithwaite_fixedratio(x, gdir, measured, prcp_fac,
@@ -341,10 +664,7 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
                         (measured.date1 < pd.Timestamp(np.max(cmeta.time).values))]
 
     try:
-        cali_df = pd.read_csv(gdir.get_filepath('calibration',
-                                                filesuffix=filesuffix),
-                              index_col=0,
-                              parse_dates=[0])
+        cali_df = gdir.get_calibration()
         # think about an outer join of the date indices here
     except FileNotFoundError:
         # ind1 = ['Braithwaite', 'Braithwaite', 'Braithwaite', 'Hock', 'Hock', 'Hock', 'Hock', 'Pellicciotti', 'Pellicciotti', 'Pellicciotti', 'Oerlemans', 'Oerlemans', 'Oerlemans', 'OGGM', 'OGGM']

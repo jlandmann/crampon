@@ -9,6 +9,7 @@ import datetime as dt
 from enum import IntEnum, unique
 import cython
 from crampon.core.preprocessing import climate
+from collections import OrderedDict
 
 
 class DailyMassBalanceModel(MassBalanceModel):
@@ -17,6 +18,7 @@ class DailyMassBalanceModel(MassBalanceModel):
     """
 
     cali_params_list = ['mu_star', 'prcp_fac']
+    cali_params_guess = OrderedDict(zip(cali_params_list, [10., 1.5]))
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
@@ -41,20 +43,25 @@ class DailyMassBalanceModel(MassBalanceModel):
             parameters available for the time step where the mass balance
             should be calcul
         """
+
+        super().__init__()
+
+        # Needed for the calibration parameter names in the csv file
+        self.__name__ = type(self).__name__
+
         # should probably be replaced by a direct access to a file that
         # contains uncertainties (don't know how to handle that yet)
+        # todo: think again if this is a good solution to save code
+        if any([p is None for p in [mu_star, prcp_fac, bias]]):
+            cali_df = gdir.get_calibration(self)
+
+        # DailyMassbalanceModel should also be able to grab OGGM calibrations
         if mu_star is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
             try:
-                mu_star = cali_df['OGGM_mu_star']
+                mu_star = cali_df[self.__name__ + '_' + 'mu_star']
             except KeyError:
                 mu_star = cali_df['mu_star']
         if bias is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
             if cfg.PARAMS['use_bias_for_run']:
                 bias = cali_df['bias']
             else:
@@ -62,11 +69,8 @@ class DailyMassBalanceModel(MassBalanceModel):
                                     data=np.zeros_like(cali_df.index,
                                                        dtype=float))
         if prcp_fac is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
             try:
-                prcp_fac = cali_df['OGGM_prcp_fac']
+                prcp_fac = cali_df[self.__name__ + '_' + 'prcp_fac']
             except KeyError:
                 prcp_fac = cali_df['prcp_fac']
 
@@ -388,46 +392,43 @@ class DailyMassBalanceModel(MassBalanceModel):
 
 class BraithwaiteModel(DailyMassBalanceModel):
 
-    cali_params_list = ['mu_ice', 'mu_snow', 'prcp_fac']
+    cali_params_list = ['mu_ice', 'prcp_fac']
+    cali_params_guess = OrderedDict(zip(cali_params_list, [6.5, 1.5]))
 
     def __init__(self, gdir, mu_ice=None, mu_snow=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
                  filename='climate_daily',
                  filesuffix=''):
+        # todo: filename='climate_daily' is stupid...pass None and the read from cfg.PARAMS
+        # todo: think of a good solution regarding ratio mu_ice/mu_snow
+        # todo: documentation
 
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
                          filename=filename, heights_widths=heights_widths,
                          filesuffix=filesuffix)
 
+        self.ratio_s_i = cfg.PARAMS['ratio_mu_snow_ice']
+
         if mu_ice is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
-            mu_ice = cali_df['mu_ice']
-        if mu_snow is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
-            mu_snow = cali_df['mu_snow']
+            cali_df = gdir.get_calibration(self)
+            mu_ice = cali_df[self.__name__ + '_' + 'mu_ice']
+        if (mu_ice is not None) and (mu_snow is None):
+            mu_snow = mu_ice * self.ratio_s_i
+        if (mu_ice is None) and (mu_snow is None):
+            cali_df = gdir.get_calibration(self)
+            mu_snow = cali_df[self.__name__ + '_' + 'mu_ice'] * self.ratio_s_i
         if bias is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
+            cali_df = gdir.get_calibration(self)
             if cfg.PARAMS['use_bias_for_run']:
-                bias = cali_df['bias']
+                bias = cali_df[self.__name__ + '_' + 'bias']
             else:
                 bias = pd.DataFrame(index=cali_df.index,
                                     data=np.zeros_like(cali_df.index,
                                                        dtype=float))
         if prcp_fac is None:
-            cali_df = pd.read_csv(gdir.get_filepath('calibration'),
-                                  index_col=0,
-                                  parse_dates=[0])
-            try:
-                prcp_fac = cali_df['OGGM_prcp_fac']
-            except KeyError:
-                prcp_fac = cali_df['prcp_fac']
+            cali_df = gdir.get_calibration(self)
+            prcp_fac = cali_df[self.__name__ + '_' + 'prcp_fac']
 
         self.mu_ice = mu_ice
         self.mu_snow = mu_snow
@@ -651,9 +652,23 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
 
 class HockModel(BraithwaiteModel):
-    """ This class implements the melt model by Hock (1999)."""
+    """ This class implements the melt model by Hock (1999).
+
+    The calibration parameter guesses are only used to initiate the calibration
+    are rough mean values from [1]_.
+
+    References
+    ----------
+    .. [1] : Gabbi, J., Carenzo, M., Pellicciotti, F., Bauder, A., & Funk, M.
+            (2014). A comparison of empirical and physically based glacier
+            surface melt models for long-term simulations of glacier response.
+            Journal of Glaciology, 60(224), 1140-1154.
+            doi:10.3189/2014JoG14J011
+    """
 
     cali_params_list = ['mu_hock', 'a_ice', 'a_snow', 'prcp_fac']
+    cali_params_guess = OrderedDict(
+        zip(cali_params_list, [1.8, 0.013, 0.013, 1.5]))
 
     def __init__(self):
         raise NotImplementedError
@@ -798,13 +813,26 @@ class HockModel(BraithwaiteModel):
 class PellicciottiModel(BraithwaiteModel):
     """ This class implements the melt model by Pellicciotti et al. (2005).
 
+    The calibration parameter guesses are only used to initiate the calibration
+    are rough mean values from [1]_.
+
     Attributes
     ----------
     albedo: py:class:`crampon.core.models.massbalance.Albedo`
         An albedo object managing the albedo ageing.
+
+    References
+    ----------
+    .. [1] : Gabbi, J., Carenzo, M., Pellicciotti, F., Bauder, A., & Funk, M.
+            (2014). A comparison of empirical and physically based glacier
+            surface melt models for long-term simulations of glacier response.
+            Journal of Glaciology, 60(224), 1140-1154.
+            doi:10.3189/2014JoG14J011
+
     """
 
     cali_params_list = ['tf', 'srf', 'prcp_fac']
+    cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.006, 1.5]))
 
     def __init__(self, gdir, tf=None, srf=None, bias=None,
                  prcp_fac=None, snow_init=None, filename='climate_daily',
@@ -815,15 +843,14 @@ class PellicciottiModel(BraithwaiteModel):
 
         self.albedo = GlacierAlbedo(self.heights) #TODO: implement Albedo object
 
-        cali_df = pd.read_csv(gdir.get_filepath('calibration'), index_col=0,
-                              parse_dates=[0])
+        cali_df = gdir.get_calibration(self)
 
         if tf is None:
-            self.tf = cali_df['tf_pellicciotti']
+            self.tf = cali_df[self.__name__ + '_' + 'tf']
         else:
             self.tf = tf
         if srf is None:
-            self.srf = cali_df['srf_pellicciotti']
+            self.srf = cali_df[self.__name__ + '_' + 'srf']
         else:
             self.srf = srf
 
@@ -985,11 +1012,23 @@ class PellicciottiModel(BraithwaiteModel):
 class OerlemansModel(DailyMassBalanceModel):
     """ This class implements the melt model by Oerlemans (2001).
 
+    The calibration parameter guesses are only used to initiate the calibration
+    are rough mean values from [1]_.
+
     Attributes
     ----------
+
+    References
+    ----------
+    .. [1] : Gabbi, J., Carenzo, M., Pellicciotti, F., Bauder, A., & Funk, M.
+            (2014). A comparison of empirical and physically based glacier
+            surface melt models for long-term simulations of glacier response.
+            Journal of Glaciology, 60(224), 1140-1154.
+            doi:10.3189/2014JoG14J011
     """
 
     cali_params_list = ['c0', 'c1', 'prcp_fac']
+    _cali_params_guess = OrderedDict(zip(cali_params_list, [-110., 16., 1.5]))
 
     def __init__(self):
         raise NotImplementedError
