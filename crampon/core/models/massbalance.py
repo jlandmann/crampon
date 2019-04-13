@@ -53,14 +53,19 @@ class DailyMassBalanceModel(MassBalanceModel):
         # contains uncertainties (don't know how to handle that yet)
         # todo: think again if this is a good solution to save code
         if any([p is None for p in [mu_star, prcp_fac, bias]]):
-            cali_df = gdir.get_calibration(self)
+            # do not filter for mb_model here, otherwise mu_star is not found
+            # ('self' can also be a downstream inheriting class!)
+            cali_df = gdir.get_calibration()
 
         # DailyMassbalanceModel should also be able to grab OGGM calibrations
         if mu_star is None:
             try:
                 mu_star = cali_df[self.__name__ + '_' + 'mu_star']
             except KeyError:
-                mu_star = cali_df['mu_star']
+                try:
+                    mu_star = cali_df['OGGM_mu_star']
+                except KeyError:
+                    mu_star = cali_df['mu_star']
         if bias is None:
             if cfg.PARAMS['use_bias_for_run']:
                 bias = cali_df['bias']
