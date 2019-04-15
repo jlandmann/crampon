@@ -276,6 +276,15 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
     measured = measured[(measured.date0 > pd.Timestamp(np.min(cmeta.time).values)) &
                         (measured.date1 < pd.Timestamp(np.max(cmeta.time).values))]
 
+    # mainly PellicciottiModel due to limited radiation data availability
+    if hasattr(mb_model, 'calibration_timespan'):
+        if mb_model.calibration_timespan[0]:
+            measured = measured[
+                measured.date0.dt.year >= mb_model.calibration_timespan[0]]
+        if mb_model.calibration_timespan[1]:
+            measured = measured[
+                measured.date1.dt.year < mb_model.calibration_timespan[1]]
+
     # Find out what we will calibrate
     to_calibrate_csv = [mb_model.__name__ + '_' + i for i in
                         mb_model.cali_params_guess.keys()]

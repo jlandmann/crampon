@@ -821,6 +821,12 @@ class PellicciottiModel(BraithwaiteModel):
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [1]_.
 
+    IMPORTANT: At the moment gridded radiation values are only available back
+    to 2004, so the model can't be used before this time until MeteoSwiss
+    delivers the beta radiation version back until 1991 in mid of 2019
+    (promised). We reflected the limited usage in the "calibration_timespan"
+    attribute which is checked for in the calibration.
+
     Attributes
     ----------
     albedo: py:class:`crampon.core.models.massbalance.Albedo`
@@ -838,6 +844,7 @@ class PellicciottiModel(BraithwaiteModel):
 
     cali_params_list = ['tf', 'srf', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.006, 1.5]))
+    calibration_timespan = (2005, None)
 
     def __init__(self, gdir, tf=None, srf=None, bias=None,
                  prcp_fac=None, snow_init=None, filename='climate_daily',
