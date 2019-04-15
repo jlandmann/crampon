@@ -988,16 +988,6 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         else:
             self.srf = srf
 
-        if snow_init is None:
-            self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
-            self.snow = np.atleast_2d(np.zeros_like(self.heights))
-        else:
-            self.snow_init = np.atleast_2d(snow_init)
-            self.snow = np.atleast_2d(snow_init)
-
-        # todo: we assume the snow is fresh: is this a goofd assumption when sno cover can be handed over?
-        #self.days_since_snowfall = np.zeros_like(self.heights)
-
         # get positive temperature sum since snowfall
         self.tpos_since_snowfall = np.zeros_like(self.heights)
 
@@ -1142,6 +1132,10 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         mb_day = iprcp_corr - melt_day
 
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            self.meteo.get_tmean_at_heights(date, heights) + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
