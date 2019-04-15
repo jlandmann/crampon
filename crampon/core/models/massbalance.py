@@ -395,7 +395,72 @@ class DailyMassBalanceModel(MassBalanceModel):
         return mb_ds
 
 
-class BraithwaiteModel(DailyMassBalanceModel):
+class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
+    """
+    Include SnowCover, so that all classes can inherit from it and there is not conflicts
+    """
+
+    def __init__(self, gdir, mu_star=None, bias=None,
+                 prcp_fac=None, snow_init=None, snowcover=None,
+                 heights_widths=(None, None),
+                 filename='climate_daily',
+                 filesuffix=''):
+
+        super().__init__(gdir, mu_star=mu_star, bias=bias, prcp_fac=prcp_fac,
+                         heights_widths=heights_widths, filename=filename,
+                         filesuffix=filesuffix, param_ep_func=np.nanmean)
+
+        if snow_init is None:
+           self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
+        else:
+           self.snow_init = np.atleast_2d(snow_init)
+
+        # todo: REPLACE THIS! It's just for testing
+        rho_init = np.zeros_like(self.snow_init)
+        rho_init.fill(100.)
+        origin_date = dt.datetime(1961, 1, 1)
+        if snowcover is None:
+            self.snowcover = SnowFirnCover(self.heights, self.snow_init,
+                                           rho_init, origin_date)
+        else:
+            self.snowcover = snowcover
+
+        self._snow = np.nansum(self.snowcover.swe, axis=1)
+
+        # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
+        @property
+        def snow(self):
+            return np.nansum(self.snowcover.swe, axis=1)
+
+        @property
+        def snowcover(self):
+            return self._snowcover
+
+        @snowcover.setter
+        def snowcover(self, value):
+            self._snowcover = value
+
+    def get_daily_mb(self, heights, date=None, **kwargs):
+        # todo: implement
+        raise NotImplementedError
+
+    def get_monthly_mb(self, heights, year=None, fl_id=None):
+        # todo: implement
+        raise NotImplementedError
+
+    def get_annual_mb(self, heights, year=None, fl_id=None):
+        # todo: implement
+        raise NotImplementedError
+
+
+class BraithwaiteModel(DailyMassBalanceModelWithSnow):
+    """
+    Interface to a mass balance equation containing the Braithwaite melt term.
+
+    Attributes
+    ----------
+
+    """
 
     cali_params_list = ['mu_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [6.5, 1.5]))
@@ -411,7 +476,8 @@ class BraithwaiteModel(DailyMassBalanceModel):
 
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
                          filename=filename, heights_widths=heights_widths,
-                         filesuffix=filesuffix)
+                         filesuffix=filesuffix, snowcover=snowcover,
+                         snow_init=snow_init)
 
         self.ratio_s_i = cfg.PARAMS['ratio_mu_snow_ice']
 
@@ -656,7 +722,7 @@ class BraithwaiteModel(DailyMassBalanceModel):
         return snow_today
 
 
-class HockModel(BraithwaiteModel):
+class HockModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by Hock (1999).
 
     The calibration parameter guesses are only used to initiate the calibration
@@ -815,7 +881,7 @@ class HockModel(BraithwaiteModel):
         return icerate
 
 
-class PellicciottiModel(BraithwaiteModel):
+class PellicciottiModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by Pellicciotti et al. (2005).
 
     The calibration parameter guesses are only used to initiate the calibration
@@ -847,11 +913,12 @@ class PellicciottiModel(BraithwaiteModel):
     calibration_timespan = (2005, None)
 
     def __init__(self, gdir, tf=None, srf=None, bias=None,
-                 prcp_fac=None, snow_init=None, filename='climate_daily',
-                 filesuffix=''):
+                 prcp_fac=None, snow_init=None, snowcover=None,
+                 filename='climate_daily', heights_widths=(None, None),
+                 albedo_method=None, filesuffix=''):
+        # todo: Documentation
+        """
 
-        super().__init__(gdir, bias=bias, prcp_fac=prcp_fac,
-                         filename=filename, filesuffix=filesuffix)
 
         self.albedo = GlacierAlbedo(self.heights) #TODO: implement Albedo object
 
