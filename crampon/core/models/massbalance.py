@@ -2940,12 +2940,13 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         Update the snow albedo using the [Oerlemans & Knap (1998)]_ equations.
 
         This method accounts for the albedo transition for small snow depths on
-        a glacier as well. In the original paper, there is always the ice
-        albedo returned as background. This is probably becauseAs the background ice albedo, a characteristic value
-        is assumed. If a snowfall event depth is smaller than a defined
-        threshold then the ice albedo is returned.
-        Either a `py:class:crampon.core.models.massbalance.SnowFirnCover`
-        object or age_days and thickness have to be given.
+        a glacier as well. In the original paper, there is always a
+        characteristic ice albedo returned as background. This is probably
+        because the station  they used was on the glacier tongue. Here we
+        extend the model to use the ice albedo as background albedo if there is
+        ice below, otherwise the characteristic firn albedo. If a snowfall
+        event depth is smaller than a defined threshold then the background
+        albedo is returned without mixing.
 
         Parameters
         ----------
