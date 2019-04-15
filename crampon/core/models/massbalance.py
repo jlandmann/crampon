@@ -2061,13 +2061,25 @@ class SnowFirnCover(object):
         """
         return self.ice_melt * widths * cfg.PARAMS['flowline_dx'] * map_dx
 
-    def get_snow_height(self):
-        """Get height of snow cover only."""
-        raise NotImplementedError
+    def get_height_by_type(self, layertype):
+        """
+        Get height of the snow and firn cover by its type.
 
-    def get_firn_height(self):
-        """Get height of firn cover only."""
-        raise NotImplementedError
+        Parameters
+        ----------
+        layertype: str
+            Either of "snow", "firn", "poresclosed" or ice.
+
+        Returns
+        -------
+        h: np.array
+            Array with summed up heights of the cover type.
+        """
+        h = np.zeros_like(range(self.n_heights), dtype=np.float32)
+        where_type = self.get_type_indices(layertype)
+        h_actual = np.nansum(np.atleast_2d(self.sh[where_type]), axis=0)
+        h[where_type[0]] = h_actual[where_type[0]]
+        return h
 
     def get_mean_density(self):
         """
