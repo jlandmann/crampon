@@ -919,10 +919,47 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         # todo: Documentation
         """
 
+        There are some restrictions for in the Brock et al. (2000) albedo
+        update mode. For this mode the maximum daily temperature is needed,
+        which is only available from 1971 on [1]_. Therefore the albedo update
+        mode before 1972 automatically switches to the Oerlemans mode (see
+        `py:class:crampon.core.models.massbalance.GlacierAlbedo` for details).
+        if the ensemble update mode is chosen, the ensemble won't contain the
+        Brock update method in this time range.
 
-        self.albedo = GlacierAlbedo(self.heights) #TODO: implement Albedo object
+        In the albedo ensemble update mode, we are currently only able to work
+        with the ensemble mean as long as there is not an EnsembleMassBalance
+        class.
 
         cali_df = gdir.get_calibration(self)
+
+
+        References
+        ----------
+        [1]_.. : MeteoSwiss TabsD product description:
+                 https://www.meteoswiss.admin.ch/content/dam/meteoswiss/fr/climat/le-climat-suisse-en-detail/doc/ProdDoc_TabsD.pdf
+        """
+
+        # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
+        super().__init__(gdir, mu_star=tf, bias=bias, prcp_fac=prcp_fac,
+                         heights_widths=heights_widths, filename=filename,
+                         filesuffix=filesuffix, snow_init=snow_init,
+                         snowcover=snowcover)
+
+        self.albedo = GlacierAlbedo(self.heights) #TODO: finish Albedo object
+
+        # todo: improve this IF: default is "brock" and ELIFs would be appropriate...but what is the ELSE then?
+        if albedo_method is None:
+            self.albedo_method = cfg.PARAMS['albedo_method'].lower()
+        else:
+            self.albedo_method = albedo_method.lower()
+
+        if self.albedo_method == 'brock':
+            self.update_albedo = self.albedo.update_brock
+        if self.albedo_method == 'oerlemans':
+            self.update_albedo = self.albedo.update_oerlemans
+        if self.albedo_method == 'ensemble':
+            self.update_albedo = self.albedo.update_ensemble
 
         if tf is None:
             self.tf = cali_df[self.__name__ + '_' + 'tf']
@@ -1048,14 +1085,35 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         else:
             bias = self.bias
 
-        # todo: geting efficiently pos t sum between doesn't work with arrays???
-        self.tpos_since_snowfall[iprcp_corr > 0.] = 0
-        self.tpos_since_snowfall[iprcp_corr <= 0.] += \
-            climate.get_temperature_at_heights(self.meteo.tmax[ix],
-                                               self.meteo.tgrad[ix],
-                                               self.meteo.ref_hgt,
-                                               self.heights)[iprcp_corr <= 0.]
-        albedo = self.albedo.update_brock(t_acc=self.tpos_since_snowfall)
+        # todo: improve this formulation: would be cool if Albedo was aware of the date so that we could handle this upstream
+        if (date.year < cfg.PARAMS['tminmax_available']) and \
+                (self.albedo_method == 'brock'):
+            age_days = self.snowcover.age_days[np.arange(
+                self.snowcover.n_heights), self.snowcover.top_layer]
+            albedo = self.albedo.update_oerlemans(self.snowcover)
+        elif (date.year < cfg.PARAMS['tminmax_available']) and \
+                (self.albedo_method == 'ensemble'):
+            raise NotImplementedError('We are not yet able te reduce the '
+                                      'ensemble members.')
+        else:
+            # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
+            # todo: getting efficiently pos t sum between doesn't work with arrays???
+            if self.albedo_method == 'brock':
+                self.tpos_since_snowfall[iprcp_corr > 0.] = 0
+                self.tpos_since_snowfall[iprcp_corr <= 0.] += \
+                    climate.get_temperature_at_heights(self.meteo.tmax[ix],
+                                                       self.meteo.tgrad[ix],
+                                                       self.meteo.ref_hgt,
+                                                       heights)[iprcp_corr <= 0.]
+                albedo = self.update_albedo(t_acc=self.tpos_since_snowfall)
+            elif self.albedo_method == 'oerlemans':
+                age_days = self.snowcover.age_days[np.arange(
+                    self.snowcover.n_heights), self.snowcover.top_layer]
+                albedo = self.albedo.update_oerlemans(self.snowcover)
+            elif self.albedo_method == 'ensemble':
+                albedo = self.albedo.update_ensemble() # NotImplementedError
+            else:
+                raise ValueError('Albedo method is still not allowed.')
 
 
         # todo: where to put the bias here?
@@ -1067,21 +1125,6 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         mb_day = iprcp_corr - melt_day
 
         self.time_elapsed = date
-        #snow_cond = self.update_snow(date, mb_day)
-
-        #self.days_since_snowfall[mb_day > 0.] = 0.
-        #self.days_since_snowfall[mb_day <= 0.] += 1.
-
-        ## cheap removal of snow before density model kicks in
-        #try:
-        #    # check MB pos
-        #    inds = np.where((self.snow[-1] - self.snow[-366]) >= 0.)
-        #    self.snow[-1][inds] = np.clip(self.snow[-1][inds] -
-        #                                  np.clip(self.snow[-365][inds] -
-        #                                          self.snow[-366][inds], 0.,
-        #                                          None), 0., None)
-        #except IndexError:  # when date not yet exists
-        #    pass
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -2792,7 +2835,7 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
 
     """
 
-    def __init__(self, surface, alpha=None, snow_ix=None, firn_ix=None,
+    def __init__(self, x, alpha=None, snow_ix=None, firn_ix=None,
                  ice_ix=None, standard_method_snow='Brock',
                  standard_method_firn=None, standard_method_ice=None,
                  a_snow_init=0.9, a_firn_init=0.5):
@@ -2803,17 +2846,38 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         ----------
         x: array-like
             Points at which the albedo should be updated.
+        alpha: array-like, same shape as x
+            Initial alpha.
+        snow_ix: array
+            Indices where there is snow.
+        firn_ix: array
+            Indices where there is firn.
+        ice_ix: array
+            Indices where there is ice.
+        standard_method_snow: str
+            Standard method of albedo ageing for surface type "snow". Default:
+            Brock (2000).
+        standard_method_firn: str
+            Standard method of albedo ageing for surface type "firn".
+        standard_method_ice: str
+            Standard method of albedo ageing for surface type "ice".
+        a_snow_init: float
+            Initial (maximum) albedo for snow. Default: 0.9
+        a_firn_init: float
+            Initial (maximum albedo for firn. Default: 0.5
         """
         self.x = x
-        self.surface = surface
-        self.a_snow_start = a_snow_start
-        self.a_firn_start = a_firn_start
+        self.a_snow_init = a_snow_init
+        self.a_firn_init = a_firn_init
 
         if alpha is None:
-            self.x[snow_ix] = self.a_snow_start
+            self.x[snow_ix] = self.a_snow_init
 
-    def update_brock(self, p1=0.86, p2=0.155, Ta=None):
-        """Update the snow albedo using the Brock et al. (2000) equation.
+        self.tmax_avail = cfg.PARAMS['tminmax_available']
+
+    def update_brock(self, p1=0.86, p2=0.155, t_acc=None):
+        """
+        Update the snow albedo using the method in [Brock et al. (2000)]_.
 
         Parameters
         ----------
@@ -2824,38 +2888,98 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         p2: float, optional
            Empirical coefficient. Default: (see Pellicciotti et al., 2005 and
            Gabbi et al., 2014)
-        Ta: array-like
+        t_acc: array-like
             Accumulated daily maximum temperature > 0 deg C since snowfall.
             Default: None (calculate).
+
+        References
+        ----------
+        [Brock et al. (2000)]_.. : Brock, B., Willis, I., & Sharp, M. (2000).
+            Measurement and parameterization of albedo variations at Haut
+            Glacier d’Arolla, Switzerland. Journal of Glaciology, 46(155),
+            675-688. doi:10.3189/172756500781832675
         """
+        # TODO: Maybe change this and make t_acc a non-keyword parameter
+        # TODO: Maybe make t_acc a cached property in the GlacierMeteo class!
+        if t_acc is None:
+            t_acc = self.get_accumulated_temperature()
 
-        Tacc = self.get_accumulated_temperature()
+        # todo: check clipping with francesca: The function can become greater than one!
+        # clip at 1. so that alpha doesn't become bigger than p1
+        alpha = p1 - p2 * np.log10(np.clip(t_acc, 1., None))
+        return alpha
 
-        a = p1 - p2 * np.log10(Tacc)
-        raise NotImplementedError
-
-    def get_accumulated_temperature(self):
+    def update_oerlemans(self, snowcover, a_frsnow_oerlemans=0.75,
+                         a_firn_oerlemans=0.53, a_ice_oerlemans=0.34,
+                         t_star=21.9, d_star=0.032, event_thresh=0.02):
         """
-        Calculate accumulated daily max temperature since last snowfall.
-        """
+        Update the snow albedo using the [Oerlemans & Knap (1998)]_ equations.
 
-    def update_oerlemans(self, date, a_snow_oerlemans=0.75,
-                         a_firn_oerlemans=0.53, t_star=21.9):
-        """Update the snow albedo using the Oerlemans & Knap (1998) equation.
+        This method accounts for the albedo transition for small snow depths on
+        a glacier as well. In the original paper, there is always the ice
+        albedo returned as background. This is probably becauseAs the background ice albedo, a characteristic value
+        is assumed. If a snowfall event depth is smaller than a defined
+        threshold then the ice albedo is returned.
+        Either a `py:class:crampon.core.models.massbalance.SnowFirnCover`
+        object or age_days and thickness have to be given.
 
         Parameters
         ----------
-        date: datetime.datetime
-            Date for which to calculate the albedo.
+        snowcover: `py:class:crampon.core.models.massbalance.SnowFirnCover`
+            A SnowFirnCover object.
+        a_frsnow_oerlemans: float, optional
+            Characteristic albedo of fresh snow. Default: 0.75 (see Oerlemans &
+            Knap (1998)).
+        a_firn_oerlemans: float, optional
+            Characteristic albedo of firn. Default: 0.53 (see Oerlemans & Knap
+            (1998)).
+        a_ice_oerlemans: float, optional
+            Characteristic albedo of ice. Default: 0.34  (see Oerlemans & Knap
+            (1998)).
         t_star: float, optional
             Typical time scale determining how fast a fresh snowfall reaches
-            the firn albedo. Default: 21.9 (See Oerlemans & Knap (1998)).
+            the firn albedo (d). Default: 21.9 (see Oerlemans & Knap (1998)).
+        d_star: float, optional
+            Characteristic scale for snow depth (m). Default: 0.032  (see
+            Oerlemans & Knap (1998)).
+        event_thresh: float, optional
+            The snowfall event threshold in meters that defines from which
+            depth on a fresh snowfall has an influence on the albedo. Default:
+            0.02m.
+
+        References
+        ----------
+        [Oerlemans & Knap (1998)]_.. : Oerlemans, J., & Knap, W. (1998). A 1
+            year record of global radiation and albedo in the ablation zone of
+            Morteratschgletscher, Switzerland. Journal of Glaciology, 44(147),
+            231-238. doi:10.3189/S0022143000002574
         """
 
-        age_days = (self.snow.age - date).days
-        a = a_firn_oerlemans + (a_snow_oerlemans - a_firn_oerlemans) + \
-            np.exp(age_days / t_star)
-        raise NotImplementedError
+        age_days = snowcover.age_days[np.arange(snowcover.n_heights),
+                                      snowcover.top_layer]
+        snow_depth = snowcover.get_height_by_type('snow')
+        firn_depth = snowcover.get_height_by_type('firn')
+
+        # albedo of snow after i days (eq. 4 in paper)
+        alpha_i_s = a_firn_oerlemans + \
+                    (a_frsnow_oerlemans - a_firn_oerlemans) * \
+                    np.exp(-age_days / t_star)
+
+        # background albedo
+        a_background = np.ones_like(snow_depth) * a_ice_oerlemans
+        a_background[firn_depth > 0.] = a_firn_oerlemans
+
+        # total albedo - smooth transition to ice albedo (eq. 5 in paper)
+        # note 1: missing brackets around "a_ice_oerlemans - alpha_i_s" added.
+        # note 2: a_ice_oerlemans replaced by a_background to account for firn.
+        alpha_i_total = alpha_i_s + (a_background - alpha_i_s) * \
+            np.exp(-snow_depth / d_star)
+
+        # here comes the snowfall event threshold (eq. 6 in paper)
+        sh_too_low = np.where(snow_depth < event_thresh)
+        alpha_i_total[sh_too_low] = a_background[sh_too_low]
+
+        return alpha_i_total
 
     def update_ensemble(self):
         """ Update the albedo using an ensemble of methods."""

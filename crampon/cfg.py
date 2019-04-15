@@ -227,6 +227,8 @@ def initialize(file=None):
     if _factor not in ['stddev', 'stddev_perglacier']:
         _factor = cp.as_float('prcp_scaling_factor')
     oggmcfg.PARAMS['prcp_scaling_factor'] = _factor
+    oggmcfg.PARAMS['tminmax_available'] = cp.as_int('tminmax_available')
+    oggmcfg.PARAMS['albedo_method'] = cp['albedo_method']
 
     # Inversion
     oggmcfg.PARAMS['invert_with_sliding'] = cp.as_bool('invert_with_sliding')
@@ -257,10 +259,10 @@ def initialize(file=None):
            'invert_with_sliding', 'optimize_inversion_params',
            'use_multiple_flowlines', 'leclercq_rgi_links', 'optimize_thick',
            'mpi_recv_buf_size', 'tstar_search_window', 'use_bias_for_run',
-           'run_period', 'prcp_scaling_factor', 'use_intersects',
-           'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
-           'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
-           'run_mb_calibration']
+           'run_period', 'prcp_scaling_factor', 'tminmax_available',
+           'use_intersects', 'filter_min_slope', 'auto_skip_task',
+           'correct_for_neg_flux', 'problem_glaciers', 'bgmon_hydro',
+           'bgday_hydro', 'run_mb_calibration', 'albedo_method']
     for k in ltr:
         cp.pop(k, None)
 
