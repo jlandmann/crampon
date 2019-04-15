@@ -482,15 +482,15 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         self.ratio_s_i = cfg.PARAMS['ratio_mu_snow_ice']
 
         if mu_ice is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration()
             mu_ice = cali_df[self.__name__ + '_' + 'mu_ice']
         if (mu_ice is not None) and (mu_snow is None):
             mu_snow = mu_ice * self.ratio_s_i
         if (mu_ice is None) and (mu_snow is None):
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration()
             mu_snow = cali_df[self.__name__ + '_' + 'mu_ice'] * self.ratio_s_i
         if bias is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration()
             if cfg.PARAMS['use_bias_for_run']:
                 bias = cali_df[self.__name__ + '_' + 'bias']
             else:
@@ -498,7 +498,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                                     data=np.zeros_like(cali_df.index,
                                                        dtype=float))
         if prcp_fac is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration()
             prcp_fac = cali_df[self.__name__ + '_' + 'prcp_fac']
 
         self.mu_ice = mu_ice
@@ -506,22 +506,22 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         self.bias = bias
         self.prcp_fac = prcp_fac
 
-        if snow_init is None:
-            self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
-        else:
-            self.snow_init = np.atleast_2d(snow_init)
+        #if snow_init is None:
+        #    self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
+        #else:
+        #    self.snow_init = np.atleast_2d(snow_init)
 
-        # todo: REPLACE THIS! It's just for testing
-        rho_init = np.zeros_like(self.snow_init)
-        rho_init.fill(100.)
-        origin_date = dt.datetime(1961, 1, 1)
-        if snowcover is None:
-            self.snowcover = SnowFirnCover(self.heights, self.snow_init,
-                                           rho_init, origin_date)
-        else:
-            self.snowcover = snowcover
+        ## todo: REPLACE THIS! It's just for testing
+        #rho_init = np.zeros_like(self.snow_init)
+        #rho_init.fill(100.)
+        #origin_date = dt.datetime(1961, 1, 1)
+        #if snowcover is None:
+        #    self.snowcover = SnowFirnCover(self.heights, self.snow_init,
+        #                                   rho_init, origin_date)
+        #else:
+        #    self.snowcover = snowcover
 
-        self._snow = np.nansum(self.snowcover.swe, axis=1)
+        #self._snow = np.nansum(self.snowcover.swe, axis=1)
 
         # Read file
         fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
@@ -539,7 +539,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
             # Read timeseries
             self.temp = nc.variables['temp'][:]
-            # Todo: Think of nicer extrapolation method than fill with mean
             if isinstance(self.prcp_fac, pd.Series):
                 self.prcp = nc.variables['prcp'][:] * \
                             self.prcp_fac.reindex(index=time,
@@ -683,10 +682,14 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
             temp + cfg.ZERO_DEG_KELVIN)
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
 
+        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
         # remove old snow to make model faster
         if date.day == 1:  # this is a good compromise in terms of time
             oldsnowdist = np.where(self.snowcover.age_days > 365)
             self.snowcover.remove_layer(ix=oldsnowdist)
+
+        if date == pd.Timestamp(1966, 9, 15):
+            print('stop')
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -740,6 +743,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
     cali_params_list = ['mu_hock', 'a_ice', 'a_snow', 'prcp_fac']
     cali_params_guess = OrderedDict(
         zip(cali_params_list, [1.8, 0.013, 0.013, 1.5]))
+    # todo: is there also a factor of 0.5 between a_snow and a_ice?
 
     def __init__(self):
         raise NotImplementedError
@@ -750,7 +754,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
         At the moment the mass balance equation is the simplest formulation:
 
-        MB(z) = PRCP_FAC * PRCP_SOL(z) - (mu_hock + mu_{snow/ice} * I_pot) * max(T(z) - Tmelt, 0)
+        MB(z) = PRCP_FAC * PRCP_SOL(z)
+                - (mu_hock + mu_{snow/ice} * I_pot) * max(T(z) - Tmelt, 0)
 
         where MB(z) is the mass balance at height z in mm w.e., PRCP_FAC is
         the precipitation correction factor, PRCP_SOL(z) is the solid
@@ -931,7 +936,18 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         with the ensemble mean as long as there is not an EnsembleMassBalance
         class.
 
-        cali_df = gdir.get_calibration(self)
+        Parameters
+        ----------
+        gdir
+        tf
+        srf
+        bias
+        prcp_fac
+        snow_init
+        snowcover
+        filename
+        heights_widths
+        filesuffix
 
 
         References
@@ -962,10 +978,12 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             self.update_albedo = self.albedo.update_ensemble
 
         if tf is None:
+            cali_df = gdir.get_calibration(self)
             self.tf = cali_df[self.__name__ + '_' + 'tf']
         else:
             self.tf = tf
         if srf is None:
+            cali_df = gdir.get_calibration(self)
             self.srf = cali_df[self.__name__ + '_' + 'srf']
         else:
             self.srf = srf
