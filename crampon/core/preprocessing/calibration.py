@@ -413,7 +413,7 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                 run_hist_field = curr_model.time_elapsed[:-1]  # same here
                 scov_field = copy.deepcopy(curr_model.snowcover)
             try:
-                if date == measured.iloc[i+1].date_f:
+                if date == measured.loc[i+1].date_f:
                     run_hist_minday = curr_model.time_elapsed[:-1]  # same here
                     scov_minday = copy.deepcopy(curr_model.snowcover)
             except IndexError:
@@ -771,7 +771,7 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
 
         mb = []
         if i < len(measured) - 1:
-            end_date = max(row.date1, measured.iloc[i+1].date_f)  # maximum of field and fall date
+            end_date = max(row.date1, measured.loc[i+1].date_f)  # maximum of field and fall date
         else:  # last row
             end_date = row.date1
 
@@ -784,7 +784,7 @@ def calibrate_braithwaite_on_measured_glamos(gdir, ratio_s_i=0.5,
                 run_hist_field = curr_model.time_elapsed[:-1]  # same here
                 scov_field = copy.deepcopy(curr_model.snowcover)
             try:
-                if date == measured.iloc[i+1].date_f:
+                if date == measured.loc[i+1].date_f:
                     run_hist_minday = curr_model.time_elapsed[:-1]  # same here
                     scov_minday = copy.deepcopy(curr_model.snowcover)
             except IndexError:
