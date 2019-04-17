@@ -294,10 +294,10 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
 
     # Is there already a calibration where we just can append, or new file
     try:
-        cali_df = gdir.get_calibration(mb_model)
+        cali_df = gdir.get_calibration()
     # think about an outer join of the date indices here
     except FileNotFoundError:
-        cali_df = pd.DataFrame(columns=to_calibrate_csv,
+        cali_df = pd.DataFrame(columns=to_calibrate_csv+['mu_star'],  # 4 OGGM
                                index=pd.date_range(measured.date0.min(),
                                                    measured.date1.max()))
 
