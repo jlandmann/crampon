@@ -285,6 +285,9 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
             measured = measured[
                 measured.date1.dt.year < mb_model.calibration_timespan[1]]
 
+    # very important: reset index to exclude index gaps
+    measured.reset_index(drop=True, inplace=True)
+
     # Find out what we will calibrate
     to_calibrate_csv = [mb_model.__name__ + '_' + i for i in
                         mb_model.cali_params_guess.keys()]
@@ -408,8 +411,9 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
             curr_model.snowcover = copy.deepcopy(scov_field)
 
         mb = []
-        if i < len(measured) - 1:
-            end_date = max(row.date1, measured.iloc[i+1].date_f)  # max of field and fall date
+        if i < max(measured.index):
+            # max(field & fall date)
+            end_date = max(row.date1, measured.loc[i+1].date_f)
         else:  # last row
             end_date = row.date1
 
@@ -425,7 +429,7 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                 if date == measured.loc[i+1].date_f:
                     run_hist_minday = curr_model.time_elapsed[:-1]  # same here
                     scov_minday = copy.deepcopy(curr_model.snowcover)
-            except IndexError:
+            except (IndexError, KeyError):
                 if date == row.date1:
                     run_hist_minday = curr_model.time_elapsed[:-1]  # same here
                     scov_minday = copy.deepcopy(curr_model.snowcover)
@@ -492,7 +496,7 @@ def to_minimize_braithwaite_fixedratio(x, gdir, measured, prcp_fac,
     assert len(measured_cut == 1)
 
     # make entire MB time series
-    # we take the minimum of date0 and the found minimum date from the winter calibration
+    # take minimum of date0 and found minimum date from the winter calibration
     # todo: does this agree with the dates in the GLAMOS files? otherwise we are no longer allowed to calculate the error
     min_date = measured[measured.date_f.dt.year == y0].date0.values[0]
     if y1:
