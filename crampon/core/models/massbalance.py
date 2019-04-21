@@ -749,8 +749,26 @@ class HockModel(DailyMassBalanceModelWithSnow):
         zip(cali_params_list, [1.8, 0.013, 0.013, 1.5]))
     # todo: is there also a factor of 0.5 between a_snow and a_ice?
 
-    def __init__(self):
-        raise NotImplementedError
+    def __init__(self, gdir, mu_hock=None, a_ice=None,
+                 prcp_fac=None, bias=None, snow_init=None, snowcover=None,
+                 filename='climate_daily', heights_widths=(None, None),
+                 albedo_method=None, filesuffix=''):
+        # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
+        super().__init__(gdir, mu_star=mu_hock, bias=bias, prcp_fac=prcp_fac,
+                         heights_widths=heights_widths, filename=filename,
+                         filesuffix=filesuffix, snow_init=snow_init,
+                         snowcover=snowcover)
+
+        if mu_hock is None:
+            cali_df = gdir.get_calibration(self)
+            self.mu_hock = cali_df[self.__name__ + '_' + 'mu_hock']
+        else:
+            self.mu_hock = mu_hock
+        if a_ice is None:
+            cali_df = gdir.get_calibration(self)
+            self.a_ice = cali_df[self.__name__ + '_' + 'a_ice']
+        else:
+            self.a_ice = a_ice
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -1904,7 +1922,7 @@ class SnowFirnCover(object):
         self.remove_unnecessary_array_space()
 
         # if layer to be removed are at the bottom, justify the arrays
-        if 0 in remove_ix[1]:
+        if (len(remove_ix) == 2) and (0 in remove_ix[1]):
             # This adjusts the position of the layers within the array
             self.swe = utils.justify(self.swe, invalid_val=np.nan, side='left')
             self.rho = utils.justify(self.rho, invalid_val=np.nan, side='left')
@@ -1961,8 +1979,7 @@ class SnowFirnCover(object):
         self.last_update[remove] = np.nan
         self.age_days[remove] = np.nan
 
-        mask = np.ma.array(old_swe, mask=np.invert(
-            (cum_swe <= swe) & (cum_swe != 0) & ~np.isnan(cum_swe)))
+        mask = np.ma.array(old_swe, mask=np.invert(remove_bool))
         swe_to_remove = np.nansum(mask, axis=1)
         swe[:, 0] -= swe_to_remove
 
@@ -2019,6 +2036,10 @@ class SnowFirnCover(object):
 
         if (swe_balance < 0.).any():
             self.melt(np.clip(swe_balance, None, 0))
+
+        # todo: why dont we use self.remove_layers in self.melt, where unnecessary array space is removed?
+        if date.day == 1:
+            self.remove_unnecessary_array_space()
 
     def add_height_nodes(self, nodes):
         """
@@ -2173,7 +2194,11 @@ class SnowFirnCover(object):
         total_rho: float
             The total density of the layer column at each height node.
         """
-        return np.average(self.rho, axis=1, weights=self.swe)
+
+        # we need to mask, np.average is not able to ignore NaNs
+        masked_rho = np.ma.masked_array(self.rho, np.isnan(self.rho))
+        masked_swe = np.ma.masked_array(self.swe, np.isnan(self.swe))
+        return np.average(masked_rho, axis=1, weights=masked_swe)
 
     def get_accumulated_layer_depths(self, which='center', ix=None):
         """
@@ -2301,9 +2326,11 @@ class SnowFirnCover(object):
 
         # this sets values to NaN
         ice_ix = self.get_type_indices('ice')
+        # todo: a check that the layers to be removed are at the bottom!
         self.remove_layer(ice_ix)
 
-    def update_temperature(self, date, max_depth=15., deltat=86400, lower_bound=cfg.ZERO_DEG_KELVIN):
+    def update_temperature(self, date, airtemp, max_depth=15., deltat=86400,
+                           lower_bound=cfg.ZERO_DEG_KELVIN):
         """
         Update the temperature profile of the snow/firn pack.
 
@@ -2313,7 +2340,16 @@ class SnowFirnCover(object):
 
         Parameters
         ----------
+        date: dt.datetime
+            The date when temperature should be updated.
+        airtemp: float
+            The air temperature at `date` (deg C). This is assumed to be the
+            uppermost layer temperature
         max_depth: float
+            Maximum depth until which the temperature profile is
+            calculated (m). Default: 15.
+        deltat: float
+            Time step (s). Default: 86400 (one day).
         lower_bound: float
             Lower boundary condition temperature (K). Default: 273.15
             (temperate ice).
@@ -2484,6 +2520,10 @@ class SnowFirnCover(object):
             self.swe = self.swe - self.refreezing_potential
             self.rho = (cfg.RHO_W * self.swe) / sh
             # TODO: LET THE TEMPERATURE RISE DUE TO LATENT HEAT OF FUSION!
+            energy_phase_change = cfg.LATENT_HEAT_FUSION_WATER * cfg.RHO_W * \
+                                  - self.refreezing_potential
+            self.temperature = self.temperature + (energy_phase_change / (
+                    cfg.HEAT_CAP_ICE * self.rho * self.sh))
         else:
             # see what is there in terms of liquid water content & melt at top
             # let refreeze only this
@@ -2529,14 +2569,20 @@ class SnowFirnCover(object):
         firn_ix = self.get_type_indices('firn')
         poresclosed_ix = self.get_type_indices('poresclosed')
 
-
-        # careful with days!!!! (the difference might be 364 days or so)
-
-        # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
-        #t = (date - self.origin[firn_ix]).days / 365.25
-        date_arr = np.zeros_like(self.origin)
-        date_arr[~pd.isnull(self.origin)] = date
-        t = np.fromiter((d.days for d in (date - self.origin[firn_ix])), dtype=float, count=len(date - self.origin[firn_ix])).reshape(self.origin[firn_ix].shape) / 365.25
+        # init array
+        date_arr = np.zeros_like(self.last_update)
+        # shape of current layers with today's date
+        date_arr[~pd.isnull(self.last_update)] = date
+        # make diff in days
+        # Todo: if we use last_update here, we have a conflict: It's cool for the snow-firn model transition, but doesn't work any more later when we want to use the non-derived Reeh densifiation formula (we need the time span since the firn became firn
+        tdarray = np.asarray(date_arr - self.last_update)
+        # take care of NaN
+        mask = tdarray == tdarray  # This gives array([True, False])
+        tdarray[mask] = [x.days for x in tdarray[mask]]
+        # get year fraction
+        t = (tdarray / 365.25).astype(float)
+        # t may not be zero, otherwise equation fails;so we make it min one day
+        t[t == 0.] = 1/365.25
 
         if rho_f0_const:
             # initial firn density from Huss (2013) is 490, anyway...
@@ -2549,9 +2595,7 @@ class SnowFirnCover(object):
         # just to not divide by zero when a layer forms
 
             # "b" is in m w.e. a-1 as in Huss (2013). In Reeh(2008): m ice a-1
-            b = np.divide(self.get_overburden_swe(), t, out=np.zeros_like(self.get_overburden_swe()), where=t!= 0)[firn_ix]
-            #b = self.get_overburden_swe(firn_ix) / t  # annual accumulation rate
-
+            b = self.get_overburden_swe() / t  # annual accumulation rate
 
             c_reeh_ice = k1 * np.sqrt(
                 b * cfg.RHO / cfg.RHO_W)  # 550 kg m-3 < rho_f < 800 kg m-3
@@ -2560,75 +2604,113 @@ class SnowFirnCover(object):
             rho_f = cfg.RHO - (cfg.RHO - rho_f0) * np.exp(
                 -c_reeh_ice * t)
 
-            self.rho[firn_ix] = rho_f
+            self.rho[firn_ix] = rho_f[firn_ix]
+            # do not update last_update here!
+            # Todo: change that last_update cannot be updated here!
+            # we need to update the last_update for those layers that have crossed the firn-poresclosed threshold = > otherwise we take the wrong basis for the pores_closeoff densification procedure
+            self.last_update[np.where(self.status == CoverTypes['poresclosed'].value)] = date
 
-        # TODO: apply refreezing here?
-        if self.refreezing:
-            self.update_refreezing_potential()
-
-            # rho_f += RF_t
-
-        # TODO: HERE WE ASSUME ONE YEAR => t NEEDS TO BE ADJUSTED OR AN ATTRIBUTE "LAST_UPDATED" NEEDS TO BE MADE
-        #for h, l in poresclosed_ix:
-        pc_age = np.fromiter((d.days for d in (date - self.origin[poresclosed_ix])),
-                    dtype=float,
-                    count=len(date - self.origin[poresclosed_ix])) / 365.25
-        self.rho[poresclosed_ix] = self.rho[poresclosed_ix] + poresclosed_rate * pc_age
+        # TODO: HERE WE ASSUME ONE YEAR => t NEEDS TO BE ADJUSTED
+        self.rho[poresclosed_ix] = self.rho[poresclosed_ix] + \
+                                   poresclosed_rate * t[poresclosed_ix]
+        self.last_update[poresclosed_ix] = date
+        self.last_update[self.status == CoverTypes['poresclosed'].value] = date
+        self.last_update[self.status == CoverTypes['ice'].value] = date
 
         # last but not least
         self.remove_ice_layers()
         self.remove_unnecessary_array_space()
 
-    def densify_huss_derivative(self, date, f_firn=2.4):
+    def densify_huss_derivative(self, date, f_firn=2.4, rho_f0_const=False,
+                                poresclosed_rate=10.):
         """ Try and implement Reeh"""
 
 
-        raise NotImplementedError
+        #raise NotImplementedError
 
-        self.merge_firn_layers(date)
+        # Mean annual surface temperature, 'presumably' firn temperature at 10m
+        # depth (Reeh (2008)); set to 273 according to Huss 2013
+        # TODO: this should be actually calculated
+        T_ms = cfg.ZERO_DEG_KELVIN  # K
 
+        # some model constant
+        k1 = f_firn * 575. * np.exp(
+            - cfg.E_FIRN / (cfg.R * T_ms))  # m(-0.5)a(-0.5)
+
+        # what happens between 800 and pore close-off? We just replace it.
         firn_ix = self.get_type_indices('firn')
         poresclosed_ix = self.get_type_indices('poresclosed')
-        snow_ix = self.get_type_indices('snow')
 
-        for h, l in firn_ix:
-            # TODO: Is the Spec_bal really only Snowlayers?
-            snow_ix_h = [(hs, ls) for (hs, ls) in snow_ix if hs == h]
+        # careful with days!!!! (the difference might be 364 days or so)
 
+        # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
+        # init array
+        date_arr = np.zeros_like(self.last_update)
+        # shape of current layers with today's date
+        date_arr[~pd.isnull(self.last_update)] = date
+        # make diff in days
+        # Todo: if we use last_update here, we have a conflict: It's cool for the snow-firn model transition, but doesn't work any more later when we want to use the non-derived Reeh densifiation formula (we need the time span since the firn became firn
+        tdarray = np.asarray(date_arr - self.last_update)
+        # take care of NaN
+        mask = tdarray == tdarray  # This gives array([True, False])
+        tdarray[mask] = [x.days for x in tdarray[mask]]
+        # get year fraction
+        t = (tdarray / 365.25).astype(float)
+        # t may not be zero, otherwise equation fails;so we make it min one day
+        t[t == 0.] = 1 / 365.25
 
-            # SPEC_BAL is in M ICE!!!!
-            # is the specific balance meant as the annual balance or all overburden pressure?
-            #spec_bal = np.sum([self.grid[hs][ls].swe for (hs, ls) in snow_ix_h]) * cfg.RHO_W / cfg.RHO
+        # todo check if this is correct
+        t = np.clip(t, None, 1)
 
-            # This assumes that the spec bal is all overburden pressure
-            spec_bal = self.get_overburden_swe(h, l) * cfg.RHO_W / cfg.RHO
+        if rho_f0_const:
+            # initial firn density from Huss (2013) is 490, anyway...
+            rho_f0 = cfg.PARAMS['snow_firn_threshold']  # kg m-3
+        else:
+            # todo:attention, this is now different from the equation above
+            rho_f0 = self.rho.copy()
 
-            # TODO: this should be actually calculated
-            T_ms = cfg.ZERO_DEG_KELVIN  # K
-
-            # some model constant
-            k1 = f_firn * 575. * np.exp(
-                - cfg.E_FIRN / (cfg.R * T_ms))  # m(-0.5)a(-0.5)
-
-            # TODO: ACTUALLY WE SHOULD DERIVE THE EQUATION AND THEN GO FROM TIME STEP TO TIME STEP
-            t = (date - self.grid[h][l].origin).days / 365.25
+            # just to not divide by zero when a layer forms
+            # "b" is in m w.e. a-1 as in Huss (2013). In Reeh(2008): m ice a-1
+            # todo: here we would need to get the accumulation of the last year if positive!)
+            dummy = np.zeros_like(t)
+            dummy[range(t.shape[0]), self.top_layer] = 1
+            dummy = dummy != 0.
+            #ovb_swe_mask = np.logical_or((~(t <= 1)), ~(dummy))  # last years accumulation
+            ovb_swe_mask = ~np.logical_or(((t <= 1)), (dummy))
+            masked = np.ma.array(self.get_overburden_swe(), mask=ovb_swe_mask,
+                                 fill_value=np.nan)
+            b = np.nanmax(masked, axis=1)
+            #b = b.filled(masked.fill_value)  # to eliminate 1e20 from the mask
+            #b = np.repeat(np.atleast_2d(b).T, self.rho.shape[1], axis=1)
+            #b = np.clip(b, 0, None)
+            b = np.apply_along_axis(lambda x: np.clip(x, 0, b), 0,
+                                self.get_overburden_swe())
+            # todo: there is a problem when there is only one layer: it does not densify, because it has no overburden weight and then it densifies to 900 directly
+            b[b == 0.] = self.rho[b == 0.] / 2.
 
             c_reeh_ice = k1 * np.sqrt(
-                spec_bal * cfg.RHO / cfg.RHO_W)  # 550 < rho_f < 800 (kg m-3)
+                b * cfg.RHO / cfg.RHO_W)  # 550 kg m-3 < rho_f < 800 kg m-3
 
-            if spec_bal > 0.:
+            # Huss 2013, equation 5
+            rho_f = cfg.RHO - (cfg.RHO - rho_f0) * np.exp(
+                -c_reeh_ice * t)
 
-                current_rho = self.grid[h][l].rho
+            self.rho[firn_ix] = rho_f[firn_ix]
+            # do not update last_update here!
+            # Todo: change that last_update cannot be updated here!
+            # we need to update the last_update for those layers that have crossed the firn-poresclosed threshold = > otherwise we take the wrong basis for the pores_closeoff densification procedure
+            self.last_update[np.where(self.status == CoverTypes['poresclosed'].value)] = date
 
-                drho = c_reeh_ice * (cfg.RHO - self.grid[h][l].rho)
-
-                self.grid[h][l].rho += drho
-
-            # do not forget
-            self.grid[h][l].last_update = date
+        # TODO: HERE WE ASSUME ONE YEAR => t NEEDS TO BE ADJUSTED
+        self.rho[poresclosed_ix] = self.rho[poresclosed_ix] + \
+                                   poresclosed_rate * t[poresclosed_ix]
+        self.last_update[poresclosed_ix] = date
+        self.last_update[self.status == CoverTypes['poresclosed'].value] = date
+        self.last_update[self.status == CoverTypes['ice'].value] = date
 
         # last but not least
         self.remove_ice_layers()
+        self.remove_unnecessary_array_space()
 
     def densify_firn_barnola(self, date, beta=-29.166, gamma=84.422,
                              delta=-87.425, epsilon=30.673):
@@ -2652,63 +2734,76 @@ class SnowFirnCover(object):
 
         """
 
-        self.merge_firn_layers(date)
-
         firn_ix = self.get_type_indices('firn')
         poresclosed_ix = self.get_type_indices('poresclosed')
+        fp_ix = (np.append(firn_ix[0], poresclosed_ix[0]),
+                 np.append(firn_ix[1], poresclosed_ix[1]))
 
         a0 = 25400
-        for h, l in firn_ix:
-            k1 = a0 * np.exp(
-                -60000 / (cfg.R * self.grid[h][l].temperature))
+        k1 = a0 * np.exp(-60000 / (cfg.R * self.temperature))
 
-            print('before', self.grid[h][l].rho)
+        # TODO: dt is in seconds! which unit is rho here=?
+        date_arr = np.zeros_like(self.last_update)
+        date_arr[~pd.isnull(self.last_update)] = date
+        tdarray = np.asarray(date_arr - self.last_update)
+        mask = tdarray == tdarray
+        tdarray[mask] = [x.days for x in tdarray[mask]]
+        days = tdarray.astype(float)
 
-            # TODO: dt is in seconds! which unit is rho here=?
-            days = (date - self.grid[h][l].last_update).days
+        days2reduce = days.copy()
 
-            for dt in (np.ones(days) * 24 * 3600):
+        for dt in (np.ones(int(np.nanmax(days))) * 24 * 3600):
 
-                current_rho = self.grid[h][l].rho
-                si_ratio = current_rho / cfg.RHO
+            current_rho = self.rho
+            si_ratio = current_rho / cfg.RHO
 
-                if current_rho < 800.:
-                    f = 10 ** ((beta * si_ratio ** 3) +
-                               (gamma * si_ratio ** 2) +
-                               (delta * si_ratio) +
-                               epsilon)
-                else:
-                    f = ((3. / 16.) * (1 - si_ratio)) / \
-                        (1. - (1. - si_ratio) ** 0.3) ** 3.
+            f_b800 = 10 ** ((beta * si_ratio ** 3) +
+                            (gamma * si_ratio ** 2) +
+                            (delta * si_ratio) +
+                            epsilon)
+            f_a800 = ((3. / 16.) * (1 - si_ratio)) / \
+                     (1. - (1. - si_ratio) ** 0.3) ** 3.
 
-                p_over = self.get_overburden_swe(h, l) * 1000. * cfg.G
+            f = np.zeros_like(current_rho)
+            f[current_rho < 800.] = f_b800[current_rho < 800.]
+            f[current_rho >= 800.] = f_a800[current_rho >= 800.]
 
-                try:
-                    p_bubble = self.grid[h][l].bubble_pressure  # if pores closed
-                except AttributeError:
-                    p_bubble = 0.
-                drho = k1 * current_rho * f * ((p_over - p_bubble)/10**6) ** 3 * dt
+            p_over = self.get_overburden_mass() * cfg.G
 
-                self.grid[h][l].rho += drho
+            try:
+                p_bubble = self.bubble_pressure  # if pores closed
+            except AttributeError:
+                p_bubble = 0.
 
-            print('after', self.grid[h][l].rho)
-            if h == 400:
-                print('hi')
+            # time factor tells whether layer still needs 2 be densified or not
+            # TODO: with this we just densify the layers n times, but we don't account for WHEN they were densified (temperature, current density!)
+            time_factor = (days2reduce > 0.).astype(int)
+            drho = time_factor * k1 * current_rho * f * \
+                   ((p_over - p_bubble)/10**6) ** 3 * dt
+
+            self.rho[fp_ix] += drho[fp_ix]
 
             # do not forget
-            self.grid[h][l].last_update = date
+            self.last_update[fp_ix] = date
+
+            days2reduce -= 1
 
         # last but not least
         self.remove_ice_layers()
+        self.remove_unnecessary_array_space()
 
+    # Todo: what to do with rhof?
     def densify_snow_anderson(self, date, eta0=3.7e7, etaa=0.081, etab=0.018,
                               snda=2.8e-6, sndb=0.042, sndc=0.046, rhoc=150.,
                               rhof=100., target_dt=24*3600):
         """
-        Snow densification according to Anderson (1976).
+        Snow densification according to [Anderson (1976)]_.
 
         The values for the parameters are taken from the SFM2 model (Essery,
-        2015). The biggest problem might be that they are not tested on
+        2015) or Anderson (1976), respectively. As said in the ISBA-ES
+        model description (Boone (2009)), snda, sndb, sndc and rhoc are
+        actually site-specific parameters, but adopted for ISBA-ES (and SFM2
+        as well)  The biggest problem might be that they are not tested on
         perennial snow.
 
         Parameters
@@ -3153,12 +3248,12 @@ class MassBalance(object, metaclass=SuperclassMeta):
         # MB_model classes
 
     @staticmethod
-    def _custom_cumsum(x):
+    def time_cumsum(x):
         """Cumulative sum along time, skipping NaNs."""
         return x.cumsum(dim='time', skipna=True)
 
     @staticmethod
-    def _custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
+    def custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
         """Calculate quantiles with user input."""
         return x.quantile(qs)
 
