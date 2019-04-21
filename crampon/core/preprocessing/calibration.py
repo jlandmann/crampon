@@ -142,11 +142,22 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1, *a
     # Here the awkward part comes:
     # Pack x again to an OrderedDict that can be passed to the mb_model
     if winteronly:
-        calip_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k in ['prcp_fac']], x))
-        other_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k not in ['prcp_fac']], [v for k, v in kwargs.items() if ((k in mb_model.cali_params_guess.keys()) and (k not in ['prcp_fac']))]))
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], [v for k, v in kwargs.items() if (
+                        (k in mb_model.cali_params_guess.keys()) and (
+                            k not in ['prcp_fac']))]))
     else:
-        calip_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k not in ['prcp_fac']], x))
-        other_dict = dict(zip([k for k, v in mb_model.cali_params_guess.items() if k in ['prcp_fac']], [v for k, v in kwargs.items() if k in ['prcp_fac']]))  # prcp_fac is the only excluded for the annual calibration
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], [v for k, v in kwargs.items() if k in [
+                'prcp_fac']]))  # prcp_fac is the only excluded for annual cali
 
     params = {**calip_dict, **other_dict}
 
@@ -393,9 +404,9 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
             cali_df.loc[row.date0:row.date1, mb_model.__name__ + '_' + k] = v
         if isinstance(mb_model, massbalance.BraithwaiteModel):
             cali_df.loc[row.date0:row.date1,
-            mb_model.__name__ + '_' + 'mu_snow'] = cali_df.loc[
-                                                   row.date0:row.date1,
-                                                   mb_model.__name__ + '_' + 'mu_ice'] * mb_model.ratio_s_i
+            mb_model.__name__ + '_' + 'mu_snow'] = \
+                cali_df.loc[row.date0:row.date1, mb_model.__name__ + '_' +
+                                                 'mu_ice'] * mb_model.ratio_s_i
         if isinstance(mb_model, massbalance.HockModel):
             cali_df.loc[row.date0:row.date1,
             mb_model.__name__ + '_' + 'a_snow'] = cali_df.loc[

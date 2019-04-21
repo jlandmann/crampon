@@ -9,6 +9,7 @@ import datetime as dt
 from enum import IntEnum, unique
 import cython
 from crampon.core.preprocessing import climate
+import numba
 from collections import OrderedDict
 
 
@@ -48,6 +49,9 @@ class DailyMassBalanceModel(MassBalanceModel):
 
         # Needed for the calibration parameter names in the csv file
         self.__name__ = type(self).__name__
+
+        # just a temporal dummy
+        self.snowcover = None
 
         # should probably be replaced by a direct access to a file that
         # contains uncertainties (don't know how to handle that yet)
@@ -427,18 +431,18 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
 
         self._snow = np.nansum(self.snowcover.swe, axis=1)
 
-        # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
-        @property
-        def snow(self):
-            return np.nansum(self.snowcover.swe, axis=1)
+    # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
+    @property
+    def snow(self):
+        return np.nansum(self.snowcover.swe, axis=1)
 
-        @property
-        def snowcover(self):
-            return self._snowcover
+    @property
+    def snowcover(self):
+        return self._snowcover
 
-        @snowcover.setter
-        def snowcover(self, value):
-            self._snowcover = value
+    @snowcover.setter
+    def snowcover(self, value):
+        self._snowcover = value
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         # todo: implement
@@ -1138,34 +1142,80 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
 
+        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
+        # remove old snow to make model faster
+        if date.day == 1:  # this is a good compromise in terms of time
+            oldsnowdist = np.where(self.snowcover.age_days > 365)
+            self.snowcover.remove_layer(ix=oldsnowdist)
+
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
 
 
-class OerlemansModel(DailyMassBalanceModel):
-    """ This class implements the melt model by Oerlemans (2001).
+class OerlemansModel(DailyMassBalanceModelWithSnow):
+    """ This class implements the melt model by [Oerlemans (2001)]_.
 
     The calibration parameter guesses are only used to initiate the calibration
-    are rough mean values from [1]_.
+    are rough mean values from [Gabbi et al. (2014)]_.
 
     Attributes
     ----------
 
     References
     ----------
-    .. [1] : Gabbi, J., Carenzo, M., Pellicciotti, F., Bauder, A., & Funk, M.
-            (2014). A comparison of empirical and physically based glacier
-            surface melt models for long-term simulations of glacier response.
-            Journal of Glaciology, 60(224), 1140-1154.
-            doi:10.3189/2014JoG14J011
+    [Oerlemans (2001)]_.. : Oerlemans, J. (2001). Glaciers and climate change.
+        AA Balkema, Lisse
+    [Gabbi et al. (2014)]_.. : Gabbi, J., Carenzo, M., Pellicciotti, F.,
+        Bauder, A., & Funk, M. (2014). A comparison of empirical and physically
+        based glacier surface melt models for long-term simulations of glacier
+        response. Journal of Glaciology, 60(224), 1140-1154.
+        doi:10.3189/2014JoG14J011
     """
 
     cali_params_list = ['c0', 'c1', 'prcp_fac']
-    _cali_params_guess = OrderedDict(zip(cali_params_list, [-110., 16., 1.5]))
+    cali_params_guess = OrderedDict(zip(cali_params_list, [-110., 16., 1.5]))
+    calibration_timespan = (2005, None)
 
-    def __init__(self):
-        raise NotImplementedError
+    def __init__(self, gdir, c0=None, c1=None, prcp_fac=None, bias=None,
+                 snow_init=None, snowcover=None, filename='climate_daily',
+                 heights_widths=(None, None), albedo_method=None,
+                 filesuffix=''):
+        # todo: here we hand over c0 to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
+        super().__init__(gdir, mu_star=c0, bias=bias, prcp_fac=prcp_fac,
+                         heights_widths=heights_widths, filename=filename,
+                         filesuffix=filesuffix, snow_init=snow_init,
+                         snowcover=snowcover)
+
+        self.albedo = GlacierAlbedo(self.heights)  # TODO: finish Albedo object
+
+        # todo: this is repeated code: make this function separate and lett PelliModel and this model call it!
+        # todo: improve this IF: default is "brock" and ELIFs would be appropriate...but what is the ELSE then?
+        if albedo_method is None:
+            self.albedo_method = cfg.PARAMS['albedo_method'].lower()
+        else:
+            self.albedo_method = albedo_method.lower()
+
+        if self.albedo_method == 'brock':
+            self.update_albedo = self.albedo.update_brock
+        if self.albedo_method == 'oerlemans':
+            self.update_albedo = self.albedo.update_oerlemans
+        if self.albedo_method == 'ensemble':
+            self.update_albedo = self.albedo.update_ensemble
+
+        if c0 is None:
+            cali_df = gdir.get_calibration(self)
+            self.c0 = cali_df[self.__name__ + '_' + 'c0']
+        else:
+            self.c0 = c0
+        if c1 is None:
+            cali_df = gdir.get_calibration(self)
+            self.c1 = cali_df[self.__name__ + '_' + 'c1']
+        else:
+            self.c1 = c1
+
+        # get positive temperature sum since snowfall
+        self.tpos_since_snowfall = np.zeros_like(self.heights)
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -1216,9 +1266,14 @@ class OerlemansModel(DailyMassBalanceModel):
         ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
 
         # Read timeseries
-        itemp = self.temp[ix] + self.temp_bias
-        itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
+        isis = self.meteo.sis[ix]
+
+        tmean = self.meteo.get_tmean_at_heights(date, heights)
+
+        # Todo: make precip calculation method a member of cfg.PARAMS
+        prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date,
+                                                                   heights)
+
         if isinstance(self.prcp_fac, pd.Series):
             try:
                 iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
@@ -1227,39 +1282,31 @@ class OerlemansModel(DailyMassBalanceModel):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
+            iprcp_corr = prcpsol_unc * iprcp_fac
         else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+            iprcp_corr = prcpsol_unc * self.prcp_fac
 
-        # For each height pixel:
-        # Compute temp and tempformelt (temperature above melting threshold)
-        npix = len(heights)
-        temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
-
-        tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, heights, temp)
-
-        if isinstance(self.tf, pd.Series):
+        if isinstance(self.c0, pd.Series):
             try:
-                mu_ice = self.tf.iloc[
-                    self.tf.index.get_loc(date, **kwargs)]
+                c0 = self.c0.iloc[
+                    self.c0.index.get_loc(date, **kwargs)]
             except KeyError:
-                mu_ice = self.param_ep_func(self.tf)
-            if pd.isnull(mu_ice):
-                mu_ice = self.param_ep_func(self.tf)
+                c0 = self.param_ep_func(self.c0)
+            if pd.isnull(c0):
+                c0 = self.param_ep_func(self.c0)
         else:
-            mu_ice = self.tf
+            c0 = self.c0
 
-        if isinstance(self.srf, pd.Series):
+        if isinstance(self.c1, pd.Series):
             try:
-                mu_snow = self.srf.iloc[
-                    self.srf.index.get_loc(date, **kwargs)]
+                c1 = self.c1.iloc[
+                    self.c1.index.get_loc(date, **kwargs)]
             except KeyError:
-                mu_snow = self.param_ep_func(self.srf)
-            if pd.isnull(mu_snow):
-                mu_snow = self.param_ep_func(self.srf)
+                c1 = self.param_ep_func(self.c1)
+            if pd.isnull(c1):
+                c1 = self.param_ep_func(self.c1)
         else:
-            mu_snow = self.srf
+            c1 = self.c1
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
@@ -1268,27 +1315,66 @@ class OerlemansModel(DailyMassBalanceModel):
         else:
             bias = self.bias
 
+        # todo: this is repeated code with PellicciottiModel
+        # todo: improve this formulation: would be cool if Albedo was aware of the date so that we could handle this upstream
+        if (date.year < cfg.PARAMS['tminmax_available']) and \
+                (self.albedo_method == 'brock'):
+            age_days = self.snowcover.age_days[np.arange(
+                self.snowcover.n_heights), self.snowcover.top_layer]
+            albedo = self.albedo.update_oerlemans(self.snowcover)
+        elif (date.year < cfg.PARAMS['tminmax_available']) and \
+                (self.albedo_method == 'ensemble'):
+            raise NotImplementedError('We are not yet able te reduce the '
+                                      'ensemble members.')
+        else:
+            # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
+            # todo: getting efficiently pos t sum between doesn't work with arrays???
+            if self.albedo_method == 'brock':
+                self.tpos_since_snowfall[iprcp_corr > 0.] = 0
+                self.tpos_since_snowfall[iprcp_corr <= 0.] += \
+                    climate.get_temperature_at_heights(self.meteo.tmax[ix],
+                                                       self.meteo.tgrad[
+                                                           ix],
+                                                       self.meteo.ref_hgt,
+                                                       heights)[
+                        iprcp_corr <= 0.]
+                albedo = self.update_albedo(t_acc=self.tpos_since_snowfall)
+            elif self.albedo_method == 'oerlemans':
+                age_days = self.snowcover.age_days[np.arange(
+                    self.snowcover.n_heights), self.snowcover.top_layer]
+                albedo = self.albedo.update_oerlemans(self.snowcover)
+            elif self.albedo_method == 'ensemble':
+                albedo = self.albedo.update_ensemble()  # NotImplementedError
+            else:
+                raise ValueError('Albedo method is still not allowed.')
 
-        qmelt = (1 - alpha) * sis + d * temp
+        # temperature here is in deg C ( Oerlemans 2001, p.48)
+        # W m-2 = W m-2 + W m-2 + W m-2 K-1 * deg C
+        # todo: tmean in Kelvin!?
+        qmelt = (1 - albedo) * isis + c0 + c1 * tmean
 
-        # Todo: IS this true? Or is dt = 86400?
-        dt = 1
-        meltrate = (qmelt * dt) / (cfg.LATENT_HEAT_FUSION_WATER * cfg.RHO_W)
-        mb_day = prcpsol #- meltrate?
+        # m w.e. d-1 = W m-2 * s * J-1 kg * kg-1 m3
+        melt = (qmelt * cfg.SEC_IN_DAY) / (
+                    cfg.LATENT_HEAT_FUSION_WATER * cfg.RHO_W)
+        # melt only happens where qmelt > 0.:
+        melt = np.clip(melt, 0., None)
 
+        # m w.e. = m d-1 - m w.e. d-1
+        mb_day = iprcp_corr / 1000. - melt
+
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            self.meteo.get_tmean_at_heights(date,
+                                            heights) + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
-        snow_cond = self.update_snow(date, mb_day)
 
-        # cheap removal of snow before density model kicks in
-        try:
-            # check MB pos
-            inds = np.where((self.snow[-1] - self.snow[-366]) >= 0.)
-            self.snow[-1][inds] = np.clip(self.snow[-1][inds] -
-                                          np.clip(self.snow[-365][inds] -
-                                                  self.snow[-366][inds], 0.,
-                                                  None), 0., None)
-        except IndexError:  # when date not yet exists
-            pass
+        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
+        # TODO: THIS IS ACTUALLY NEITHER HERE NOR IN PELLIMODEL ALLOWED; BECAUSE WE USE THE SNOW DENSITY TO DETERMINE THE TYPE, WHICH IN TURN DETERMINES THE ALBEDO; THUS WE EVEN NEED STO DENSIFY!
+        # remove old snow to make model faster
+        if date.day == 1:  # this is a good compromise in terms of time
+            oldsnowdist = np.where(self.snowcover.age_days > 365)
+            self.snowcover.remove_layer(ix=oldsnowdist)
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -2675,16 +2761,34 @@ class SnowFirnCover(object):
         insert_ix = (self.swe > 0.) & \
                     (self.status == CoverTypes['snow'].value) & \
                     (~np.isnan(self.swe))
-        rho_new[insert_ix] = (rho_old + \
-                       (
-                               rho_old * cfg.G * ovb_mass * deltat / eta0) * \
-                       np.exp(etaa * (temperature - Tm_k) - etab *
-                              rho_old) + deltat * \
-                       rho_old * snda * np.exp(
-            sndb * (temperature - Tm_k) - sndc * np.clip(
-                rho_old - rhoc, 0., None)))[insert_ix]
+        #rho_new[insert_ix] = (rho_old + \
+        #              (
+        #                       rho_old * cfg.G * ovb_mass * deltat / eta0) * \
+        #               np.exp(etaa * (temperature - Tm_k) - etab *
+        #                      rho_old) + deltat * \
+        #               rho_old * snda * np.exp(
+        #    sndb * (temperature - Tm_k) - sndc * np.clip(
+        #        rho_old - rhoc, 0., None)))[insert_ix]
+        temperature_sub = self.temperature - Tm_k
+        clippie = np.clip(rho_old - rhoc, 0., None)
+        #rho_topnew=rho_old.copy()
+        rho_new[insert_ix] = \
+        self._anderson_equation(rho_old, ovb_mass, deltat, eta0, etaa,
+                 temperature_sub, etab, snda, sndb, sndc, clippie,
+                 G=cfg.G)[insert_ix]
+        #rho_new[insert_ix] = rho_topnew[insert_ix]
         self.rho = rho_new
         self.last_update[insert_ix] = date
+
+    @staticmethod
+    @numba.jit(nopython=True)
+    def _anderson_equation(rho_old, ovb_mass, deltat, eta0, etaa, temperature_sub, etab, snda, sndb, sndc, clippie, G=cfg.G):
+        """ This is just the actual equation, made faster with numba"""
+        rho_new = (rho_old + (
+                    rho_old * G * ovb_mass * deltat / eta0) * np.exp(etaa * (
+                    temperature_sub) - etab * rho_old) + deltat * rho_old * snda * np.exp(
+            sndb * (temperature_sub) - sndc * clippie))
+        return rho_new
 
     def merge_firn_layers(self, date):
         """

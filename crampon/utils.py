@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 
 
 # Joblib
-MEMORY = Memory(location=cfg.CACHE_DIR, verbose=0)
+MEMORY = Memory(cfg.CACHE_DIR, verbose=0)
 SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
 
 
@@ -1364,12 +1364,13 @@ def _local_dem_to_xr_dataset(to_merge, acq_date, dx, calendar_startyear=0,
 
     # load and merge; overwrite is necessary, as some rasters cover same area
     xr_das = [d.load() for d in xr_das]
-    xr_das = [da.interp(x=np.arange(da.x.min(), da.x.max(), dx),
-              y=np.arange(da.y.max(), da.y.min(), -dx)) for da in xr_das]
+    # todo: interpolate NaNs here first, otherwise we lose data!!!
+    xr_das = [da.interp(x=np.arange(da.x.min(), da.x.max() + dx, dx),
+              y=np.arange(da.y.max(), da.y.min() - dx, -dx)) for da in xr_das]
     for da in xr_das:
-        da.attrs.update({'transform':(dx, da.transform[1], da.x.min().item(),
-                                      da.transform[3], -dx, da.y.min().item()),
-                         'res': (dx, dx)})
+        da.attrs.update({'transform': (
+        dx, da.transform[1], da.x.min().item(), da.transform[3], -dx,
+        da.y.min().item()), 'res': (dx, dx)})
     try:
         merged = xr.merge(xr_das)
     # this happens for DHM25 on Rhone, for example (overlapping tiles)
@@ -1443,10 +1444,11 @@ def get_local_dems(gdir):
     out = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
 
     if out != 0:
-        cfg.PATHS['lfi_dir'] = '..\\data\\DEM\\LFI'
+        cfg.PATHS['lfi_dir'] = os.path.join(cfg.PATHS['data_dir'], 'DEM',
+                                            'LFI')
 
     # neither os nor pathlib works, so quick'n'dirty:
-    lfi_dem_list = glob.glob(cfg.PATHS['lfi_dir']+'\\TIFF\\*.tif')
+    lfi_dem_list = glob.glob(os.path.join(cfg.PATHS['lfi_dir'], 'TIFF', '*.tif'))
 
     if not lfi_dem_list:
         raise FileNotFoundError('National Forest Inventory DEMs not found!')
@@ -1715,6 +1717,7 @@ class GlacierDirectory(object):
 
         # IDs are also valid entries
         if isinstance(entity, str):
+            id_string = entity
             # TODO: Think if :8 and :11 makes sense for other invs than RGI
             _shp = os.path.join(base_dir, entity[:8], entity[:11],
                                 entity, 'outlines.shp')
@@ -1748,8 +1751,15 @@ class GlacierDirectory(object):
         # TODO: Make other inventories than RGI possible
         if self.inventory == 'RGI':
             # Should be V5
-            self.id = entity.RGIId
-            self.rgi_id = entity.RGIId
+            # todo: find a better solution!?
+            #self.id = entity.RGIId
+            #self.rgi_id = entity.RGIId
+            try:
+                self.id = id_string
+                self.rgi_id = id_string
+            except (ValueError, UnboundLocalError):
+                self.id = entity.RGIId
+                self.rgi_id = entity.RGIId
             self.glims_id = entity.GLIMSId
             self.area_km2 = float(entity.Area)
             self.rgi_area_km2 = float(entity.Area)
