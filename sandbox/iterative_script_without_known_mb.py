@@ -12,9 +12,12 @@ import datetime as dt
 import crampon.cfg as cfg
 from crampon import workflow
 from crampon import utils
-from crampon.core.models.massbalance import BraithwaiteModel, SnowFirnCover
+from crampon.core.models.massbalance import BraithwaiteModel, PellicciottiModel, \
+    OerlemansModel, SnowFirnCover
 import numpy as np
 from scipy import optimize
+import multiprocessing as mp
+S
 
 # Logging options
 logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
@@ -28,14 +31,17 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def to_minimize_deltav(x, g, f_firn, i):
+# todo: this has to be here, otherwise cfg sets to basic...why?
+cfg.initialize('C:\\users\\johannes\\documents\\crampon\\sandbox\\CH_params.cfg')
+
+
+def to_minimize_deltav(x, g, mb_model, f_firn, i):
 
     t1 = dt.datetime.now()
-    mu_ice = x[0]
-    mu_snow = 0.5 * mu_ice
-    prcp_fac = x[1]
+    param_dict = dict(zip(
+        [k for k, v in mb_model.cali_params_guess.items()], x))
 
-    print('Parameters: {}, {}'.format(*x))
+    print('Parameters: {}'.format(param_dict.__repr__()))
 
     # read geodetic dV, measured MB, and calibration
     geodetic_dv = pd.read_csv(g.get_filepath('geodetic_dv'),
@@ -55,9 +61,7 @@ def to_minimize_deltav(x, g, f_firn, i):
     d1_timestamps = [pd.Timestamp(i) for i in result_df.d1.values]
     d2_timestamps = [pd.Timestamp(i) for i in result_df.d2.values]
 
-    # todo: get flexible parameters here
-    day_model = BraithwaiteModel(g, bias=0., mu_ice=mu_ice, mu_snow=mu_snow,
-                                 prcp_fac=prcp_fac)
+    day_model = mb_model(g, bias=0., **param_dict)
 
     begin_clim = utils.get_begin_last_flexyear(dt.datetime(1961, 12, 31),
                                                10, 1)
@@ -197,6 +201,37 @@ def to_minimize_deltav(x, g, f_firn, i):
     print('Time to run one optimization step: {}'.format(dt.datetime.now() - t1))
 
     return merged_dfs.delta_v_model - merged_dfs.dv
+
+
+def run_iterations(gdir, mb_model, cfg_dict, f_firn, params):
+
+    cfg.unpack_config(cfg_dict)
+
+    geodetic_dv = pd.read_csv(gdir.get_filepath('geodetic_dv'),
+                              parse_dates=[2, 3], index_col=0)
+
+    for i in range(1, len(geodetic_dv)):
+
+        result = optimize.least_squares(to_minimize_deltav, xtol=10e-3,
+                                        x0=np.array(list(params)),
+                                        verbose=2, bounds=(0., np.inf),
+                                        args=(gdir, mb_model, f_firn, i))
+        result_list.append(result)
+        print(gdir, mu_ice, prcp_fac, result_list)
+
+    print(gdir, mu_ice, prcp_fac, result_list)
+
+    lock.acquire()
+    with open('result_file_iterative_method.txt', 'a') as f:
+        f.write(str(params.__repr__()) + '\n')
+        f.write(str(result_list) + '\n\n\n\n\n\n\n\n')
+    lock.release()
+    return result_list
+
+
+def init(l):
+    global lock
+    lock = l
 
 
 if __name__ == '__main__':
