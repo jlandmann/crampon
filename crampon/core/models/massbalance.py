@@ -1783,7 +1783,7 @@ class SnowFirnCover(object):
                              '"firn", "poresclosed" or "ice".'.format(layertype))
 
     def add_layer(self, swe, rho, origin, temperature=None, liq_content=None,
-                  ix=None):
+                  ix=None, merge_threshold=0.05):
         """
         Add a layer to the snow/firn pack.
 
@@ -1808,6 +1808,9 @@ class SnowFirnCover(object):
             content is given, we assume a dry layer (zero liquid content.
         ix: int
             Indices where to add the layer. Default: None (top).
+        merge_threshold: float
+            Layer height threshold (m) up to which layer height layers should
+            be merged. Default: 0.05 m.
         """
 
         if len(swe) != self.n_heights:
@@ -1857,18 +1860,42 @@ class SnowFirnCover(object):
             new_age_days[:shape_0, :shape_1] = self.age_days
             self._age_days = new_age_days
 
+        merge = np.where((swe * np.divide(cfg.RHO_W, rho)) <= merge_threshold)[0]
+        add = np.where(swe * np.divide(cfg.RHO_W, rho) > merge_threshold)[0]
+        merge_ixtup = (np.arange(self.swe.shape[0])[merge],
+                       np.clip(self.top_layer[merge], 0, None))  # clip avoids
+        add_ixtup = (np.arange(self.swe.shape[0])[add], insert_pos[add])
+
+        # TODO: What to do with the date? The date determines the rate of densification? /not in anderson()
+        self.swe[add_ixtup] = swe[add]
+        self.rho[add_ixtup] = rho[add]
+        self.origin[add_ixtup] = origin
+        self.age_days[add_ixtup] = 0.
+
+        self.swe[merge_ixtup] = np.nansum((self.swe[merge_ixtup], swe[merge]), axis=0)
+        self.rho[merge_ixtup] = np.nanmean((self.rho[merge_ixtup], rho[merge]), axis=0)
+        self.origin[merge_ixtup] = origin  # TODO: or mx the dates? This might be important for ALBEDO CALCULATION
+        self.age_days[merge_ixtup] = 0.  # Todo: here also a mean of ages?
 
         if temperature is not None:
-            self.temperature[
-                range(self.swe.shape[0]), insert_pos] = temperature
+            self.temperature[add_ixtup] = temperature[add]
+            # TODO: MAKE TEMPERATURE CALCULATION CORRECT
+            self.temperature[merge_ixtup] = \
+                np.nanmean((self.temperature[merge_ixtup],
+                            temperature[merge]), axis=0)
         else:
-            self.temperature[
-                range(self.swe.shape[0]), insert_pos] = 273.16
+            self.temperature[add_ixtup] = np.nan
+            self.temperature[merge_ixtup] = \
+                np.nanmean((self.temperature[merge],
+                            cfg.ZERO_DEG_KELVIN), axis=0)
         if liq_content is not None:
-            self.liq_content[
-                range(self.swe.shape[0]), insert_pos] = liq_content
+            self.liq_content[add_ixtup] = liq_content[add]
+            self.liq_content[merge_ixtup] = \
+                np.nansum((self.liq_content[merge_ixtup],
+                           liq_content[merge]), axis=0)
         else:
-            self.liq_content[range(self.swe.shape[0]), insert_pos] = 0.
+            self.liq_content[add_ixtup] = 0.
+            # merge liq_content stays as it is if we assume zero
 
     def remove_unnecessary_array_space(self):
         """
@@ -1908,7 +1935,7 @@ class SnowFirnCover(object):
         if ix is not None:
             remove_ix = ix
         else:
-            remove_ix = self.top_layer
+            remove_ix = (np.arange(self.n_heights), self.top_layer)
 
         self.swe[remove_ix] = np.nan
         self.rho[remove_ix] = np.nan
@@ -3466,8 +3493,8 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     else:
         heights, widths = gdir.get_inversion_flowline_hw()
 
-    if mb is None:
-        day_model = BraithwaiteModel(gdir, bias=0.,
+    #if mb is None:
+    day_model = BraithwaiteModel(gdir, bias=0.,
                                      snow_init=np.zeros_like(heights))
 
     init_swe = np.zeros_like(heights)
@@ -3480,11 +3507,11 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     for date in run_time:
 
         # Get the mass balance and convert to m w.e. per day
-        if mb is None:
-            tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * \
+        #if mb is None:
+        tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * \
                   cfg.RHO / cfg.RHO_W
-        else:
-            tmp = mb.sel(time=date).MB.values
+        #else:
+        #    tmp = mb.sel(time=date).MB.values
 
         swe = tmp.copy()
         rho = np.ones_like(tmp) * get_rho_fresh_snow_anderson(
