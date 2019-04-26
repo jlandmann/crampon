@@ -18,6 +18,7 @@ import logging
 from itertools import product
 import salem
 import xarray as xr
+import shutil
 
 # temporary
 from crampon.workflow import execute_entity_task
@@ -356,24 +357,94 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             raise KeyError('Must supply hfile or initialize the crampon'
                            'configuration.')
 
+    # again other variable names on FTP delivery; SIS D still not operational
+    ftp_key_dict = {'BZ13': 'RprelimD', 'BZ14': 'RhiresD', 'BZ51': 'TabsD',
+                    'BZ54': 'TminD', 'BZ55': 'TmaxD', 'BZ69': 'msgSISD_',
+                    'CZ91': 'TabsD', 'CZ92': 'TminD', 'CZ93': 'TmaxD'}
+
     for var, mode in product(['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_'],
                              ['verified', 'operational']):
+
+        # radiation not operational
+        if (var == 'msgSISD_') and (mode == 'operational'):
+            continue
+
         all_file = os.path.join(write_to, '{}_{}_all.nc'.format(var, mode))
-        cirrus = utils.CirrusClient()
-        r, _ = cirrus.sync_files('/data/griddata', write_to
-                                 , globpattern='*{}/daily/{}*[!swissgrid]/netcdf/*'
-                                 .format(mode, var))
+
+        try:
+            cirrus = utils.CirrusClient()
+            r, _ = cirrus.sync_files(
+                '/data/griddata', write_to,
+                globpattern='*{}/daily/{}*[!swissgrid]/netcdf/*'.format(mode,
+                                                                        var))
+        except OSError:  # no VPN: try to get them from the FTP server...sigh!
+            # list of retrieved
+            r = []
+            # extend write_to
+            ftp_write_to = os.path.join(write_to, 'from_ftp')
+
+            # delete all existing
+            try:
+                shutil.rmtree(ftp_write_to)
+            except FileNotFoundError:
+                pass
+            os.mkdir(ftp_write_to)
+
+            # retrieve
+            ftp = utils.WSLSFTPClient()
+            ftp_dir = '/data/ftp/map/raingrid/'
+            globdir = 'griddata\\{}\\daily\\{}*\\netcdf'
+            # change directory and THEN(!) list (we only want file names)
+            ftp.cwd(ftp_dir)
+            files = ftp.list_content()
+            klist = [k for k, v in ftp_key_dict.items() if v.startswith(var)]
+            keys_verified = ['BZ14', 'BZ69', 'CZ91', 'CZ92', 'CZ93']
+            if mode == 'operational':
+                klist = [k for k in klist if k not in keys_verified]
+            if mode == 'verified':
+                klist = [k for k in klist if k in keys_verified]
+            files_sel = [f for f in files if any(k in f for k in klist)]
+            for fname in files_sel:
+                try:
+                    dl_file = os.path.join(ftp_write_to, fname)
+                    ftp.get_file(fname, dl_file)
+                    # extract and remove zipped
+                    utils.unzip_file(dl_file)
+                    os.remove(dl_file)
+
+                    # sort directly
+                    ftype = [ftp_key_dict[k] for k in klist if k in fname][0]
+
+                    move_to_dir = glob(os.path.join(write_to,
+                                                    globdir.format(mode,
+                                                                   ftype)))[0]
+
+                    # of course, exception...
+                    if ftype == 'msgSISD_':
+                        ftype = 'msg.SIS.D_'
+                    extracted = glob(os.path.join(ftp_write_to, ftype + '*'))[0]
+                    move_to_file = os.path.join(move_to_dir,
+                                                os.path.basename(extracted))
+                    try:
+                        shutil.move(extracted, move_to_file)
+                        r.append(move_to_file)
+                    except PermissionError:  # file already there
+                        pass
+                except (FileNotFoundError, KeyError):  # ver not always there
+                    pass
 
         # if at least one file was retrieved, assemble everything new
         flist = glob(os.path.join(write_to,
                                   'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
                                   .format(mode, var)))
+
         if (len(r) > 0) or ((not os.path.exists(all_file)) and len(flist) > 0):
             # Instead of using open_mfdataset (we need a lot of preprocessing)
             log.info('Concatenating {} {} {} files...'
                      .format(len(flist), var, mode))
             sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
                                               tfunc=utils._cut_with_CH_glac)
+            # todo: throw an error if data are missing (e.g. files retrieved from Cirrus, pause, then only six from FTP)
             log.info('Ensuring time continuity...')
             sda = sda.crampon.ensure_time_continuity()
             sda.encoding['zlib'] = True
@@ -394,13 +465,13 @@ def climate_file_from_scratch(write_to=None, hfile=None):
         data.to_netcdf(os.path.join(write_to, '{}_op_ver.nc'.format(var)))
 
     # combine both
-    tfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TabsD')))[0]
-    tminfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TminD')))[0]
-    tmaxfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('TmaxD')))[0]
-    pfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('R')))[0]
-    rfile = glob(os.path.join(write_to, '*{}*_op_ver.nc'.format('msgSISD_')))[
-        0]
-    outfile = os.path.join(write_to, 'climate_all.nc')
+    fstr = '*{}*_op_ver.nc'
+    tfile = glob(os.path.join(write_to, fstr.format('TabsD')))[0]
+    tminfile = glob(os.path.join(write_to, fstr.format('TminD')))[0]
+    tmaxfile = glob(os.path.join(write_to, fstr.format('TmaxD')))[0]
+    pfile = glob(os.path.join(write_to, fstr.format('R')))[0]
+    rfile = glob(os.path.join(write_to, fstr.format('msgSISD_')))[0]
+    outfile = cfg.PATHS['climate_file']
 
     log.info('Combining TEMP, TMIN, TMAX, PRCP, SIS and HGT...')
     utils.daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile,

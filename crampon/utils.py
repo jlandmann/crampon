@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import logging
 import paramiko as pm
+import ftplib
 import xarray as xr
 import rasterio
 import subprocess
@@ -23,6 +24,8 @@ import shapely
 import datetime as dt
 from configobj import ConfigObj, ConfigObjError
 from itertools import product
+import tarfile
+import zipfile
 import dask
 import sys
 import glob
@@ -376,6 +379,19 @@ def parse_credentials_file(credfile=None):
     return cr
 
 
+def unzip_file(zfile):
+    with open(zfile, 'rb') as f:
+        zipped = zipfile.ZipFile(f)
+        zipped.extractall(os.path.dirname(zfile))
+        zipped.close()
+
+
+def untargz_file(targzfile):
+    tar = tarfile.open(targzfile, "r:gz")
+    tar.extractall(os.path.dirname(targzfile))
+    tar.close()
+
+
 class CirrusClient(pm.SSHClient):
     """
     Class for SSH interaction with Cirrus Server at WSL.
@@ -612,6 +628,108 @@ class CirrusClient(pm.SSHClient):
         if self.ssh_open:
             self.client.close()
             self.ssh_open = False
+
+
+class WSLSFTPClient():
+    """
+    Class for interacting with the FTP Server at WSL.
+
+    The WSL FTP server does not support SSH, so we need to use ftplib (paramiko
+    tries to open an SSH connection).
+    """
+
+    def __init__(self, credfile=None, user='map'):
+        """
+        Initialize.
+
+        Parameters
+        ----------
+        credfile: str
+            Path to the credentials file (must be parsable as
+            configobj.ConfigObj).
+        user: str
+            User to log in with. 'map' is for daily analysis grids and COSMO-7,
+            'hyv-data' is for COSMO-1 and COSMO-E. Default: 'map'.
+        """
+        self.ftp_open = False
+
+        self.cr = parse_credentials_file(credfile)
+
+        if user == 'map':
+            self.client = self.create_connect(self.cr['wsl-map']['host'],
+                                              self.cr['wsl-map']['user'],
+                                              self.cr['wsl-map']['password'])
+        elif user == 'hyv-data':
+            self.client = self.create_connect(self.cr['wsl-hyv']['host'],
+                                              self.cr['wsl-hyv']['user'],
+                                              self.cr['wsl-hyv']['password'])
+        else:
+            raise ValueError(
+                'No credentials known for WSL FTP user {}'.format(user))
+
+    def create_connect(self, host, username, password):
+        client = ftplib.FTP(host=host, user=username, passwd=password)
+        client.login(user=username, passwd=password)
+        self.ftp_open = True
+        return client
+
+    def list_content(self, idir='.'):
+        """
+
+        Parameters
+        ----------
+        idir: str
+            Directory whose output shall be listed
+
+        Returns
+        -------
+
+        """
+
+        return self.client.nlst(idir)
+
+    def cwd(self, idir):
+        """
+        Change the working directory on the FTP server.
+
+        Parameters
+        ----------
+        idir: str
+            Path so set as workding directory.
+
+        Returns
+        -------
+        None
+        """
+        self.client.cwd(idir)
+
+    def get_file(self, remote_file, local_path):
+        """
+        Retrieve a file from the FTP server.
+
+        Parameters
+        ----------
+        remote_file: str
+            Remote file name.
+        local_path: str
+            Path to the local file (where file should be stored).
+
+        Returns
+        -------
+        None
+        """
+        with open(local_path, 'wb') as f:
+            self.client.retrbinary('RETR ' + remote_file, f.write)
+
+    def close(self):
+        """
+        Close the connection.
+
+        Returns
+        -------
+        None.
+        """
+        self.client.quit()
 
 
 @xr.register_dataset_accessor('crampon')
