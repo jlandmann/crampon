@@ -113,6 +113,10 @@ CBASENAMES['glacio_method_mb'] = ('glacio_method_mb', _doc)
 CBASENAMES['mb_daily_rescaled'] =('mb_daily_rescaled.pkl', 'abc')
 _doc = 'A CSV with geodetic volume changes.'
 CBASENAMES['geodetic_dv'] = ('geodetic_dv.csv', _doc)
+_doc = 'Daily mean potential clear-sky solar irradiation on the glacier grid.'
+CBASENAMES['ipot'] = ('ipot.nc', _doc)
+_doc = 'Daily mean potential clear-sky solar irradiation on the flowline heights.'
+CBASENAMES['ipot_on_flowlines'] = ('ipot_on_flowlines.nc', _doc)
 
 # some more standard names, for less hardcoding
 NAMES['DHM25'] = 'dhm25'
