@@ -340,7 +340,7 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                                         row.date1.year))
 
         # initial_guess
-        param_dict = mb_model.cali_params_guess
+        param_dict = mb_model.cali_params_guess.copy()
 
         while grad > conv_thresh:
 
