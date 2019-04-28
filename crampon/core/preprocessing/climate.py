@@ -19,6 +19,7 @@ from itertools import product
 import salem
 import xarray as xr
 import shutil
+import sys
 
 # temporary
 from crampon.workflow import execute_entity_task
@@ -362,6 +363,11 @@ def climate_file_from_scratch(write_to=None, hfile=None):
                     'BZ54': 'TminD', 'BZ55': 'TmaxD', 'BZ69': 'msgSISD_',
                     'CZ91': 'TabsD', 'CZ92': 'TminD', 'CZ93': 'TmaxD'}
 
+    # cheap way for platoform-dependent path
+    globdir = 'griddata/{}/daily/{}*/netcdf/'
+    if sys.platform.startswith('win'):
+        globdir = globdir.replace('/', '\\')
+
     for var, mode in product(['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_'],
                              ['verified', 'operational']):
 
@@ -393,7 +399,6 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             # retrieve
             ftp = utils.WSLSFTPClient()
             ftp_dir = '/data/ftp/map/raingrid/'
-            globdir = 'griddata\\{}\\daily\\{}*\\netcdf'
             # change directory and THEN(!) list (we only want file names)
             ftp.cwd(ftp_dir)
             files = ftp.list_content()
@@ -434,9 +439,7 @@ def climate_file_from_scratch(write_to=None, hfile=None):
                     pass
 
         # if at least one file was retrieved, assemble everything new
-        flist = glob(os.path.join(write_to,
-                                  'griddata\\{}\\daily\\{}*\\netcdf\\*.nc'
-                                  .format(mode, var)))
+        flist = glob(os.path.join(write_to, (globdir + '*.nc').format(mode, var)))
 
         if (len(r) > 0) or ((not os.path.exists(all_file)) and len(flist) > 0):
             # Instead of using open_mfdataset (we need a lot of preprocessing)
