@@ -104,7 +104,9 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
     return measured
 
 
-def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1, *args, winteronly=False, run_hist=None, scov=None, unc=None, **kwargs):
+def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
+                                         *args, winteronly=False, scov=None,
+                                         run_hist=None, unc=None, **kwargs):
     """
     A try to generalize an objective function valid for all MassBalanceModels.
 
@@ -181,8 +183,8 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1, *a
         # we take the min of date0 and the found min date from the winter cali
         min_date = measured[measured.date_f.dt.year == y0].date0.values[0]
         if y1:
-            max_date = measured[measured.date1.dt.year == y1].date1.values[0] - \
-                       pd.Timedelta(days=1)
+            max_date = measured[measured.date1.dt.year == y1].date1.values[
+                           0] - pd.Timedelta(days=1)
         else:
             max_date = max(measured.date_f.max(), measured.date_s.max(),
                            measured.date1.max() - dt.timedelta(days=1))
