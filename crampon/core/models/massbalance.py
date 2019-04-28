@@ -474,9 +474,49 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                  heights_widths=(None, None),
                  filename='climate_daily',
                  filesuffix=''):
-        # todo: filename='climate_daily' is stupid...pass None and the read from cfg.PARAMS
-        # todo: think of a good solution regarding ratio mu_ice/mu_snow
-        # todo: documentation
+        """
+        Implementing the temperature index melt model by Braithwaite.
+
+        This is often said, but there is no good reference for this model
+        from Braithwaite actually.
+        # todo: find a good Braithwaite paper
+
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The glacier directory to calculate the mass balance for.
+        mu_ice: float or None
+            The melt factor for ice (mm K-1 d-1). Default: None (retrieve from
+            calibrated values).
+        mu_snow: float or None
+            The melt factor for snow (mm K-1 d-1). Default: None (retrieve from
+            calibrated values).
+        bias: float or None
+            Bias of the mass balance model (mm K-1 d-1). Default: 0.
+            # todo: check what the bis does and if I have applied it correctly.
+        prcp_fac: float or None
+            The correction factor to account for over-/undercatch biasses of
+            the input precipitation values. It is defined the way that total
+            precipitation determining the accumulation is the product of
+            prcp_fac and the input precipitation. This means, for the case that
+            there is no correction necessary prcp_fac equals 1. Default: None
+            (retrieve from calibrated values).
+        snow_init: np.array or None
+        snowcover: `py:class:crampon.core.models.massbalance.SnowFirnCover`.
+        heights_widths: tuple
+            The flowline glacier heights and widths
+        filename: str
+            The meteorological input file name.
+            # todo: call it different, e.g. 'meteo_file'.
+        filesuffix: str
+            Suffix for experiments
+            # todo: this doesn't really make sense either, it is used for reading the climate file...
+
+        References
+        ----------
+
+        """
 
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
                          filename=filename, heights_widths=heights_widths,
@@ -735,6 +775,12 @@ class HockModel(DailyMassBalanceModelWithSnow):
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [1]_.
 
+     # todo:
+    The albedo calculation via the Oerlemans method needs full access to the
+    SnowFirnCover incl. its density. This is why we cannot delete snow older
+    than 365 days in the `get_daily_mb` method and we even need to densify the
+    snow every day!
+
     References
     ----------
     .. [1] : Gabbi, J., Carenzo, M., Pellicciotti, F., Bauder, A., & Funk, M.
@@ -919,6 +965,12 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     delivers the beta radiation version back until 1991 in mid of 2019
     (promised). We reflected the limited usage in the "calibration_timespan"
     attribute which is checked for in the calibration.
+
+    # todo:
+    The albedo calculation via the Oerlemans method needs full access to the
+    SnowFirnCover incl. its density. This is why we cannot delete snow older
+    than 365 days in the `get_daily_mb` method and we even need to densify the
+    snow every day!
 
     Attributes
     ----------
