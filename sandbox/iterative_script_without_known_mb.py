@@ -41,7 +41,7 @@ def to_minimize_deltav(x, g, mb_model, f_firn, i):
     param_dict = dict(zip(
         [k for k, v in mb_model.cali_params_guess.items()], x))
 
-    print('Parameters: {}'.format(param_dict.__repr__()))
+    print('Parameters: f_firn={}, {}'.format(f_firn, param_dict.__repr__()))
 
     # read geodetic dV, measured MB, and calibration
     geodetic_dv = pd.read_csv(g.get_filepath('geodetic_dv'),
@@ -67,6 +67,14 @@ def to_minimize_deltav(x, g, mb_model, f_firn, i):
                                                10, 1)
     end_clim = utils.get_begin_last_flexyear(dt.datetime(2018, 12, 31), 10,
                                              1)
+    if hasattr(mb_model, 'calibration_timespan'):
+        if mb_model.calibration_timespan[0]:
+            begin_clim = utils.get_begin_last_flexyear(
+                dt.datetime(mb_model.calibration_timespan[0], 12, 31), 10, 1)
+        if mb_model.calibration_timespan[1]:
+            end_clim = utils.get_begin_last_flexyear(
+                dt.datetime(mb_model.calibration_timespan[1], 12, 31), 10, 1)
+
     heights, widths = g.get_inversion_flowline_hw()
     init_swe = np.zeros_like(heights)
     init_swe.fill(np.nan)
