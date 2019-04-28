@@ -279,6 +279,8 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
     # todo: do not always hard-code 'mb_model.__name__ + '_' +'
     # todo go through generalized objective function and see if winter/annual mb works ok
 
+    prefix = mb_model.__name__ + '_'
+
     # Get measured MB and we can't calibrate longer than our meteo history
     measured = get_measured_mb_glamos(gdir)
     if measured.empty:
@@ -302,7 +304,7 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
     measured.reset_index(drop=True, inplace=True)
 
     # Find out what we will calibrate
-    to_calibrate_csv = [mb_model.__name__ + '_' + i for i in
+    to_calibrate_csv = [prefix + i for i in
                         mb_model.cali_params_guess.keys()]
 
     # Is there already a calibration where we just can append, or new file
@@ -403,17 +405,15 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
 
         # Write in cali df
         for k, v in list(param_dict.items()):
-            cali_df.loc[row.date0:row.date1, mb_model.__name__ + '_' + k] = v
+            cali_df.loc[row.date0:row.date1, prefix + k] = v
         if isinstance(mb_model, massbalance.BraithwaiteModel):
-            cali_df.loc[row.date0:row.date1,
-            mb_model.__name__ + '_' + 'mu_snow'] = \
-                cali_df.loc[row.date0:row.date1, mb_model.__name__ + '_' +
-                                                 'mu_ice'] * mb_model.ratio_s_i
+            cali_df.loc[row.date0:row.date1, prefix + 'mu_snow'] = \
+                cali_df.loc[row.date0:row.date1, prefix + 'mu_ice'] * \
+                mb_model.ratio_s_i
         if isinstance(mb_model, massbalance.HockModel):
-            cali_df.loc[row.date0:row.date1,
-            mb_model.__name__ + '_' + 'a_snow'] = cali_df.loc[
-                                                   row.date0:row.date1,
-                                                   mb_model.__name__ + '_' + 'a_ice'] * mb_model.ratio_s_i
+            cali_df.loc[row.date0:row.date1, prefix + 'a_snow'] = \
+                cali_df.loc[row.date0:row.date1, prefix + 'a_ice'] * \
+                mb_model.ratio_s_i
         cali_df.to_csv(gdir.get_filepath('calibration'))
 
         # prepare history for next round
