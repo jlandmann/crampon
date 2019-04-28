@@ -1247,8 +1247,8 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         where Qm is the energy available for melt (W m-2), alpha(z) is the
         albedo of the glacier surface, SIS(z) is the shortwave incoming solar
-        radiation, c0 an empirical factor (W m-2), c1 and empirical factor
-        (W m-2 K-1), T(z) is the air temperature at height z in (deg C),
+        radiation (W m-2), c0 an empirical factor (W m-2), c1 an empirical
+        factor (W m-2 K-1), T(z) is the air temperature at height z in (deg C),
         PRCP_FAC is the precipitation correction factor, PRCP_SOL(z) is the
         solid precipitation at height z in mm w.e.,
         #Todo: Is this true? If we take daily temperatures we could also set deltat to one and then get a melt rate in m w.e. d-1!?
@@ -1368,17 +1368,15 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         # temperature here is in deg C ( Oerlemans 2001, p.48)
         # W m-2 = W m-2 + W m-2 + W m-2 K-1 * deg C
-        # todo: tmean in Kelvin!?
         qmelt = (1 - albedo) * isis + c0 + c1 * tmean
-
-        # m w.e. d-1 = W m-2 * s * J-1 kg * kg-1 m3
-        melt = (qmelt * cfg.SEC_IN_DAY) / (
-                    cfg.LATENT_HEAT_FUSION_WATER * cfg.RHO_W)
         # melt only happens where qmelt > 0.:
-        melt = np.clip(melt, 0., None)
+        qmelt = np.clip(qmelt, 0., None)
 
-        # m w.e. = m d-1 - m w.e. d-1
-        mb_day = iprcp_corr / 1000. - melt
+        # kg m-2 d-1 = W m-2 * s * J-1 kg
+        melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
+
+        # kg m-2 = kg m-2 - kg m-2
+        mb_day = iprcp_corr - melt
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
@@ -1394,7 +1392,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             oldsnowdist = np.where(self.snowcover.age_days > 365)
             self.snowcover.remove_layer(ix=oldsnowdist)
 
-        # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
+        # return kg m-2 s-1 kg-1 m3 = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
 
