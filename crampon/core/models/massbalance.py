@@ -49,6 +49,7 @@ class DailyMassBalanceModel(MassBalanceModel):
 
         # Needed for the calibration parameter names in the csv file
         self.__name__ = type(self).__name__
+        self.prefix = self.__name__ + '_'
 
         # just a temporal dummy
         self.snowcover = None
