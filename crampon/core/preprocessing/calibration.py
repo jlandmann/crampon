@@ -174,25 +174,16 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
     # make entire MB time series
     if winteronly:
         min_date = measured[measured.date_f.dt.year == y0].date_f.values[0]
-        if y1:
-            max_date = measured[measured.date1.dt.year == y1].date_s.values[0]
-        else:
-            max_date = max(measured.date0.max(), measured.date_s.max(),
-                           measured.date1.max() - dt.timedelta(days=1))
+        max_date = measured[measured.date1.dt.year == y1].date_s.values[0]
     else:
         # we take the min of date0 and the found min date from the winter cali
         min_date = measured[measured.date_f.dt.year == y0].date0.values[0]
-        if y1:
-            max_date = measured[measured.date1.dt.year == y1].date1.values[
+        max_date = measured[measured.date1.dt.year == y1].date1.values[
                            0] - pd.Timedelta(days=1)
-        else:
-            max_date = max(measured.date_f.max(), measured.date_s.max(),
-                           measured.date1.max() - dt.timedelta(days=1))
 
     calispan = pd.date_range(min_date, max_date, freq='D')
 
     heights, widths = gdir.get_inversion_flowline_hw()
-    # todo:
     day_model = mb_model(gdir, **params, bias=0.)
 
     # IMPORTANT
@@ -212,35 +203,31 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
     # if we have melt in winter between the field dates this pushes prcp_fac
     # up! as we can't measure melt in the winter campaign anyway, we just
     # subtract it away when tuning the winter balance!
-    minimum = np.nanmin(np.nancumsum(mb))
+    minimum = np.nanmin(np.nancumsum([0.] + mb))
 
     err = []
     for ind, row in measured_cut.iterrows():
 
         curr_err = None
         if winteronly:
-            # TODO: Is this correct to change?
             wspan = pd.date_range(row.date_f, row.date_s, freq='D')
             wsum = mb_ds.sel(time=wspan).apply(np.sum)
 
             # correct for melt at the beginning of the winter season
-            # todo: is this still correct?????
             curr_err = row.Winter - (wsum.MB.values + np.abs(minimum))
         else:
             # annual sum
-            if not winteronly:
-                span = pd.date_range(row.date0, row.date1 - pd.Timedelta(days=1),
-                                     freq='D')
-                asum = mb_ds.sel(time=span).apply(np.sum)
+            span = pd.date_range(row.date0, row.date1 - pd.Timedelta(days=1),
+                                 freq='D')
+            asum = mb_ds.sel(time=span).apply(np.sum)
 
-                correction = 0
+            correction = 0
 
-                # todo: this doesn't work like this: we will probably detect a wrong minimum!?
-                if unc:
-                    curr_err = (row.Annual - (
-                                asum.MB.values + np.abs(correction))) / unc
-                else:
-                    curr_err = (row.Annual - (asum.MB.values + np.abs(correction)))
+            if unc:
+                curr_err = (row.Annual - (
+                            asum.MB.values + np.abs(correction))) / unc
+            else:
+                curr_err = (row.Annual - (asum.MB.values + np.abs(correction)))
 
         err.append(curr_err)
 
@@ -418,36 +405,53 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
         # prepare history for next round
         curr_model = mb_model(gdir, bias=0.)
 
-        if scov_field is not None:
-            curr_model.time_elapsed = run_hist_minday
-            curr_model.snowcover = copy.deepcopy(scov_field)
-
         mb = []
+        # determine start_date
+        start_date = min(row.date0, row.date_f)
+
+        # determine end_date
         if i < max(measured.index):
             # max(field & fall date)
             end_date = max(row.date1, measured.loc[i+1].date_f)
         else:  # last row
             end_date = row.date1
 
-        forward_time = pd.date_range(row.date0, end_date)
+        # history depends on which start date we choose
+        if scov_field is not None:
+            if start_date == row.date0:
+                curr_model.time_elapsed = run_hist_field
+                curr_model.snowcover = copy.deepcopy(scov_field)
+            elif start_date == row.date_f:
+                curr_model.time_elapsed = run_hist_minday
+                curr_model.snowcover = copy.deepcopy(scov_minday)
+            else:
+                raise ValueError('Start date is wrong')
+
+        forward_time = pd.date_range(start_date, end_date)
+        mb_comp = 0.
         for date in forward_time:
             tmp = curr_model.get_daily_specific_mb(heights, widths, date=date)
             mb.append(tmp)
 
+            # just to compare what we produced
+            if (date >= row.date0) and (date < row.date1):
+                mb_comp += tmp
+
+            # prepare for the next annual calibration (starting at row.date1 == nextrow.date0
             if date == row.date1:
                 run_hist_field = curr_model.time_elapsed[:-1]  # same here
                 scov_field = copy.deepcopy(curr_model.snowcover)
+            # prepare for the next winter calibration (starting at nextrow.date_f
             try:
                 if date == measured.loc[i+1].date_f:
                     run_hist_minday = curr_model.time_elapsed[:-1]  # same here
                     scov_minday = copy.deepcopy(curr_model.snowcover)
-            except (IndexError, KeyError):
+            except (IndexError, KeyError):  # last row
                 if date == row.date1:
                     run_hist_minday = curr_model.time_elapsed[:-1]  # same here
                     scov_minday = copy.deepcopy(curr_model.snowcover)
 
-        # todo: this is not correct: we would have to choose the dates between date_f and date1
-        error = measured.loc[i].Annual - np.cumsum(mb[:len(forward_time)])[-1]
+        error = row.Annual - mb_comp
         log.info('ERROR to measured MB:{}'.format(error))
 
 
