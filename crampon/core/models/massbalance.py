@@ -3509,6 +3509,8 @@ class MassBalance(object, metaclass=SuperclassMeta):
         """
         Retrieves the balance in a time interval.
 
+        Input must be the mass balance itself, not already a cumulative sum.
+
         Parameters
         ----------
         date1: datetime.datetime
@@ -3522,15 +3524,20 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         Returns
         -------
-
+        mb_sel: type of `self`
+            The mass balance object, reduced to the variables that contain mass
+            balance information and the type of balance requested.
         """
 
+        mb_sel = self.obj.sel(time=slice(date1, date2))
+        mb_sel = mb_sel[[i for i in mb_sel.data_vars.keys() if 'MB' in i]]
+
         if which == 'total':
-            raise NotImplementedError
+            return mb_sel.sum(dim='time', skipna=True)
         elif which == 'accumulation':
-            raise NotImplementedError
+            return mb_sel.where(mb_sel > 0.).sum(dim='time', skipna=True)
         elif which == 'ablation':
-            raise NotImplementedError
+            return mb_sel.where(mb_sel < 0.).sum(dim='time', skipna=True)
         else:
             raise ValueError('Value {} for balance is not recognized.'.
                              format(which))
