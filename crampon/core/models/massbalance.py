@@ -3304,19 +3304,13 @@ class Glacier(object, metaclass=SuperclassMeta):
 class MassBalance(object, metaclass=SuperclassMeta):
     """
     Basic interface for mass balance objects.
+
+    The object has very limited support to units. If the dataset contains an
+    attribute 'units' set to either 'm ice s-1', it is able to convert between
+    ice flux (m ice s-1) and water eqivalent (m w.e. d-1).
     """
+
     def __init__(self, xarray_obj):
-        """
-        Instantiate the MassBalance base class.
-
-        Parameters
-        ----------
-        gdir: `py:class:crampon.GlacierDirectory`
-        mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
-            The mass balance model used to calculate the time series.
-        dataset: xr.Dataset
-
-        """
 
         self._obj = xarray_obj
 
@@ -3329,6 +3323,49 @@ class MassBalance(object, metaclass=SuperclassMeta):
     def custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
         """Calculate quantiles with user input."""
         return x.quantile(qs)
+
+    def convert_to_meter_we(self):
+        """
+        If unit is ice flux (m ice s-1), convert it to meter water equivalent
+        per day.
+
+        Returns
+        -------
+        None
+        """
+        # todo: This is not flexible, but flexibility requires Pint dependency
+
+        if self._obj.attrs['units'] == 'm ice s-1':
+            for mbname, mbvar in self._obj.data_vars.items():
+                if 'MB' in mbname:
+                    self._obj[mbname] = mbvar * cfg.SEC_IN_DAY * cfg.RHO / \
+                                        cfg.RHO_W
+            self._obj.attrs['units'] = 'm w.e.'
+        else:
+            raise ValueError('Check the unit attribute, it should be "m ice '
+                             's-1" to convert it to meters water equivalent '
+                             'per day.')
+
+    def convert_to_ice_flux(self):
+        """
+        If unit is meter water equivalent per day, convert it to ice flux (m
+        ice s-1).
+
+        Returns
+        -------
+        None
+        """
+        # todo: This is not flexible, but flexibility requires Pint dependency
+
+        if self._obj.attrs['units'] == 'm w.e.':
+            for mbname, mbvar in self._obj.data_vars.items():
+                if 'MB' in mbname:
+                    self._obj[mbname] = mbvar / cfg.SEC_IN_DAY * cfg.RHO_W / \
+                                        cfg.RHO
+            self._obj.attrs['units'] = 'm ice s-1'
+        else:
+            raise ValueError('Check the unit attribute, it should be "m w.e." '
+                             'to ice flux.')
 
     def make_hydro_years(self, bg_month=10, bg_day=1):
         hydro_years = xr.DataArray(
