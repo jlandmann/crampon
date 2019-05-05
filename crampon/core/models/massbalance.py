@@ -3483,14 +3483,32 @@ class MassBalance(object, metaclass=SuperclassMeta):
             self.gdir.write_pickle(self._obj, 'mb_daily')
             # TODO: write a write_snow and write_mb method to be called here
 
-    def make_quantiles(self):
+    def make_cumsum_quantiles(self, bg_month=10, bg_day=1, quantiles=None):
         """
-        Apply quantiles to the mass balance data.
+        Apply cumulative sum and then quantiles to the mass balance data.
 
         Returns
         -------
-
+        None
         """
+        save_attrs = self._obj.attrs  # needed later
+
+        hyears = self.make_hydro_years(bg_month, bg_day)
+        hdoys = self.make_hydro_doys(hyears, bg_month, bg_day)
+
+        mb_cumsum = self._obj.groupby(hyears).apply(
+            lambda x: self.time_cumsum(x))
+        if quantiles:
+            quant = mb_cumsum.groupby(hdoys) \
+                .apply(lambda x: self.custom_quantiles(x, qs=quantiles))
+        else:
+            quant = mb_cumsum.groupby(hdoys) \
+                .apply(lambda x: MassBalance.custom_quantiles(x))
+
+        # insert attributes again...they get lost when grouping!?
+        quant.attrs.update(save_attrs)
+
+        return quant
 
     def to_array(self):
         """
