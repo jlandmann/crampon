@@ -3,6 +3,7 @@ from __future__ import division
 from crampon.utils import entity_task, global_task
 from crampon import utils
 from crampon import workflow
+from crampon.core.models.massbalance import MassBalance
 import xarray as xr
 import logging
 from matplotlib.ticker import NullFormatter
@@ -21,11 +22,21 @@ from salem import get_demo_file, DataLevels, GoogleVisibleMap, Map
 import numpy as np
 from glob import glob
 import folium
+import re
 from folium import plugins
 from folium.features import DivIcon
 import branca
 import mpld3
 import shapely
+from bokeh.plotting import figure as bkfigure
+from bokeh.plotting import output_file, save, show
+from bokeh.models.tools import HoverTool, UndoTool, RedoTool
+from bokeh.models import DataRange1d, Label
+from bokeh.models.sources import ColumnDataSource
+from bokeh.models.tickers import FixedTicker
+from bokeh.io import show, export_png
+from bokeh.palettes import grey
+from scipy.stats import percentileofscore
 
 # Local imports
 import crampon.cfg as cfg
@@ -580,6 +591,160 @@ def plot_animated_swe(mb_model):
                                   fargs=(mb_model, line, time_text),
                                   interval=10, repeat_delay=1.)
     return ani
+
+
+def plot_interactive_mb_spaghetti_html(gdir, plot_dir):
+    """
+    Makes an interactive spaghetti plot of all avaiable mass balance years.
+
+    When hovering over the plot, the cumulative mass balance curves are
+    highlighted and the value is displayed as tooltip.
+
+    Parameters
+    ----------
+    gdir: :py:class:`crampon.GlacierDirectory`
+        The glacier directory for which to produce the plot.
+    plot_dir:
+        Directory where to store the plot (HTML file). Usually, this is
+        something like `os.path.join(cfg.PATHS['working_dir'], 'plots')`.
+
+    Returns
+    -------
+    None
+    """
+
+    mb_hist = gdir.read_pickle('mb_daily')
+    mb_curr = gdir.read_pickle('mb_current')
+
+    fig, ax = plt.subplots(figsize=(14, 10), subplot_kw={'xticks': [],
+                                                         'yticks': []})
+
+    arr = None
+    mbcarr = None
+    years = []
+    mbcyears = []
+    models = []
+
+    hydro_years = mb_hist.mb.make_hydro_years()
+    for y, group in list(mb_hist.groupby(hydro_years)):
+        # make use of static method
+        to_plot = group.apply(MassBalance.time_cumsum)
+
+        # the last hydro years contains one values only
+        if y == max(hydro_years.values):
+            continue
+
+        for ivar, (mbname, mbvar) in enumerate(to_plot.data_vars.items()):
+            if not 'MB' in mbname:
+                continue
+            # extend every year to 366 days and stack
+            if arr is None:
+                arr = np.lib.pad(mbvar.values.flatten(),
+                                 (0, 366 - len(mbvar.values)),
+                                 mode='constant', constant_values=(
+                        np.nan, np.nan))
+            else:
+                arr = np.vstack((arr, np.lib.pad(mbvar.values.flatten(),
+                                                 (0, 366 - len(mbvar.values)),
+                                                 mode='constant',
+                                                 constant_values=(np.nan,
+                                                                  np.nan))))
+            years.append(y)
+            models.append(mbname.split('_')[0])
+
+    # add current median
+    for ivar, (mbname, mbvar) in enumerate(mb_curr.data_vars.items()):
+        if not 'MB' in mbname:
+            continue
+        print(mbname)
+        if mbcarr is None:
+            mbcarr = np.lib.pad(mb_curr[mbname].values[:, 2],
+                                (0,
+                                 366 - mb_curr[mbname].values[:, 2].shape[0]),
+                                mode='constant',
+                                constant_values=(np.nan, np.nan))
+        else:
+            mbcarr = np.vstack(
+                (mbcarr, np.lib.pad(mb_curr[mbname].values[:, 2],
+                                    (0,
+                                     366 -
+                                     mb_curr[mbname].values[:,
+                                     2].shape[0]),
+                                    mode='constant',
+                                    constant_values=(
+                                        np.nan, np.nan))))
+        mbcyears.append(mb_curr.time[-1].dt.year.item())
+        models.append(mbname.split('_')[0])
+
+    arr = np.vstack((arr, mbcarr))
+    years.extend(mbcyears)
+
+    custompalette = grey(len(years) - len(mbcyears)) + \
+                    [c for c, _ in CURR_COLORS[:len(mbcyears)]]
+
+    xs = [np.arange(arr.shape[1])] * arr.shape[0]
+    ys = arr.tolist()
+    desc = years
+    color = custompalette
+    alpha = (len(years) - len(mbcyears)) * [0.3] + len(mbcyears) * [1.0]
+    source = ColumnDataSource(dict(
+        xs=xs,
+        ys=ys,
+        desc=desc,
+        model=models,
+        color=color,
+        alpha=alpha,
+    ))
+
+    xdr = DataRange1d()
+    ydr = DataRange1d()
+
+    plot = bkfigure(plot_width=1200, plot_height=800)
+    plot.title.text = 'Cumulative Mass Balance of {} ({})'.\
+        format(mb_hist.attrs['id'].split('.')[1], mb_hist.attrs['name'])
+    plot.xaxis.axis_label = 'Days of Hydrological Year'
+    plot.yaxis.axis_label = 'Cumulative Mass Balance'
+    xticks = np.cumsum(np.append([0], np.roll(cfg.DAYS_IN_MONTH, -3)[:-1]))
+    xlabel_dict = {}
+    for i, s in zip(xticks, [i for i in 'ONDJFMAMJJAS']):
+        xlabel_dict[str(i)] = s
+    plot.xaxis.ticker = xticks
+    plot.xaxis.major_label_overrides = xlabel_dict
+    plot.grid.ticker = FixedTicker(ticks=xticks)
+
+    plot.multi_line('xs', 'ys', source=source,
+                    color='color', alpha='alpha', line_width=4,
+                    hover_line_alpha=1.0, hover_line_color='color')
+
+    TOOLTIPS = [
+        ("year", "@desc"),
+        ("(HYD-DOY,CUM-MB)", "($x{0.}, $y)"),
+        ("MODEL", "@model"),
+    ]
+    plot.add_tools(HoverTool(
+        tooltips=TOOLTIPS,
+        mode='mouse',
+    ))
+
+    # Add a note to say when it was last updated
+    date_str = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    update_txt = Label(x=3., y=3., x_units='screen', y_units='screen',
+                       border_line_color='black', border_line_alpha=1.0,
+                       background_fill_color='white',
+                       background_fill_alpha=0.5,
+                       text='Last updated: {}'.format(date_str))
+    plot.add_layout(update_txt)
+
+    plot.add_tools(UndoTool())
+    plot.add_tools(RedoTool())
+
+    output_file(os.path.join(plot_dir, gdir.rgi_id +
+                             '_interactive_mb_spaghetti.html'))
+    export_png(plot, os.path.join(plot_dir, gdir.rgi_id +
+                                  '_interactive_mb_spaghetti.png'))
+    save(plot)
+    show(plot)
+
 
 def plot_topo_per_glacier(start_year=2005, end_year=None):
     """
