@@ -20,6 +20,8 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     cali_params_list = ['mu_star', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [10., 1.5]))
+    prefix = 'DailyMassBalanceModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
@@ -380,7 +382,7 @@ class DailyMassBalanceModel(MassBalanceModel):
                                                  date=date)
                 mb.append(tmp)
 
-            mb_ds = xr.Dataset({'MB': (['time', 'n'],
+            mb_ds = xr.Dataset({self.prefix + 'MB': (['time', 'n'],
                                        np.atleast_2d(mb).T)},
                                coords={'n': (['n'], exp),
                                        'time': pd.to_datetime(self.span_meteo)},
@@ -404,6 +406,9 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
     """
     Include SnowCover, so that all classes can inherit from it and there is not conflicts
     """
+
+    prefix = 'DailyMassBalanceModelWithSnow_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, mu_star=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
@@ -469,6 +474,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
     cali_params_list = ['mu_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [6.5, 1.5]))
+    prefix = 'BraithwaiteModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, mu_ice=None, mu_snow=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
@@ -1247,6 +1254,8 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
     cali_params_list = ['c0', 'c1', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [-110., 16., 1.5]))
     calibration_timespan = (2005, None)
+    prefix = 'OerlemansModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, c0=None, c1=None, prcp_fac=None, bias=None,
                  snow_init=None, snowcover=None, filename='climate_daily',

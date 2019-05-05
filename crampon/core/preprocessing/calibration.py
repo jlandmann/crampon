@@ -573,7 +573,8 @@ def make_massbalance_at_firn_core_sites(core_meta, reset=False):
                       cfg.RHO / cfg.RHO_W
                 mb.append(tmp)
 
-            mb_ds = xr.Dataset({'MB': (['time', 'n'], np.array(mb))},
+            mb_ds = xr.Dataset({mb_model.mb_name: (['time', 'n'],
+                                                         np.array(mb))},
                                coords={
                                    'time': pd.to_datetime(
                                        mb_model.time_elapsed),
@@ -582,12 +583,12 @@ def make_massbalance_at_firn_core_sites(core_meta, reset=False):
                                       'name': gdir.name})
             gdir.write_pickle(mb_ds, 'mb_daily')
 
-            new_mb = fit_core_mb_to_mean_acc(gdir, core_meta)
+            new_mb = fit_core_mb_to_mean_acc(gdir, core_meta, mb_model)
 
             gdir.write_pickle(new_mb, 'mb_daily_rescaled')
 
 
-def fit_core_mb_to_mean_acc(gdir, c_df):
+def fit_core_mb_to_mean_acc(gdir, c_df, mb_model):
     """
     Fit a calculated mass balance at an ice core site to a mean accumulation.
 
@@ -610,7 +611,8 @@ def fit_core_mb_to_mean_acc(gdir, c_df):
 
     mean_acc = c_df.loc[c_df.id == gdir.rgi_id].mean_acc.values[0] / 365.25
 
-    factor = mean_mb.apply(lambda x: x / mean_acc).MB.values
+    factor = mean_mb.apply(lambda x: x / mean_acc)[
+        mb_model.mb_name].values
     new_mb = old_mb.apply(lambda x: x / factor)
 
     return new_mb
