@@ -3305,7 +3305,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
     """
     Basic interface for mass balance objects.
     """
-    def __init__(self, xarray_obj, gdir, mb_model):
+    def __init__(self, xarray_obj):
         """
         Instantiate the MassBalance base class.
 
@@ -3319,11 +3319,6 @@ class MassBalance(object, metaclass=SuperclassMeta):
         """
 
         self._obj = xarray_obj
-        self.gdir = gdir
-        self.mb_model = mb_model
-        self.cali_pool = None # TODO: Calibration(); for this I need to write
-        # a calibration object and implement cli parameters attributes in the
-        # MB_model classes
 
     @staticmethod
     def time_cumsum(x):
@@ -3335,7 +3330,57 @@ class MassBalance(object, metaclass=SuperclassMeta):
         """Calculate quantiles with user input."""
         return x.quantile(qs)
 
-    def create_specific(self, MassBalanceModel, from_date=None, to_date=None,
+    def make_hydro_years(self, bg_month=10, bg_day=1):
+        hydro_years = xr.DataArray(
+            [t.year if ((t.month < bg_month) or
+                        ((t.month == bg_month) &
+                         (t.day < bg_day)))
+             else (t.year + 1) for t in
+             self._obj.indexes['time']],
+            dims='time', name='hydro_years',
+            coords={'time': self._obj.time})
+        return hydro_years
+
+    def make_hydro_doys(self, hydro_years=None, bg_month=10, bg_day=1):
+        if hydro_years is None:
+            hydro_years = self.make_hydro_years(bg_month=bg_month,
+                                                bg_day=bg_day)
+        _, cts = np.unique(hydro_years, return_counts=True)
+        doys = [list(range(1, c + 1)) for c in cts]
+        doys = [i for sub in doys for i in sub]
+        hydro_doys = xr.DataArray(doys, dims='time', name='hydro_doys',
+                                  coords={'time': hydro_years.time})
+        return hydro_doys
+
+    def append_to_gdir(self, gdir, basename, reset=False):
+        """
+        Write mass balance to a glacier directory.
+
+        Choose to be aware of possibly existing files or to reset.
+
+        Parameters
+        ----------
+        reset: bool
+            If True, then an existing mass balance file is replaced. If False,
+            only an existing variable (if present) is overwritten.
+
+        Returns
+        -------
+        None
+        """
+
+        if reset is False:
+            try:
+                mb_ds_old = gdir.read_pickle(basename)
+                to_write = mb_ds_old.update(self._obj)
+            except FileNotFoundError:
+                to_write = self._obj.copy(deep=True)
+        else:
+            to_write = self._obj.copy(deep=True)
+
+        gdir.write_pickle(to_write, basename)
+
+    def create_specific(self, mb_model, from_date=None, to_date=None,
                         write=True):
         """
         Create the time series from a given mass balance model.
