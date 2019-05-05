@@ -801,6 +801,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
     cali_params_list = ['mu_hock', 'a_ice', 'a_snow', 'prcp_fac']
     cali_params_guess = OrderedDict(
         zip(cali_params_list, [1.8, 0.013, 0.013, 1.5]))
+    prefix = 'HockModel_'
+    mb_name = prefix + 'MB'
     # todo: is there also a factor of 0.5 between a_snow and a_ice?
 
     def __init__(self, gdir, mu_hock=None, a_ice=None,
@@ -998,6 +1000,8 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     cali_params_list = ['tf', 'srf', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.006, 1.5]))
     calibration_timespan = (2005, None)
+    prefix = 'PellicciottiModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, tf=None, srf=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
