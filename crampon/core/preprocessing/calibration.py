@@ -235,7 +235,8 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
 
 
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
-                                          it_thresh=50, **kwargs):
+                                          it_thresh=50, cali_suffix='',
+                                          **kwargs):
     """
     A function to calibrate those glaciers that have a glaciological mass
     balance in GLAMOS.
@@ -255,6 +256,8 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
         iterations. This criterion is used when after the given number of
         iteration the convergence threshold hasn't been reached. Default: Abort
         after 50 iterations.
+    cali_suffix: str
+        Suffix to apply to the calibration file name (read & write).
     **kwargs: dict
         Keyword arguments accepted by the mass balance model.
 
@@ -295,7 +298,7 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
 
     # Is there already a calibration where we just can append, or new file
     try:
-        cali_df = gdir.get_calibration()
+        cali_df = gdir.get_calibration(filesuffix=cali_suffix)
     # think about an outer join of the date indices here
     except FileNotFoundError:
         cali_df = pd.DataFrame(columns=to_calibrate_csv+['mu_star'],  # 4 OGGM
@@ -322,7 +325,8 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                     row.date0.year, row.date1.year))
             for name in to_calibrate_csv:
                 cali_df.loc[row.date0:row.date1, name] = np.nan
-            cali_df.to_csv(gdir.get_filepath('calibration'))
+            cali_df.to_csv(gdir.get_filepath('calibration',
+                                             filesuffix=cali_suffix))
             continue
 
         # say what we are doing
@@ -400,7 +404,8 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
             cali_df.loc[row.date0:row.date1, mb_model.prefix + 'a_snow'] = \
                 cali_df.loc[row.date0:row.date1, mb_model.prefix + 'a_ice'] \
                 * mb_model.ratio_s_i
-        cali_df.to_csv(gdir.get_filepath('calibration'))
+        cali_df.to_csv(gdir.get_filepath('calibration',
+                                         filesuffix=cali_suffix))
 
         # prepare history for next round
         curr_model = mb_model(gdir, bias=0.)
