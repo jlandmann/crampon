@@ -319,7 +319,7 @@ def process_spinup_climate_data(gdir):
     gdir.write_pickle(out, 'climate_info')
 
 
-def climate_file_from_scratch(write_to=None, hfile=None):
+def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
     """
     Compile the climate file needed for any CRAMPON calculations.
 
@@ -329,15 +329,19 @@ def climate_file_from_scratch(write_to=None, hfile=None):
 
     Parameters
     ----------
-    write_to: str
+    write_to: str or None
         Directory where the Cirrus files should be synchronized to and where
         the processed/concatenated files should be written to. Default: the
         'climate_dir' in the crampon configuration PATHS dictionary.
-    hfile: str
+    hfile: str or None
         Path to a netCDF file containing a DEM of the area (used for assembling
         the file that OGGM likes. Needs to cover the same area in the same
         extent ans resolution as the meteo files. Default: the 'hfile' in the
         crampon configuration PATHS dictionary.
+    how: str
+        For 'from_scratch' the climate file is generated from scratch
+        (time-consuming), for 'update' only the necessary files are appended to
+        an existing climate file (saves some time). Default: 'from_scratch'.
 
     Returns
     -------
@@ -441,7 +445,9 @@ def climate_file_from_scratch(write_to=None, hfile=None):
         # if at least one file was retrieved, assemble everything new
         flist = glob(os.path.join(write_to, (globdir + '*.nc').format(mode, var)))
 
-        if (len(r) > 0) or ((not os.path.exists(all_file)) and len(flist) > 0):
+        # do we want/need to create everything from scratch?
+        if how == 'from_scratch' or ((not os.path.exists(all_file)) and len(flist) > 0):
+        #if (len(r) > 0) or ((not os.path.exists(all_file)) and len(flist) > 0):
             # Instead of using open_mfdataset (we need a lot of preprocessing)
             log.info('Concatenating {} {} {} files...'
                      .format(len(flist), var, mode))
@@ -452,6 +458,18 @@ def climate_file_from_scratch(write_to=None, hfile=None):
             sda = sda.crampon.ensure_time_continuity()
             sda.encoding['zlib'] = True
             sda.to_netcdf(all_file)
+        elif how == 'update':
+            log.info('Updating with {} {} {} files...'
+                     .format(len(r), var, mode))
+            old = utils.read_netcdf(all_file, chunks={'time': 50})
+            new = utils.read_multiple_netcdfs(r, tfunc=utils._cut_with_CH_glac)
+            sda = old.combine_first(new)
+            # todo: do we need to ensure time continuity? What happens if file is missing?
+            sda.encoding['zlib'] = True
+            sda.to_netcdf(all_file)
+        else:
+            raise ValueError('Climate file creation creation mode {} is not '
+                             'allowed.'.format(mode))
 
     # update operational with verified
     for var in ['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_']:
