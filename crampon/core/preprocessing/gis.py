@@ -299,7 +299,7 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
                        'tiled': False}
 
             base, ext = os.path.splitext(gdir.get_filepath('dem'))
-            dem_reproj = base + str(t.item()) + ext
+            dem_reproj = base + str(t.time.dt.year.item()) + ext
             with rasterio.open(dem_reproj, 'w', **profile) as dest:
                 dst_array = np.empty((ny, nx),
                                      dtype=str(dem.height.encoding['dtype']))
@@ -362,7 +362,8 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
         'crs': proj4_str,
         'transform': dst_transform,
         'width': nx,
-        'height': ny
+        'height': ny,
+        'dtype': np.float32
     })
 
     # Could be extended so that the cfg file takes all Resampling.* methods
