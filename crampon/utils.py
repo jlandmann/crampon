@@ -2051,7 +2051,7 @@ class GlacierDirectory(object):
                                         use_compression=use_compression,
                                         filesuffix=filesuffix)
 
-    def get_calibration(self, mb_model=None):
+    def get_calibration(self, mb_model=None, filesuffix=''):
         """
         Read the glacier calibration as a pandas.DataFrame.
 
@@ -2059,6 +2059,8 @@ class GlacierDirectory(object):
         ----------
         mb_model: `py:class:crampon.core.massbalance.MassBalanceModel`
             Model to filter the calibration for.
+        filesuffix: str
+            Suffix for calibration file name (used in experiments).
 
         Returns
         -------
@@ -2066,8 +2068,9 @@ class GlacierDirectory(object):
             Parameter calibration for the glacier directory.
         """
 
-        df = pd.read_csv(self.get_filepath('calibration'), index_col=0,
-                         parse_dates=[0])
+        df = pd.read_csv(self.get_filepath('calibration',
+                                           filesuffix=filesuffix),
+                         index_col=0, parse_dates=[0])
 
         if mb_model is None:
             return df
