@@ -732,6 +732,21 @@ class WSLSFTPClient():
         self.client.quit()
 
 
+def copy_to_webpage_dir(dir):
+    to_put = glob.glob(dir + '*')
+    client = pm.SSHClient()
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(pm.AutoAddPolicy())
+    cred = parse_credentials_file()
+    client.connect(cred['webbi04']['host'], cred['webbi04']['port'],
+                   cred['webbi04']['user'], cred['webbi04']['password'])
+    sftp = client.open_sftp()
+    for tp in to_put:
+        sftp.put(tp, )
+    sftp.close()
+    client.close()
+
+
 @xr.register_dataset_accessor('crampon')
 class MeteoTSAccessor(object):
     def __init__(self, xarray_obj):
