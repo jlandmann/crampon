@@ -1723,7 +1723,8 @@ def dx_from_area(area_km2):
     return dx
 
 
-def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
+def get_possible_parameters_from_past(gdir, mb_model, as_list=False,
+                                      latest_climate=False, only_pairs=True):
     """
     Get all possible calibration parameters from past calibration.
 
@@ -1737,6 +1738,13 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
     mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
     as_list: bool
         True if the result returned should be a list.
+    latest_climate: bool
+        If only the last 30 years of the claibration period shall be considered.
+    only_pairs:
+        Determines whether there are only parameter combinations used which
+        have already appeared, no random mixing. If False, the all available
+        parameters are randomly mixed. Validation has shown that it makes sense
+        to use pairs as the parameters are often correlated. #todo: reference
 
     Returns
     -------
@@ -1750,7 +1758,18 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
     cali_filtered = cali_df.filter(regex=mb_model.__name__)
     cali_sel = cali_filtered.drop_duplicates().dropna().values
 
-    param_prod = product(*cali_sel.T)
+    # TODO: check from theory if this is a clever idea
+    if latest_climate:
+        try:
+            cali_sel = cali_sel[-30:]
+        except IndexError:
+            pass
+
+    if only_pairs:
+        param_prod = cali_sel.copy()
+    else:
+        param_prod = product(*cali_sel.T)
+
     if as_list is True:
         return list(param_prod)
     else:
