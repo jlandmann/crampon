@@ -1128,13 +1128,9 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         # Read timeseries
         # Todo: what to do with the bias? We don't calculate temp this way anymore
-        #itemp = self.meteo.tmean[ix] + self.temp_bias
-        #itgrad = self.meteo.tgrad[ix]
-        #iprcp_unc = self.meteo.prcp[ix]
-        #ipgrad = self.meteo.pgrad[ix]
         isis = self.meteo.sis[ix]
 
-        tempformelt = self.meteo.get_tmean_for_melt_at_heights(date, cfg.PARAMS['temp_melt'], heights)
+        tmean = self.meteo.get_tmean_at_heights(date, heights)
         # Todo: make precip calculation method a member of cfg.PARAMS
         prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date, heights)
 
@@ -1213,14 +1209,14 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         # todo: where to put the bias here?
         # Pellicciotti(2005): melt really only occurs when temp is above Tt
         Tt = 1.  # Todo: Is this true? I think it should be -1! Ask Francesca if it's a typo in her paper!
-        melt_day = tf_now * tempformelt + srf_now * (1 - albedo) * isis
-        melt_day[tempformelt <= Tt] = 0.
+        melt_day = tf_now * tmean + srf_now * (1 - albedo) * isis
+        melt_day[tmean <= Tt] = 0.
 
         mb_day = iprcp_corr - melt_day
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
-            self.meteo.get_tmean_at_heights(date, heights) + cfg.ZERO_DEG_KELVIN)
+            tmean + cfg.ZERO_DEG_KELVIN)
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
 
