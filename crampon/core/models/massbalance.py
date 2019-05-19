@@ -3316,7 +3316,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
     The object has very limited support to units. If the dataset contains an
     attribute 'units' set to either 'm ice s-1', it is able to convert between
-    ice flux (m ice s-1) and water eqivalent (m w.e. d-1).
+    ice flux (m ice s-1) and water equivalent (m w.e. d-1).
     """
 
     def __init__(self, xarray_obj):
@@ -3324,14 +3324,14 @@ class MassBalance(object, metaclass=SuperclassMeta):
         self._obj = xarray_obj
 
     @staticmethod
-    def time_cumsum(x):
+    def time_cumsum(x, skipna=True, keep_attrs=True):
         """Cumulative sum along time, skipping NaNs."""
-        return x.cumsum(dim='time', skipna=True)
+        return x.cumsum(dim='time', skipna=skipna, keep_attrs=keep_attrs)
 
     @staticmethod
     def custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
         """Calculate quantiles with user input."""
-        return x.quantile(qs)
+        return x.quantile(qs, keep_attrs=True)
 
     def convert_to_meter_we(self):
         """
@@ -3494,6 +3494,8 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         mb_cumsum = self._obj.groupby(hyears).apply(
             lambda x: self.time_cumsum(x))
+        # todo: EMERGENCY SOLUTION as long as we are not able to calculate cumsum with NaNs correctly
+        mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
         if quantiles:
             quant = mb_cumsum.groupby(hdoys) \
                 .apply(lambda x: self.custom_quantiles(x, qs=quantiles))
@@ -3518,6 +3520,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
         arr: np.array
             An array of
         """
+        raise NotImplementedError
 
     def get_balance(self, date1, date2, which='total'):
         """
