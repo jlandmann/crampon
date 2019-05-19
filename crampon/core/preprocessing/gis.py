@@ -288,8 +288,8 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
 
             # Set up profile for writing output
             profile = {'crs': proj4_str,
-                       'nodata': dem.height.encoding['_FillValue'],
-                       'dtype': str(dem.height.encoding['dtype']),
+                       'nodata': np.nan,
+                       'dtype': np.float32,
                        'count': 1,
                        'transform': dst_transform,
                        'interleave': 'band',
@@ -302,7 +302,7 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
             dem_reproj = base + str(t.time.dt.year.item()) + ext
             with rasterio.open(dem_reproj, 'w', **profile) as dest:
                 dst_array = np.empty((ny, nx),
-                                     dtype=str(dem.height.encoding['dtype']))
+                                     dtype=np.float32)
                 dst_array[:] = np.nan
 
                 reproject(
