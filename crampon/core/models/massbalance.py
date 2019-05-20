@@ -3176,7 +3176,7 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         a_firn_init: float
             Initial (maximum albedo for firn. Default: 0.5
         """
-        self.x = x
+        self.x = x.copy()
         self.a_snow_init = a_snow_init
         self.a_firn_init = a_firn_init
 
