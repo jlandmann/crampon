@@ -46,6 +46,17 @@ log = logging.getLogger(__name__)
 
 nullfmt = NullFormatter()  # no labels
 
+# colors to display climatology
+CLIM_COLORS = [('b', 'cornflowerblue'), ('darkmagenta', 'magenta'),
+               ('deeppink', 'lightpink')]
+# colors to display current analysis
+CURR_COLORS = [('darkorange', 'orange'), ('darkgreen', 'forestgreen'),
+               ('darkcyan', 'cyan'), ('darkgoldenrod', 'gold'),
+               ('lightseagreen', 'turquoise'),
+               ('yellowgreen', 'darkolivegreen')]
+# colors to display mass balance forecasts
+FCST_COLORS = [('darkred', 'red')]
+
 
 def plot_fog_mb_glaciers(fog_dir=None, y=None, x=None):
     """
