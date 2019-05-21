@@ -853,3 +853,47 @@ def plot_topo_per_glacier(start_year=2005, end_year=None):
     plt.legend(title=leg_title, loc=4, ncol=int(max(points.n_dems)),
                handletextpad=0.3, handlelength=0.7, framealpha=0.9)
 
+
+def plot_animated_potential_irradiation(gdir):
+    """
+    Make an animation of the daily potential irradiation of a glacier.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        The glacier directory to make the plot for.
+
+    Returns
+    -------
+    ani: matplotlib.animation.ArtistAnimation
+        The produced animation object.
+    """
+    # todo: try this with a GoogleVisibleMap (terrain) in the background!
+    # https://github.com/fmaussion/salem/blob/master/docs/examples/plot_googlestatic.py
+
+    ipot_ds = xr.open_dataset((gdir.get_filepath('ipot')))
+    ipot_array = ipot_ds.ipot.values
+    time = ipot_ds.time.values
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ims = []
+    max_val = np.nanmax(ipot_array)
+    min_val = np.nanmin(ipot_array)
+    valid = np.where(~np.isnan(ipot_array))
+    for i in range(ipot_array.shape[2]):
+        im = ax.imshow(ipot_array[min(valid[0]):max(valid[0]),
+                       min(valid[1]):max(valid[1]),
+                       i].T, aspect='auto',
+                       cmap='gist_ncar', vmin=min_val, vmax=max_val,
+                       animated=True)
+        t = ax.annotate(time[i].strftime('%m-%d'), (0.01, 0.98),
+                        xycoords='axes fraction', verticalalignment='top',
+                        color='k')
+        if i == 0:
+            fig.colorbar(im)
+        ims.append([im, t])
+    ani = animation.ArtistAnimation(fig, ims, interval=50, blit=True,
+                                    repeat_delay=1000)
+
+    return ani
