@@ -1811,6 +1811,49 @@ class SnowFirnCover(object):
     def ice_melt(self, value):
         self._ice_melt = value
 
+    def to_dataset(self):
+        """
+        Convert the SnowFirnCover object into an xarray dataset.
+
+        Returns
+        -------
+        ds: xr.Dataset
+        """
+
+        time = pd.to_datetime((np.nanmax(self.origin[~pd.isnull(self.origin)])
+                               + dt.timedelta(days=np.nanmin(self.age_days))))
+        print(time)
+
+        ds = xr.Dataset({'swe': (['fl_id', 'layer', 'time'],
+                                 np.atleast_3d(self.swe)),
+                         'sh': (['fl_id', 'layer', 'time'],
+                                np.atleast_3d(self.sh)),
+                         'rho': (['fl_id', 'layer', 'time'],
+                                 np.atleast_3d(self.rho)),
+                         'origin': (['fl_id', 'layer', 'time'],
+                                    np.atleast_3d(self.origin)),
+                         'temperature': (['fl_id', 'layer', 'time'],
+                                         np.atleast_3d(self.temperature)),
+                         'liq_content': (['fl_id', 'layer', 'time'],
+                                         np.atleast_3d(self.liq_content)),
+                         'age_days': (['fl_id', 'layer', 'time'],
+                                      np.atleast_3d(self.age_days)),
+                         'last_update': (['fl_id', 'layer', 'time'],
+                                      np.atleast_3d(self.last_update)),
+                         'ice_melt': (['fl_id', 'time'],
+                                      np.atleast_2d(self.ice_melt).T),
+                         'heights': (['fl_id', 'time'],
+                                     np.atleast_2d(self.height_nodes).T)},
+                        coords={'fl_id': (['fl_id', ],
+                                          np.arange(self.n_heights)),
+                                'layer': (['layer', ],
+                                          np.arange(self.swe.shape[1])),
+                                'time': (['time', ], [time])
+                                }
+                        )
+
+        return ds
+
     def get_type_indices(self, layertype):
         """
         Get the grid indices as tuples for a given type.
