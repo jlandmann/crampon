@@ -152,34 +152,50 @@ def plot_entity_param_dist(gdirs):
     return df_comb
 
 
-def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disguise_entities_old_and_new.shp',
-                      ch_loc='C:\\Users\\Johannes\\Documents\\data\\borders\\swissBOUNDARIES3D\\BOUNDARIES_2017\\DATEN\V200\\SHAPEFILE_LV03\\VEC200_LANDESGEBIET_LV03.shp'):
+def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None):
     """
     Create a clickable map of all Swiss glacier outlines.
 
+    the plot will be saved automatically to the 'plots' directory of the
+    working directory.
+
     Parameters
     ----------
+    mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`, str
+        The mass balance model output to plot. Default: None (use ensemble
+        median estimate).
     shp_loc: str
-        Path to the glacier shapefile.
+        Path to the glacier shapefile. If None, search in the data directory.
+        Default: None.
     ch_loc: str
-        Path to the shapefile with Swiss borders.
+        Path to the shapefile with Swiss borders. If None, search in the data
+        directory. Default: None.
 
     Returns
     -------
-
+    None
     """
 
+    if isinstance(mb_model, utils.SuperclassMeta):
+        mb_model = mb_model.__name__
+
+    if shp_loc is None:
+        shp_loc = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                               'mauro_sgi_merge.shp')
+    if ch_loc is None:
+        ch_loc = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                              'VEC200_LANDESGEBIET_LV03.shp')
+
     # A map zoomed on Switzerland
-    m = folium.Map(location=[46.81, 8.21], tiles='cartoDB Positron',
+    m = folium.Map(location=[46.44, 8.37], tiles='cartoDB Positron',
                    zoom_start=9, control_scale=True)
 
     # Make a full screen option
-    plugins.Fullscreen(position='topright', title='Full screen',
-                       titleCancel='Exit full screen',
-                       forceSeparateButton=True).add_to(m)
+    plugins.Fullscreen(position='topright',
+                       force_separate_button=True).add_to(m)
 
-    # Add anywhere LatLon PopUp
-    m.add_child(folium.LatLngPopup())
+    # for fun ;-)
+    folium.plugins.Terminator().add_to(m)
 
     # Add tile layers to choose from as background
     # ATTENTION: Some fail silently and the LayerControl just disappears
@@ -194,34 +210,13 @@ def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disgui
                           '/by-sa/3.0/">CC-BY-SA</a>)',
                      name='OpenTopoMap').add_to(m)
     folium.TileLayer('stamenterrain', name='Stamen Terrain').add_to(m)
-    # Copyright/usage restriction unclear:
-    #folium.TileLayer('http://server.arcgisonline.com/ArcGIS/rest/services/'
-    #                 'World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    #                 attr='Tiles &copy; Esri &mdash; Source: Esri, i-cubed, '
-    #                      'USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN,'
-    #                      ' IGP, UPR-EGP, and the GIS User Community')
-
-    # Marker Clusters
-    # N = 100
-
-    #data = np.array(
-    #    [
-    #        np.random.uniform(low=45.8, high=47.8, size=N),
-    #        # Random latitudes in Europe.
-    #        np.random.uniform(low=6., high=11., size=N),
-    #        # Random longitudes in Europe.
-    #        range(N),  # Popups texts are simple numbers.
-    #    ]
-    #).T
-    #
-    #plugins.MarkerCluster(data).add_to(m)
 
     # Add Swiss boundaries for a slight highlighting
     ch_gdf = gpd.GeoDataFrame.from_file(ch_loc)
     ch_gjs = ch_gdf[ch_gdf.ICC != 'CH'].to_crs(epsg='4326').to_json()
     style_function = lambda ch_gjs: dict(stroke="#FFFFFF", color="#555555",
                                          weight=2, strokeopacity=1.,
-                                         fillopacity=0.05)
+                                         fillopacity=0.)
 
     ch_poly = folium.features.GeoJson(ch_gjs,
                                       name='Swiss National Border',
@@ -231,65 +226,145 @@ def make_mb_popup_map(shp_loc='C:\\Users\\Johannes\\Desktop\\mauro_in_RGI_disgui
     # Add glacier shapes
     glc_gdf = gpd.GeoDataFrame.from_file(shp_loc)
     glc_gdf = glc_gdf.sort_values(by='Area', ascending=False)
-    glc_gdf = glc_gdf.head(1000)
     glc_gdf = glc_gdf[['Name', 'RGIId', 'CenLat', 'CenLon', 'Area',
                        'geometry']]
-    cmap = plt.cm.get_cmap('autumn', len(glc_gdf))
 
-    # THE RANDOM COLORS IS JUST TO PRODUCE FAKE DATA!!!!!!
-    nums = np.random.choice(['yellow', 'orange', 'red'], size=len(glc_gdf))
-    glc_gdf['randcolor'] = nums
-    glc_gjs = glc_gdf.to_json()
+    # todo: externalize this function and make it an entity task
+    has_current_and_clim = []
+    error = 0
+    for id in glc_gdf.RGIId.values:
+        try:
+            gd = utils.GlacierDirectory(id, base_dir=os.path.join(
+                cfg.PATHS['working_dir'], 'per_glacier'))
+            clim = gd.read_pickle('mb_daily')
+            current = gd.read_pickle('mb_current')
+        except:
+            error += 1
+            continue
+        if mb_model is not None:
+            current = current.sel(model=mb_model)
+        current_csq = current.mb.make_cumsum_quantiles()
+        mbc_values = current_csq.sel(quantile=0.5)
+        mbc_value = mbc_values.MB.isel(hydro_doys=-1)
+
+        hydro_years = clim.mb.make_hydro_years()
+        mb_cumsum = clim.groupby(hydro_years).apply(
+            lambda x: MassBalance.time_cumsum(x))
+
+        # todo: EMERGENCY SOLUTION as long as we are not able to calculate
+        #  cumsum with NaNs correctly
+        mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
+
+        mbd_values = [j.MB.sel(
+            time=pd.to_datetime(j.time.values[0]) + dt.timedelta(
+                days=mbc_values.hydro_doys[-1].item() - 1)).median(
+            dim='model', skipna=True).item() for i, j in
+                      list(mb_cumsum.groupby(hydro_years))[:-1]]
+        mbd_values = sorted(mbd_values)
+        pctl = percentileofscore(mbd_values, mbc_value.item())
+        glc_gdf.loc[glc_gdf.RGIId == id, 'pctl'] = pctl
+        has_current_and_clim.append(id)
+        log.info('Successfully calculated mb distribution for {}'.format(id))
+    glc_gdf = glc_gdf[glc_gdf.RGIId.isin(has_current_and_clim)]
+
+    cmap_str = 'rainbow_r'
+    colors = matplotlib.colors.Normalize(vmin=0.0, vmax=100)
+    glc_gdf['polycolor'] = [matplotlib.colors.rgb2hex(i) for i in
+                            [plt.cm.get_cmap(cmap_str)(colors(j)) for j in
+                             glc_gdf.pctl.values]]
+    # branca colormap as folium input, but it doesn't have all mpl ones
+    colormap_full = [plt.cm.get_cmap(cmap_str)(colors(j)) for j in range(101)]
+    branca_colormap_full = branca.colormap.LinearColormap(
+        colormap_full, vmin=0, vmax=100).scale(0, 100).to_step(100)
+    branca_colormap_full.caption = 'Current MB median as percentile of ' \
+                                   'climatology'
+    m.add_child(branca_colormap_full)
 
     style_func2 = lambda feature: {
-        'fillColor': feature['properties']['randcolor'],
-        'color': feature['properties']['randcolor'],
+        'fillColor': feature['properties']['polycolor'],
+        'color': feature['properties']['polycolor'],
         'weight': 1,
-        'fillOpacity': 1,
+        'fillOpacity': 0.8,
     }
-    polys = folium.features.GeoJson(glc_gjs,
-                                    style_function=style_func2,
-                                    name='Swiss Glacier Inventory 2010')
-    m.add_child(polys)
-    """
-    # Test labels
-    marker_cluster = folium.MarkerCluster().add_to(m)
 
-    sorted = glc_gdf.sort_values('Area', ascending=False)
-    sorted = sorted.reset_index()
-    locations = sorted[['CenLat', 'CenLon']]
-    locationlist = locations.values.tolist()
-    # At the moment, the browser doesn't load the map anymore with more than
-    # 10 markers with divicons
-    #for i, row in enumerate(sorted.values[:10]):
-    #    folium.Marker(locationlist[i], icon=folium.DivIcon(icon_size=(5, 5),
-    #                                                       icon_anchor=(10, 10),
-    #    html='<div style="font-size: 12pt">{}</div>'.format(glc_gdf['Name'][i]),
-    #    )).add_to(marker_cluster)
-    for i, row in enumerate(sorted.ix[:10]):
-        folium.Marker(locationlist[i], icon=folium.DivIcon(icon_size=(5, 5),
-                                                           icon_anchor=(10, 10),
-        html='<div style="font-size: 12pt">{}</div>'.format(sorted.iloc[i]['Name']),
-        )).add_to(marker_cluster)
-    """
-    ## Add PopUp on GeoJSON - makes the map superslow
-    #for i, row in glc_gdf.iterrows():
-    #    gj = folium.GeoJson(
-    #        data={
-    #            "type": "Polygon",
-    #           "coordinates": [list(zip(row.geometry.exterior.xy[0],
-    #                                    row.geometry.exterior.xy[1]))]
-    #        }
-    #    )
-    #
-    #    gj.add_child(folium.Popup("outline Popup on GeoJSON"))
-    #    gj.add_to(m)
+    def highlight_function(feature):
+        return {
+            'fillColor': feature['properties']['polycolor'],
+            'color': feature['properties']['polycolor'],
+            'weight': 3,
+            'fillOpacity': 1
+        }
+
+    def popup_html_string(point):
+        """
+        Make an HTML string used in a popup over a glacier.
+
+        Parameters
+        ----------
+        point: pd.Series
+           The Series must contain
+
+        Returns
+        -------
+        html: str
+            HTML string.
+        """
+        pure_sgi_id = point.RGIId.split('.')[1]
+        clickable_mb_dist = \
+            '<a href="https://crampon.glamos.ch/plots/mb_dist/{}_mb_dist_' \
+            'ensemble.png" target="_blank"><p>Mass Balance Distribution</p>' \
+            '<img src="https://crampon.glamos.ch/plots/mb_dist/{}_mb_dist_' \
+            'ensemble_prev.png" style="max-width:100%; position:relative; ' \
+            'display:inline; overflow:hidden; margin:0;" /></a>'.format(
+                pure_sgi_id, pure_sgi_id)
+        other_clickables = \
+            '<a href="https://crampon.glamos.ch/plots/mb_spaghetti/{}_intera' \
+            'ctive_mb_spaghetti.html" target="_blank"><p>MB Spaghetti</p></a' \
+            '>'.format(pure_sgi_id)
+
+        html = '<b> ' + point.Name + ' (' + pure_sgi_id + ')</b><br><br>'
+        html += '<div style="width:5000; height:1000; text-align: center">{}' \
+                '</div>'.format(clickable_mb_dist)
+        html += 'Further information:<br>'
+        html += other_clickables
+        return html
+
+    glc_gdf['popup_html'] = glc_gdf.apply(popup_html_string, axis=1)
+
+    layer_geom = folium.FeatureGroup(name='layer', control=False)
+
+    glc_gjs = glc_gdf.__geo_interface__
+    for i in range(len(glc_gjs["features"])):
+        temp_geojson = {"features": [glc_gjs["features"][i]],
+                        "type": "FeatureCollection"}
+        temp_geojson_layer = folium.GeoJson(temp_geojson,
+                                            highlight_function=
+                                            highlight_function,
+                                            control=False,
+                                            style_function=style_func2,
+                                            smooth_factor=0.5)
+        folium.Popup(
+            temp_geojson["features"][0]["properties"]['popup_html']).add_to(
+            temp_geojson_layer)
+        temp_geojson_layer.add_to(layer_geom)
+
+    layer_geom.add_to(m)
 
     # Add the layer control icon (do not forget!!!)
     folium.LayerControl().add_to(m)
 
+    # tell when it was updated
+    date_str = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    update_html = '<div style="position: fixed; bottom: 39px; left: 5px; ' \
+                  'width: 210px; height: 21px; border:2px solid grey; ' \
+                  'z-index:9999; font-size:11px;background-color:white;' \
+                  'opacity:0.6"' \
+                  '> Last updated: {} </div>'.format(date_str)
+    m.get_root().html.add_child(folium.Element(update_html))
+
     # Save
-    m.save('c:\\users\\johannes\\desktop\\index.html')
+    plots_dir = os.path.join(cfg.PATHS['working_dir'], 'plots')
+    m.save(os.path.join(plots_dir, 'status_map.html'))
 
 
 def plot_compare_cali(wdir=None, dev=5.):
