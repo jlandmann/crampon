@@ -11,8 +11,8 @@ import datetime
 import logging
 from joblib import Memory
 import crampon.cfg as cfg
-from crampon.core.preprocessing.climate import climate_file_from_scratch
-from crampon import tasks
+from crampon.core.preprocessing.climate import make_climate_file, make_nwp_file
+from crampon import graphics
 from crampon import utils
 from crampon.utils import GlacierDirectory, retry
 from crampon import tasks
@@ -76,6 +76,8 @@ def daily_tasks(gdirs):
     for task in daily_entity_tasks:
         execute_entity_task(task, gdirs)
 
+    graphics.make_mb_popup_map()
+
     try_backup(gdirs)
 
 
@@ -83,7 +85,7 @@ def daily_tasks(gdirs):
 @retry(Exception, tries=45, delay=1800, backoff=1, log_to=log)
 def try_download_new_cirrus_files():
     # This must be FIRST
-    cfile = climate_file_from_scratch()
+    cfile = make_climate_file(how='update')
 
     # if no news, try later again
     cmeta = xr.open_dataset(cfile, drop_variables=['temp', 'tmin', 'tmax',
@@ -202,7 +204,7 @@ if __name__ == '__main__':
 
     print('Making initial climate file from scratch')
     # 2) make/update climate file
-    _ = climate_file_from_scratch(write_to=cfg.PATHS['climate_dir'],
+    _ = make_climate_file(write_to=cfg.PATHS['climate_dir'],
                                    hfile=cfg.PATHS['hfile'])
     print('Finished making initial climate file from scratch')
     # 3) make MB climatology
