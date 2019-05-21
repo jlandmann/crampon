@@ -1854,6 +1854,90 @@ class SnowFirnCover(object):
 
         return ds
 
+    @classmethod
+    def from_dataset(self, ds=None, path=None, **kwargs):
+        """
+        Create a SnowFirnCover object from an xarray Dataset.
+
+        Both an xarray.Dataset or a path to an xarray.Dataset can be given
+        (mutually exclusive). In both cases the Dataset must contain all
+        variables to create a SnowFirnCover, i.e. 'SWE' (snow water equivalent)
+         and either of 'SH' (snow height) or 'RHO' (density). The properties
+         are then inferred from the input.
+
+        Parameters
+        ----------
+        ds: xarray.Dataset
+            An xarray.Dataset instance containing at least variables
+        path:
+            Path to an xarray.Dataset
+        **kwargs: dict
+            Further arguments to be passed to the SnowFirnCover object.
+
+        Returns
+        -------
+        A SnowFirnCover instance.
+
+        See Also
+        --------
+        to_dataset: create an xarray.Dataset from a SnowFirnCover instance.
+        """
+
+        if (ds is None) and (path is None):
+            raise ValueError('Either of "path" or "ds" must be given.')
+        if (ds is not None) and (path is not None):
+            raise ValueError('Only one of "path" and "ds" can be given.')
+
+        # length of time axis may only be one
+        if len(ds.time) > 1:
+            raise ValueError('Time dimension may only have length one.')
+
+        ds = ds.isel(time=0)
+
+        if path is not None:
+            ds = xr.open_dataset(path)
+
+        swe = ds.swe.values
+        # we give preference to RHO (sh is a property based on rho and swe)
+        try:
+            rho = ds.rho.values
+        except KeyError:
+            try:
+                rho = swe / ds.sh.values
+            except KeyError:
+                raise ValueError('Input dataset must contain either density ("'
+                                 'RHO") or snow height ("SH").')
+
+        # mixing datetime and np.nan was a stupid idea
+        origin = ds.origin.values
+        origino = origin.astype(object)
+        for i, j in product(range(origin.shape[0]), range(origin.shape[1])):
+            if origino[i][j] is None:
+                origino[i][j] = np.nan
+            else:
+                origino[i][j] = pd.to_datetime(
+                    np.datetime64(origino[i][j], 'ns'))
+
+        try:
+            temp = ds.temperature.values
+        except:
+            temp = None
+
+        try:
+            lc = ds.liq_content.values
+        except KeyError:
+            lc = None
+
+        try:
+            lu = ds.last_update.values
+        except KeyError:
+            lu = None
+        sfc_obj = SnowFirnCover(ds.heights.values, swe, rho, origino,
+                                temperatures=temp, liq_content=lc,
+                                last_update=lu, **kwargs)
+
+        return sfc_obj
+
     def get_type_indices(self, layertype):
         """
         Get the grid indices as tuples for a given type.
