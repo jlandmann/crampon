@@ -617,7 +617,7 @@ def plot_animated_swe(mb_model):
     return ani
 
 
-def plot_interactive_mb_spaghetti_html(gdir, plot_dir):
+def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
     """
     Makes an interactive spaghetti plot of all avaiable mass balance years.
 
@@ -637,8 +637,12 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir):
     None
     """
 
-    mb_hist = gdir.read_pickle('mb_daily')
+    mb_clim = gdir.read_pickle('mb_daily')
     mb_curr = gdir.read_pickle('mb_current')
+
+    if mb_models is not None:
+        mb_clim = mb_clim.sel(model=mb_models)
+        mb_curr = mb_curr.sel(model=mb_models)
 
     fig, ax = plt.subplots(figsize=(14, 10), subplot_kw={'xticks': [],
                                                          'yticks': []})
@@ -649,68 +653,76 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir):
     mbcyears = []
     models = []
 
-    hydro_years = mb_hist.mb.make_hydro_years()
-    for y, group in list(mb_hist.groupby(hydro_years)):
+    hydro_years = mb_clim.mb.make_hydro_years()
+    for y, group in list(mb_clim.groupby(hydro_years)):
         # make use of static method
-        to_plot = group.apply(MassBalance.time_cumsum)
+        to_plot = MassBalance.time_cumsum(group)
+        # todo: EMERGENCY SOLUTION as long as we are not able to calculate cumsum with NaNs correctly
+        to_plot = to_plot.where(to_plot.MB != 0.)
+        to_plot = to_plot.median(dim='member')
 
         # the last hydro years contains one values only
         if y == max(hydro_years.values):
             continue
 
-        for ivar, (mbname, mbvar) in enumerate(to_plot.data_vars.items()):
-            if not 'MB' in mbname:
-                continue
+        #for ivar, (mbname, mbvar) in enumerate(to_plot.data_vars.items()):
+        for model in to_plot.model.values:
             # extend every year to 366 days and stack
+            gsel_mbvals = to_plot.sel(model=model).MB.values
             if arr is None:
-                arr = np.lib.pad(mbvar.values.flatten(),
-                                 (0, 366 - len(mbvar.values)),
+                arr = np.lib.pad(gsel_mbvals.flatten(),
+                                 (0, 366 - len(gsel_mbvals)),
                                  mode='constant', constant_values=(
                         np.nan, np.nan))
             else:
-                arr = np.vstack((arr, np.lib.pad(mbvar.values.flatten(),
-                                                 (0, 366 - len(mbvar.values)),
+                arr = np.vstack((arr, np.lib.pad(gsel_mbvals.flatten(),
+                                                 (0, 366 - len(gsel_mbvals)),
                                                  mode='constant',
                                                  constant_values=(np.nan,
                                                                   np.nan))))
             years.append(y)
-            models.append(mbname.split('_')[0])
+            models.append(model)
 
     # add current median
-    for ivar, (mbname, mbvar) in enumerate(mb_curr.data_vars.items()):
-        if not 'MB' in mbname:
-            continue
-        print(mbname)
+    #for ivar, (mbname, mbvar) in enumerate(mb_curr.data_vars.items()):
+    mb_curr_cs = MassBalance.time_cumsum(mb_curr)
+    for model in mb_curr_cs.model.values:
+        mb_curr_cs_sel = mb_curr_cs.sel(model=model)
+
         if mbcarr is None:
-            mbcarr = np.lib.pad(mb_curr[mbname].values[:, 2],
+            mbcarr = np.lib.pad(mb_curr_cs_sel.MB.values[:, 2],
                                 (0,
-                                 366 - mb_curr[mbname].values[:, 2].shape[0]),
+                                 366 - mb_curr_cs_sel.MB.values[:, 2].shape[0]),
                                 mode='constant',
                                 constant_values=(np.nan, np.nan))
         else:
             mbcarr = np.vstack(
-                (mbcarr, np.lib.pad(mb_curr[mbname].values[:, 2],
+                (mbcarr, np.lib.pad(mb_curr_cs_sel.MB.values[:, 2],
                                     (0,
                                      366 -
-                                     mb_curr[mbname].values[:,
+                                     mb_curr_cs_sel.MB.values[:,
                                      2].shape[0]),
                                     mode='constant',
                                     constant_values=(
                                         np.nan, np.nan))))
         mbcyears.append(mb_curr.time[-1].dt.year.item())
-        models.append(mbname.split('_')[0])
+        models.append(model)
 
     arr = np.vstack((arr, mbcarr))
     years.extend(mbcyears)
 
-    custompalette = grey(len(years) - len(mbcyears)) + \
+    greyshades = len(years) - len(mbcyears)
+    if greyshades > 256:  # the length of the palette
+        greyshades = np.lib.pad(np.arange(256), pad_width=greyshades-256,
+                                mode='symmetric')
+    custompalette = grey(greyshades) + \
                     [c for c, _ in CURR_COLORS[:len(mbcyears)]]
 
     xs = [np.arange(arr.shape[1])] * arr.shape[0]
     ys = arr.tolist()
     desc = years
     color = custompalette
-    alpha = (len(years) - len(mbcyears)) * [0.3] + len(mbcyears) * [1.0]
+    alpha = (len(years) - len(mbcyears)) * [0.3] + len(mbcyears) * [0.9]
     source = ColumnDataSource(dict(
         xs=xs,
         ys=ys,
@@ -725,7 +737,7 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir):
 
     plot = bkfigure(plot_width=1200, plot_height=800)
     plot.title.text = 'Cumulative Mass Balance of {} ({})'.\
-        format(mb_hist.attrs['id'].split('.')[1], mb_hist.attrs['name'])
+        format(mb_clim.attrs['id'].split('.')[1], mb_clim.attrs['name'])
     plot.xaxis.axis_label = 'Days of Hydrological Year'
     plot.yaxis.axis_label = 'Cumulative Mass Balance'
     xticks = np.cumsum(np.append([0], np.roll(cfg.DAYS_IN_MONTH, -3)[:-1]))
