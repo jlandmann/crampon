@@ -635,27 +635,35 @@ def plot_cumsum_climatology_and_current(gdir=None, clim=None, current=None,
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # include suptitle
 
 
-def plot_cumsum_allyears(gdir):
-    # input must be  mb_daily.pkl
+def plot_cumsum_allyears(gdir, mb_model=None):
+    """
+    Plot the cumulative sum of the mass balance of all years available.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory to show the data for.
+    mb_model: str or None
+        If only one mass balance model shall be shown. Default: None (show all
+        available).
+
+    Returns
+    -------
+    None
+    """
+
     mb_ds = gdir.read_pickle('mb_daily')
     mb_ds_cs = mb_ds.apply(lambda x: x.cumsum(dim='time', skipna=True))
+    if mb_model is not None:
+        mb_ds_cs = mb_ds_cs.sel(model=mb_model)
+
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(mb_ds_cs.MB.values)
-    ax.set_xlabel('Time', fontsize=16)
-    ax.set_ylabel('Cumulative Mass Balance (m we)', fontsize=16)
+    mb_ds_cs.MB.plot(x='time', hue='model', ax=ax)
+    ax.set_xlabel('Time', fontsize=14)
+    ax.set_ylabel('Cumulative Mass Balance (m w.e.)', fontsize=14)
     plt.title('Cumulative MB Distribution of ' +
               mb_ds.attrs['id'].split('.')[1] + ' (' + mb_ds.attrs[
-                  'name'] + ')', fontsize=16)
-    xtpos = np.append([0], np.cumsum([np.count_nonzero(
-        [i.year for i in pd.DatetimeIndex(mb_ds.time.values)] == y) for y in
-                                      np.unique([t.year for t in
-                                                 pd.DatetimeIndex(
-                                                     mb_ds.time.values)])]))
-    plt.tick_params(axis='both', which='major', labelsize=16)
-    ax.xaxis.set_ticks(xtpos[::5])
-    ax.set_xticklabels([y for y in np.unique(
-        [t.year for t in pd.DatetimeIndex(mb_ds.time.values)])
-                        ][::5], fontsize=16)
+                  'name'] + ')', fontsize=14)
 
 
 def plot_animated_swe(mb_model):
@@ -740,7 +748,6 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
         if y == max(hydro_years.values):
             continue
 
-        #for ivar, (mbname, mbvar) in enumerate(to_plot.data_vars.items()):
         for model in to_plot.model.values:
             # extend every year to 366 days and stack
             gsel_mbvals = to_plot.sel(model=model).MB.values
