@@ -128,7 +128,7 @@ if __name__ == '__main__':
 
     for g in gdirs:
         print(g.rgi_id)
-        for mbm in mb_models:
+        for mi, mbm in enumerate(mb_models):
 
             try:
                 cali_df = g.get_calibration(mbm)
@@ -229,7 +229,10 @@ if __name__ == '__main__':
 
             mbcurr_ds.attrs.update({'id': g.rgi_id, 'name': g.name,
                                  'units': 'm w.e.'})
-            mbcurr_ds.mb.append_to_gdir(g, 'mb_current', reset=False)
+            if mi == 0:
+                mbcurr_ds.mb.append_to_gdir(g, 'mb_current', reset=True)
+            else:
+                mbcurr_ds.mb.append_to_gdir(g, 'mb_current', reset=False)
 
 
         # read the freshly made MB
