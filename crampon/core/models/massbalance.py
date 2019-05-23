@@ -3545,7 +3545,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
         if reset is False:
             try:
                 mb_ds_old = gdir.read_pickle(basename)
-                to_write = mb_ds_old.update(self._obj)
+                to_write = self._obj.combine_first(mb_ds_old)
             except FileNotFoundError:
                 to_write = self._obj.copy(deep=True)
         else:
