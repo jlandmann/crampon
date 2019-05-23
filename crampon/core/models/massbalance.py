@@ -3602,9 +3602,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         self._obj = xr.concat(self._obj, append)
 
-        if write:
-            self.gdir.write_pickle(self._obj, 'mb_daily')
-            # TODO: write a write_snow and write_mb method to be called here
+        self.append_to_gdir(gdir, basename, reset=False)
 
     def make_cumsum_quantiles(self, bg_month=10, bg_day=1, quantiles=None):
         """
