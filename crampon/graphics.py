@@ -765,25 +765,27 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
             years.append(y)
             models.append(model)
 
-    # add current median
-    #for ivar, (mbname, mbvar) in enumerate(mb_curr.data_vars.items()):
     mb_curr_cs = MassBalance.time_cumsum(mb_curr)
+    # todo: EMERGENCY SOLUTION as long as we are not able to calculate cumsum
+    #  with NaNs correctly
+    mb_curr_cs = mb_curr_cs.where(mb_curr_cs.MB != 0.)
+    # add current median
     for model in mb_curr_cs.model.values:
-        mb_curr_cs_sel = mb_curr_cs.sel(model=model)
+        mb_curr_sel = mb_curr_cs.sel(model=model)
+        mb_curr_med = mb_curr_sel.median(dim='member').MB.values
 
         if mbcarr is None:
-            mbcarr = np.lib.pad(mb_curr_cs_sel.MB.values[:, 2],
+            mbcarr = np.lib.pad(mb_curr_med,
                                 (0,
-                                 366 - mb_curr_cs_sel.MB.values[:, 2].shape[0]),
+                                 366 - mb_curr_med.shape[0]),
                                 mode='constant',
                                 constant_values=(np.nan, np.nan))
         else:
             mbcarr = np.vstack(
-                (mbcarr, np.lib.pad(mb_curr_cs_sel.MB.values[:, 2],
+                (mbcarr, np.lib.pad(mb_curr_med,
                                     (0,
                                      366 -
-                                     mb_curr_cs_sel.MB.values[:,
-                                     2].shape[0]),
+                                     mb_curr_med.shape[0]),
                                     mode='constant',
                                     constant_values=(
                                         np.nan, np.nan))))
