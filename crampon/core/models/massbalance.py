@@ -998,7 +998,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     """
 
     cali_params_list = ['tf', 'srf', 'prcp_fac']
-    cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.006, 1.5]))
+    cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.28, 1.5]))
     calibration_timespan = (2005, None)
     prefix = 'PellicciottiModel_'
     mb_name = prefix + 'MB'
