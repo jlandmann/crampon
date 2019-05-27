@@ -79,6 +79,10 @@ TWO_THIRDS = 2./3.
 FOUR_THIRDS = 4./3.
 ONE_FIFTH = 1./5.
 
+# the mass balance models ready to use
+MASSBALANCE_MODELS = ['BraithwaiteModel', 'PellicciottiModel',
+                      'OerlemansModel']
+
 # Added from CRAMPON:
 _doc = 'CSV output from the calibration for the different models, including' \
        'uncertainties.'
