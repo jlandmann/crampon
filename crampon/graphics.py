@@ -1,12 +1,12 @@
 from __future__ import division
 
+from oggm.graphics import *
 from crampon.utils import entity_task, global_task
 from crampon import utils
 from crampon import workflow
 from crampon.core.models.massbalance import MassBalance
 import xarray as xr
 from matplotlib.ticker import NullFormatter
-from oggm.graphics import *
 from oggm.utils import nicenumber
 import os
 import datetime as dt
@@ -824,7 +824,11 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
         format(mb_clim.attrs['id'].split('.')[1], mb_clim.attrs['name'])
     plot.xaxis.axis_label = 'Days of Hydrological Year'
     plot.yaxis.axis_label = 'Cumulative Mass Balance'
-    xticks = np.cumsum(np.append([0], np.roll(cfg.DAYS_IN_MONTH, -3)[:-1]))
+    if utils.leap_year(mb_curr.time[0].dt.year.item()+1):
+        dim = cfg.DAYS_IN_MONTH_LEAP
+    else:
+        dim = cfg.DAYS_IN_MONTH
+    xticks = np.cumsum(np.append([0], np.roll(dim, 3)[:-1]))
     xlabel_dict = {}
     for i, s in zip(xticks, [i for i in 'ONDJFMAMJJAS']):
         xlabel_dict[str(i)] = s
