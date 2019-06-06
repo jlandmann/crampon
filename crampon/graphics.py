@@ -35,6 +35,7 @@ from bokeh.models.sources import ColumnDataSource
 from bokeh.models.tickers import FixedTicker
 from bokeh.io import show, export_png
 from bokeh.palettes import grey
+from bokeh.models import Legend, LegendItem
 from scipy.stats import percentileofscore
 
 # Local imports
@@ -799,8 +800,8 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
     if greyshades > 256:  # the length of the palette
         greyshades = np.lib.pad(np.arange(256), pad_width=greyshades-256,
                                 mode='symmetric')
-    custompalette = grey(greyshades) + \
-                    [c for c, _ in CURR_COLORS[:len(mbcyears)]]
+    current_colors = [c for c, _ in CURR_COLORS[:len(mbcyears)]]
+    custompalette = grey(greyshades) + current_colors
 
     xs = [np.arange(arr.shape[1])] * arr.shape[0]
     ys = arr.tolist()
@@ -836,9 +837,23 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
     plot.xaxis.major_label_overrides = xlabel_dict
     plot.grid.ticker = FixedTicker(ticks=xticks)
 
-    plot.multi_line('xs', 'ys', source=source,
-                    color='color', alpha='alpha', line_width=4,
-                    hover_line_alpha=1.0, hover_line_color='color')
+    r = plot.multi_line('xs', 'ys', source=source,
+                        color='color', alpha='alpha', line_width=4,
+                        hover_line_alpha=1.0, hover_line_color='color')
+
+    legendentries = ['Past mass balances'] + list(mb_curr_cs.model.values)
+
+    def leg_idx(x):
+        if x != 0:
+            return int((len(years) - len(mbcyears)) + x - 1)
+        else:
+            return int(len(years) / 2.)
+
+    legend = Legend(
+        items=[LegendItem(label=le, renderers=[r], index=leg_idx(i)) for
+               i, le in enumerate(legendentries)])
+    plot.add_layout(legend)
+    plot.legend.location = "top_left"
 
     TOOLTIPS = [
         ("year", "@desc"),
