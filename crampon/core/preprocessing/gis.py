@@ -208,7 +208,7 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     # Delete the source before writing
     if 'DEM_SOURCE' in towrite:
         del towrite['DEM_SOURCE']
-    towrite.to_file(gdir.get_filepath('outlines'))
+    gdir.write_shapefile(towrite, 'outlines')
 
     # TODO: This needs rework if it should work also for SGI
     # Also transform the intersects if necessary
@@ -221,7 +221,7 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
             if hasattr(gdf.crs, 'srs'):
                 # salem uses pyproj
                 gdf.crs = gdf.crs.srs
-            gdf.to_file(gdir.get_filepath('intersects'))
+            gdir.write_shapefile(gdf, 'intersects')
     else:
         # Sanity check
         if cfg.PARAMS['use_intersects']:

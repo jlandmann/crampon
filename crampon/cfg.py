@@ -209,6 +209,7 @@ def initialize(file=None):
     oggmcfg.PARAMS['use_divides'] = cp.as_bool('use_divides')
     oggmcfg.PARAMS['use_intersects'] = cp.as_bool('use_intersects')
     oggmcfg.PARAMS['use_compression'] = cp.as_bool('use_compression')
+    oggmcfg.PARAMS['use_tar_shapefiles'] = cp.as_bool('use_tar_shapefiles')
     oggmcfg.PARAMS['mpi_recv_buf_size'] = cp.as_int('mpi_recv_buf_size')
     oggmcfg.PARAMS['use_multiple_flowlines'] = cp.as_bool('use_multiple_flowlines')
     oggmcfg.PARAMS['optimize_thick'] = cp.as_bool('optimize_thick')
@@ -264,14 +265,15 @@ def initialize(file=None):
            'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
            'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
            'precip_ratio_method', 'topo_interp', 'use_compression',
-           'bed_shape', 'continue_on_error', 'use_optimized_inversion_params',
-           'invert_with_sliding', 'optimize_inversion_params',
-           'use_multiple_flowlines', 'leclercq_rgi_links', 'optimize_thick',
-           'mpi_recv_buf_size', 'tstar_search_window', 'use_bias_for_run',
-           'run_period', 'prcp_scaling_factor', 'tminmax_available',
-           'use_intersects', 'filter_min_slope', 'auto_skip_task',
-           'correct_for_neg_flux', 'problem_glaciers', 'bgmon_hydro',
-           'bgday_hydro', 'run_mb_calibration', 'albedo_method']
+           'use_tar_shapefiles', 'bed_shape', 'continue_on_error',
+           'use_optimized_inversion_params', 'invert_with_sliding',
+           'optimize_inversion_params', 'use_multiple_flowlines',
+           'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
+           'tstar_search_window', 'use_bias_for_run', 'run_period',
+           'prcp_scaling_factor', 'tminmax_available', 'use_intersects',
+           'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
+           'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
+           'run_mb_calibration', 'albedo_method']
     for k in ltr:
         cp.pop(k, None)
 

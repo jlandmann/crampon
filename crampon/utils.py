@@ -1402,9 +1402,9 @@ def get_zones_from_worksheet(worksheet, id_col, gdir=None, shape=None,
     # Process either input to be GeoDataFrame in the end
     if gdir is not None:
         try:
-            gdf = gpd.read_file(gdir.get_filepath('outlines_ts'))
+            gdf = gdir.read_shapefile('outlines_ts')
         except:  # no such file or directory: bad practice, but no
-            gdf = gpd.read_file(gdir.get_filepath('outlines'))
+            gdf = gdir.read_shapefile('outlines')
     if shape is not None:
         gdf = gpd.read_file(shape)
     if gpd_obj is not None:
@@ -2092,6 +2092,13 @@ class GlacierDirectory(object):
         else:
             return df.filter(regex=mb_model.__name__)
 
+    def read_shapefile(self, filename, filesuffix=''):
+        return self.OGGMGD.read_shapefile(filename, filesuffix=filesuffix)
+
+    def write_shapefile(self, var, filename, filesuffix=''):
+        return self.OGGMGD.write_shapefile(var, filename,
+                                           filesuffix=filesuffix)
+
     def get_inversion_flowline_hw(self):
         return self.OGGMGD.get_inversion_flowline_hw()
 
@@ -2307,7 +2314,7 @@ def idealized_gdir(surface_h, widths_m, map_dx, flowline_dx=1, name=None,
     entity.O2Region = '0'
     gdir = GlacierDirectory(entity, base_dir=base_dir, reset=reset)
     gdf = gpd.GeoDataFrame([entity], crs=entity_gdf.crs)
-    gdf.to_file(gdir.get_filepath('outlines'))
+    gdir.write_shapefile(gdf, 'outlines')
 
     # Idealized flowline
     if coords:
