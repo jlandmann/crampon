@@ -363,7 +363,7 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
         'transform': dst_transform,
         'width': nx,
         'height': ny,
-        'dtype': np.float32
+        #'dtype': np.float32
     })
 
     # Could be extended so that the cfg file takes all Resampling.* methods
