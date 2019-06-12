@@ -141,7 +141,11 @@ def get_potential_irradiation_without_toposhade(lat_deg, lon_deg, tz='UTC',
 
     # time zone doesn't matter as we only take daily means
     # take a dummie year
-    timespan = pd.date_range('2018-01-01 12:00:00', '2018-12-31 23:55:00',
+    rbegin = pd.Timestamp('2018-01-01 00:00:00') + \
+             pd.tseries.frequencies.to_offset(freq)
+    rend =  pd.Timestamp('2019-01-01 00:00:00') - \
+            pd.tseries.frequencies.to_offset(freq)
+    timespan = pd.date_range(rbegin, rend,
                              tz=tz, freq=freq)
     alt_azi = pd.DataFrame(index=timespan,
                            columns=['altitude_deg', 'azimuth_deg'])
