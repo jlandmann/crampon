@@ -1168,9 +1168,9 @@ def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
     nc_ts.to_netcdf(outfile)
 
 
-def read_netcdf(path, chunks=None, tfunc=None):
+def read_netcdf(path, chunks=None, tfunc=None, **kwargs):
     # use a context manager, to ensure the file gets closed after use
-    with xr.open_dataset(path, cache=False) as ds:
+    with xr.open_dataset(path, cache=False, **kwargs) as ds:
         # some extra stuff - this is actually stupid and should go away!
         ds = ds.crampon.postprocess_cirrus()
 
