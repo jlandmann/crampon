@@ -1266,8 +1266,6 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
     # get climate at reference cell
     climate = xr.open_dataset(ncpath)
     local_climate = climate.isel(dict(lat=ilat, lon=ilon))
-    itgrad = np.zeros(len(climate.time)) + default_tgrad
-    ipgrad = np.zeros(len(climate.time)) + default_pgrad
     iprcp = local_climate.prcp
     itemp = local_climate.temp
     itmin = local_climate.tmin
@@ -1284,65 +1282,145 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
 
     # temperature gradient
     if use_tgrad != 0:
-        # some min/max constants for the window
-        tminw = divmod(use_tgrad, 2)[0]
-        tmaxw = divmod(use_tgrad, 2)[0] + 1
-        
-        tlatslice = slice(ilat - tminw, ilat + tmaxw)
-        tlonslice = slice(ilon - tminw, ilon + tmaxw)
-        
-        ttemp = climate.temp.isel(dict(lat=tlatslice, lon=tlonslice))
-        thgt = climate.hgt.isel(dict(lat=tlatslice, lon=tlonslice))
-        thgt = thgt.values.flatten()
+        itgrad = get_tgrad_from_window(climate, ilat, ilon, use_tgrad,
+                                       default_tgrad, minmax_tgrad)
+    else:
+        itgrad = np.zeros(len(climate.time)) + default_tgrad
 
-        for t, loct in enumerate(ttemp.values):
-            # NaNs happen a the grid edges:
-            mask = ~np.isnan(loct)
-            slope, _, _, p_val, _ = stats.linregress(
-                np.ma.masked_array(thgt, ~mask).compressed(),
-                loct[mask].flatten())
-            itgrad[t] = slope if (p_val < 0.01) else default_tgrad
-
-        # apply the boundaries, in case the gradient goes wild
-        itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
-
-        # temperature gradient
-        if use_pgrad != 0:
-            # some min/max constants for the window
-            pminw = divmod(use_pgrad, 2)[0]
-            pmaxw = divmod(use_pgrad, 2)[0] + 1
-
-            platslice = slice(ilat - pminw, ilat + pmaxw)
-            plonslice = slice(ilon - pminw, ilon + pmaxw)
-
-            pprcp = climate.prcp.isel(dict(lat=platslice, lon=plonslice))
-            phgt = climate.hgt.isel(dict(lat=platslice, lon=plonslice))
-            phgt = phgt.values.flatten()
-
-            for t, locp in enumerate(pprcp.values):
-                # NaNs happen at grid edges, 0 should be excluded for slope
-                mask = ~np.isnan(locp) & (locp != 0.)
-                flattened_mask = locp[mask].flatten()
-                if (~mask).all():
-                    continue
-                slope, icpt, _, p_val, _ = stats.linregress(
-                    np.ma.masked_array(phgt, ~mask).compressed(),
-                    flattened_mask)
-                # Todo: Is that a good method?
-                # gradient in % m-1: mean(all prcp values + slope for 1 m)
-                # p=0. happens if there are only two grids cells
-                ipgrad[t] = np.nanmean(((flattened_mask + slope) /
-                                        flattened_mask) - 1) if (
-                    (p_val < 0.01) and (p_val != 0.)) else default_pgrad
-
-            # apply the boundaries, in case the gradient goes wild
-            ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
+    # precipitation gradient
+    if use_pgrad != 0:
+        ipgrad = get_pgrad_from_window(climate, ilat, ilon, use_pgrad,
+                                       default_pgrad, minmax_pgrad)
+    else:
+        ipgrad = np.zeros(len(climate.time)) + default_pgrad
 
     return iprcp, itemp, itmin, itmax, isis, itgrad, ipgrad, ihgt
 
 
 # IMPORTANT: overwrite OGGM functions with same name
 joblib_read_climate = joblib_read_climate_crampon
+
+
+def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
+                          minmax_tgrad):
+    """
+    Get temperature gradient from linear regression of surrounding grid cells.
+
+    Parameters
+    ----------
+    climate: xr.Dataset
+        Climate dataset, needs to contain variables/coordinates "time", "temp"
+        and "hgt".
+    win_size:
+        Search window size in number of grid cells.
+    ilat: int
+        Index of latitude of the central grid cell.
+    ilon: int
+        Index of longitude of the central grid cell.
+    default_tgrad: float
+        Default temperature gradient to be used when regression fails (i.e. not
+        significant).
+    minmax_tgrad: tuple
+        Min/Max bounds of the local temperature gradient, in case the window
+        regression kernel search delivers strange values (should not happen for
+        the MeteoSwiss grids, but who knows...).
+
+    Returns
+    -------
+    itgrad: np.array
+        Temperature gradient over time for the given ilat/ilon.
+    """
+
+    itgrad = np.zeros(len(climate.time)) + default_tgrad
+    # some min/max constants for the window
+    tminw = divmod(win_size, 2)[0]
+    tmaxw = divmod(win_size, 2)[0] + 1
+
+    tlatslice = slice(ilat - tminw, ilat + tmaxw)
+    tlonslice = slice(ilon - tminw, ilon + tmaxw)
+
+    ttemp = climate.temp.isel(dict(lat=tlatslice, lon=tlonslice))
+    thgt = climate.hgt.isel(dict(lat=tlatslice, lon=tlonslice))
+    thgt = thgt.values.flatten()
+
+    for t, loct in enumerate(ttemp.values):
+        # NaNs happen a the grid edges:
+        mask = ~np.isnan(loct)
+        slope, _, _, p_val, _ = stats.linregress(
+            np.ma.masked_array(thgt, ~mask).compressed(),
+            loct[mask].flatten())
+        itgrad[t] = slope if (p_val < 0.01) else default_tgrad
+
+    # apply the boundaries, in case the gradient goes wild
+    itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
+
+    return itgrad
+
+
+def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
+                          minmax_pgrad):
+    """
+    Get precipitation gradient from linear regression of surrounding grid cells.
+
+    # todo: this method should get an overhaul & analyse the orographic facets
+            as suggested by Christoph Frei (pers. comm.)
+
+    Parameters
+    ----------
+    climate: xr.Dataset
+        Climate dataset, needs to contain variables/coordinates "time", "prcp"
+        and "hgt".
+    win_size:
+        Search window size in number of grid cells.
+    ilat: int
+        Index of latitude of the central grid cell.
+    ilon: int
+        Index of longitude of the central grid cell.
+    default_pgrad: float
+        Default precipitation gradient to be used when regression fails (i.e.
+        not significant).
+    minmax_tgrad: tuple
+        Min/Max bounds of the local temperature gradient, in case the window
+        regression kernel search delivers strange values (should not happen for
+        the MeteoSwiss grids, but who knows...).
+
+    Returns
+    -------
+    itgrad: np.array
+        Temperature gradient over time for the given ilat/ilon.
+    """
+    ipgrad = np.zeros(len(climate.time)) + default_pgrad
+    # some min/max constants for the window
+    pminw = divmod(win_size, 2)[0]
+    pmaxw = divmod(win_size, 2)[0] + 1
+
+    platslice = slice(ilat - pminw, ilat + pmaxw)
+    plonslice = slice(ilon - pminw, ilon + pmaxw)
+
+    pprcp = climate.prcp.isel(dict(lat=platslice, lon=plonslice))
+    phgt = climate.hgt.isel(dict(lat=platslice, lon=plonslice))
+    phgt = phgt.values.flatten()
+
+    for t, locp in enumerate(pprcp.values):
+        # NaNs happen at grid edges, 0 should be excluded for slope
+        mask = ~np.isnan(locp) & (locp != 0.)
+        flattened_mask = locp[mask].flatten()
+        if (~mask).all():
+            continue
+        slope, icpt, _, p_val, _ = stats.linregress(
+            np.ma.masked_array(phgt, ~mask).compressed(),
+            flattened_mask)
+        # Todo: Is that a good method?
+        # gradient in % m-1: mean(all prcp values + slope for 1 m)
+        # p=0. happens if there are only two grids cells
+        ipgrad[t] = np.nanmean(((flattened_mask + slope) /
+                                flattened_mask) - 1) if (
+                (p_val < 0.01) and (p_val != 0.)) else default_pgrad
+
+    # apply the boundaries, in case the gradient goes wild
+    ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
+
+    return ipgrad
 
 
 def _cut_with_CH_glac(xr_ds):
