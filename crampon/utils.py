@@ -2093,6 +2093,9 @@ class GlacierDirectory(object):
             self.inversion_calving_rate = 0.
             self.is_icecap = self.glacier_type == 'Ice cap'
 
+            # make OGGM compatible
+            self.status = self.OGGMGD.status
+
             # Hemisphere
             self.hemisphere = 'sh' if self.cenlat < 0 else 'nh'
 
@@ -2233,9 +2236,9 @@ class GlacierDirectory(object):
     def get_task_status(self, task_name):
         return self.OGGMGD.get_task_status(task_name=task_name)
 
-    def write_monthly_climate_file(self, time, prcp, temp, tmin, tmax, sis,
-                                   tgrad, pgrad, ref_pix_hgt, ref_pix_lon,
-                                   ref_pix_lat,
+    def write_monthly_climate_file(self, time, prcp, temp, tgrad, pgrad,
+                                   ref_pix_hgt, ref_pix_lon, ref_pix_lat, *,
+                                   tmin=None, tmax=None, sis=None,
                                    time_unit='days since 1801-01-01 00:00:00',
                                    file_name='climate_monthly', filesuffix=''):
         """Creates a netCDF4 file with climate data.
@@ -2276,20 +2279,23 @@ class GlacierDirectory(object):
             v.long_name = 'Mean 2m temperature at height ref_hgt'
             v[:] = temp
 
-            v = nc.createVariable('tmin', 'f4', ('time',), zlib=True)
-            v.units = 'degC'
-            v.long_name = 'Minimum 2m temperature at height ref_hgt'
-            v[:] = tmin
+            if tmin is not None:
+                v = nc.createVariable('tmin', 'f4', ('time',), zlib=True)
+                v.units = 'degC'
+                v.long_name = 'Minimum 2m temperature at height ref_hgt'
+                v[:] = tmin
 
-            v = nc.createVariable('tmax', 'f4', ('time',), zlib=True)
-            v.units = 'degC'
-            v.long_name = 'Maximum 2m temperature at height ref_hgt'
-            v[:] = tmax
+            if tmax is not None:
+                v = nc.createVariable('tmax', 'f4', ('time',), zlib=True)
+                v.units = 'degC'
+                v.long_name = 'Maximum 2m temperature at height ref_hgt'
+                v[:] = tmax
 
-            v = nc.createVariable('sis', 'f4', ('time',), zlib=True)
-            v.units = 'W m-2'
-            v.long_name = 'daily mean surface incoming shortwave radiation'
-            v[:] = sis
+            if sis is not None:
+                v = nc.createVariable('sis', 'f4', ('time',), zlib=True)
+                v.units = 'W m-2'
+                v.long_name = 'daily mean surface incoming shortwave radiation'
+                v[:] = sis
 
             v = nc.createVariable('tgrad', 'f4', ('time',), zlib=True)
             v.units = 'K m-1'
