@@ -1164,7 +1164,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     paths = sorted(files)
     datasets = [read_netcdf(p, chunks, tfunc) for p in paths]
 
-    combined = xr.auto_combine(datasets, concat_dim=dim)
+    combined = xr.combine_nested(datasets, concat_dim=dim)
     return combined
 
 
