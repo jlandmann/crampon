@@ -773,17 +773,23 @@ class WSLSFTPClient():
         self.client.quit()
 
 
-def copy_to_webpage_dir(dir):
-    to_put = glob.glob(dir + '*')
+def copy_to_webpage_dir(src_dir):
+
+    to_put = glob.glob(src_dir + '*')
     client = pm.SSHClient()
     client.load_system_host_keys()
     client.set_missing_host_key_policy(pm.AutoAddPolicy())
     cred = parse_credentials_file()
+    # first connect to login.ee.ethz.ch, then ssh to webbi04
     client.connect(cred['webbi04']['host'], cred['webbi04']['port'],
                    cred['webbi04']['user'], cred['webbi04']['password'])
+    _ = client.exec_command(cred['webbi04']['remote_cmd'])
+
+    # now we're on webbi04
     sftp = client.open_sftp()
     for tp in to_put:
-        sftp.put(tp, )
+        sftp.put(tp, cred['webbi04']['host'] + '/public_html/' +
+                 os.path.split(src_dir)[1])
     sftp.close()
     client.close()
 
