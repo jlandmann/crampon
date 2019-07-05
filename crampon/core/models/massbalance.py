@@ -11,6 +11,8 @@ import cython
 from crampon.core.preprocessing import climate
 import numba
 from collections import OrderedDict
+from itertools import product
+import pandas as pd
 
 
 class DailyMassBalanceModel(MassBalanceModel):
@@ -740,9 +742,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
             oldsnowdist = np.where(self.snowcover.age_days > 365)
             self.snowcover.remove_layer(ix=oldsnowdist)
 
-        if date == pd.Timestamp(1966, 9, 15):
-            print('stop')
-
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
@@ -798,9 +797,9 @@ class HockModel(DailyMassBalanceModelWithSnow):
             doi:10.3189/2014JoG14J011
     """
 
-    cali_params_list = ['mu_hock', 'a_ice', 'a_snow', 'prcp_fac']
+    cali_params_list = ['mu_hock', 'a_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(
-        zip(cali_params_list, [1.8, 0.013, 0.013, 1.5]))
+        zip(cali_params_list, [1.8, 0.013, 1.5]))
     prefix = 'HockModel_'
     mb_name = prefix + 'MB'
     # todo: is there also a factor of 0.5 between a_snow and a_ice?
@@ -825,6 +824,13 @@ class HockModel(DailyMassBalanceModelWithSnow):
             self.a_ice = cali_df[self.__name__ + '_' + 'a_ice']
         else:
             self.a_ice = a_ice
+
+        # todo: this is the big question:
+        self.a_snow = cfg.PARAMS['ratio_mu_snow_ice'] * self.a_ice
+
+        ipf = gdir.read_pickle('ipot_per_flowline')
+        # flatten as we also concatenate flowline heights
+        self.ipot = np.array([i for sub in ipf for i in sub])
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -944,6 +950,11 @@ class HockModel(DailyMassBalanceModelWithSnow):
         a_comb[:] = a_ice
         np.put(a_comb, snowdist, a_snow)
 
+        # todo: find a much better solution for leap years:
+        try:
+            i_pot = self.ipot[:, date.timetuple().tm_yday-1]
+        except IndexError: # end of leap year
+            i_pot = self.ipot[:, date.timetuple().tm_yday-2]
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
         mb_day = prcpsol - (mu_hock + a_comb * i_pot) * tempformelt - bias
 
