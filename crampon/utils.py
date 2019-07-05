@@ -53,6 +53,17 @@ MEMORY = Memory(cfg.CACHE_DIR, verbose=0)
 SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
 
 
+dpm = {'noleap': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       '365_day': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       'standard': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       'gregorian': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       'proleptic_gregorian': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30,
+                               31],
+       'all_leap': [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       '366_day': [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       '360_day': [0, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]}
+
+
 def get_oggm_demo_file(fname):
     """ Wraps the oggm.utils.get_demo_file function"""
     get_demo_file(fname)  # Calls the func imported from oggm.utils
@@ -201,6 +212,36 @@ def leap_year(year, calendar='standard'):
               (year < 1583)):
             leap = False
     return leap
+
+
+def get_dpm(time, calendar='standard'):
+    """
+    Return array of days per month corresponding to months provided in `time`.
+
+    A corrected version from:
+    http://xarray.pydata.org/en/stable/examples/monthly-means.html?highlight=calendar
+
+    time: pd.DatetimeIndex, xr.CFTimeIndex
+        A time index with attributes 'year' and 'month'.
+    calendar: str
+        Calendar for which the days per month shall be returned: Allowed:
+        'standard', 'gregorian', 'proleptic_gregorian', 'julian'. Default:
+        'standard'.
+
+    Returns
+    -------
+    month_length: np.array
+        Array with month lengths in days.
+    """
+    month_length = np.zeros(len(time), dtype=np.int)
+
+    cal_days = dpm[calendar]
+
+    for i, (month, year) in enumerate(zip(time.month, time.year)):
+        month_length[i] = cal_days[month]
+        if leap_year(year, calendar=calendar) and (month == 2):
+            month_length[i] += 1
+    return month_length
 
 
 def closest_date(date, candidates):
