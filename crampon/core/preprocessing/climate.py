@@ -199,17 +199,17 @@ def process_custom_climate_data_crampon(gdir):
         ny, r = divmod(len(time), 12)
         if r != 0:
             raise ValueError('Climate data should be N full years exclusively')
-        gdir.write_monthly_climate_file(time, iprcp, itemp, itmin, itmax, isis,
-                                        itgrad, ipgrad, ihgt, ref_pix_lon,
-                                        ref_pix_lat)
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
+                                        ihgt, ref_pix_lon, ref_pix_lat,
+                                        tmin=itmin, tmax=itmax, sis=isis)
     elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
         nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
         ny, r = divmod(len(time), 12)
         if r != 0:
             raise ValueError('Climate data should be N full years exclusively')
-        gdir.write_monthly_climate_file(time, iprcp, itemp, itmin, itmax, isis,
-                                        itgrad, ipgrad, ihgt, ref_pix_lon,
-                                        ref_pix_lat)
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
+                                        ihgt, ref_pix_lon, ref_pix_lat,
+                                        tmin=itmin, tmax=itmax, sis=isis)
     elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
         # Doesn't matter if entire years or not, BUT a correction for y1 to be
         # the last hydro/glacio year is needed
@@ -219,9 +219,10 @@ def process_custom_climate_data_crampon(gdir):
         # ``write_monthly_climate_file`` also to produce a daily climate file:
         # there is no reference to the time in the function! We should just
         # change the ``file_name`` keyword!
-        gdir.write_monthly_climate_file(time, iprcp, itemp, itmin, itmax, isis,
-                                        itgrad, ipgrad, ihgt, ref_pix_lon,
-                                        ref_pix_lat, file_name='climate_daily',
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
+                                        ihgt, ref_pix_lon, ref_pix_lat,
+                                        tmin=itmin, tmax=itmax, sis=isis,
+                                        file_name='climate_daily',
                                         time_unit=nc_ts._nc.variables['time']
                                         .units)
     else:
