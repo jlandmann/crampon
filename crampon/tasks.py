@@ -17,6 +17,7 @@ from crampon.core.preprocessing.centerlines import catchment_width_correction
 from oggm.core.climate import glacier_mu_candidates
 from oggm.core.climate import process_cru_data
 from crampon.core.preprocessing.climate import process_custom_climate_data
+from crampon.core.preprocessing.climate import update_climate
 
 from oggm.utils import copy_to_basedir
 from oggm.core.climate import apparent_mb_from_linear_mb
