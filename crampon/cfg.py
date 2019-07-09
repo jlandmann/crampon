@@ -91,6 +91,9 @@ CBASENAMES['calibration'] = ('calibration.csv', _doc)
 _doc = 'The daily climate timeseries for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
+_doc = 'The daily spinup climate timeseries for this glacier, stored in a ' \
+       'netCDF file.'
+CBASENAMES['spinup_climate_daily'] = ('spinup_climate_daily.nc', _doc)
 _doc = 'The daily mass balance timeseries for this glacier, stored in a ' \
        'pickle file.'
 CBASENAMES['mb_daily'] = ('mb_daily.pkl', _doc)
