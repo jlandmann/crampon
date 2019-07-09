@@ -788,6 +788,67 @@ def make_nwp_file(write_to=None):
 process_custom_climate_data = process_custom_climate_data_crampon
 
 
+@entity_task(log, fallback=process_custom_climate_data)
+def update_climate(gdir, clim_all=None):
+    """
+    Update the climate for a GlacierDirectory.
+
+    This is for the case when there is already a climate file for every
+    GlacierDirectory presents and it should just be updated.
+
+    todo: Sooner or later we should implement a better handling of missing
+          values etc. or implement a nightly task that does interpolation etc.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory to update the climate file for.
+    clim_all: xr.Dataset
+        The climate file used to
+
+    Returns
+    -------
+    None
+    """
+    if clim_all is None:
+        clim_all = xr.open_dataset(cfg.PATHS['climate_file'])
+    last_day_clim = clim_all.time[-1]
+    # todo: radiation still not operational -> take last 62 days to be sure
+    last_day = last_day_clim - pd.Timedelta(days=62)
+
+    use_tgrad = cfg.PARAMS['temp_use_local_gradient']
+    def_tgrad = cfg.PARAMS['temp_default_gradient']
+    tg_minmax = cfg.PARAMS['temp_local_gradient_bounds']
+
+    use_pgrad = cfg.PARAMS['prcp_use_local_gradient']
+    def_pgrad = cfg.PARAMS['prcp_default_gradient']
+    pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
+
+    gclim = xr.open_dataset(gdir.get_filepath('climate_daily'))
+    #last_day = gclim.time[-1]
+
+    if last_day < last_day_clim:
+        clim_all_sel = clim_all.sel(dict(lat=gclim.ref_pix_lat,
+                                         lon=gclim.ref_pix_lon,
+                                         time=slice(last_day,
+                                                    last_day_clim)))
+        clim_all_tsel = clim_all.sel(time=slice(last_day, last_day_clim))
+        # todo: save ilat/ilon as gdir attributes!?
+        # todo: save tgrad/pgrad in climate_all.nc? (is vectorizing it faster?)
+        # we need to add tgrad and pgrad (not in climate file)
+        ilon = np.argmin(np.abs(clim_all.lon - gdir.cenlon)).item()
+        ilat = np.argmin(np.abs(clim_all.lat - gdir.cenlat)).item()
+        clim_all_sel['tgrad'] = (['time'], utils.get_tgrad_from_window(
+            clim_all_tsel, ilat=ilat, ilon=ilon, win_size=use_tgrad,
+            default_tgrad=def_tgrad, minmax_tgrad=tg_minmax))
+        clim_all_sel['pgrad'] = (['time'], utils.get_pgrad_from_window(
+            clim_all_tsel, ilat=ilat, ilon=ilon, win_size=use_pgrad,
+            default_pgrad=def_pgrad, minmax_pgrad=pg_minmax))
+        updated = gclim.combine_first(clim_all_sel)
+        gclim.close()
+        updated.to_netcdf(gdir.get_filepath('climate_daily'))
+
+
 class GlacierMeteo(object):
     """
     Interface to the meteorological data belonging to a glacier geometry.
