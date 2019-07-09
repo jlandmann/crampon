@@ -854,7 +854,7 @@ class GlacierMeteo(object):
     Interface to the meteorological data belonging to a glacier geometry.
     """
 
-    def __init__(self, gdir):
+    def __init__(self, gdir, filename='climate_daily'):
         """
         Instantiate the GlacierMeteo object.
 
@@ -870,18 +870,18 @@ class GlacierMeteo(object):
         """
         self.gdir = gdir
         self._heights = self.gdir.get_inversion_flowline_hw()[0]
-        self.meteo = xr.open_dataset(self.gdir.get_filepath('climate_daily'))
+        self.meteo = xr.open_dataset(self.gdir.get_filepath(filename))
         self.index = self.meteo.time.to_index()
         self.tmean = self.meteo.temp.values
-        self.tmin = self.meteo.tmin.values
-        self.tmax = self.meteo.tmax.values
         self.prcp = self.meteo.prcp.values
-        self.sis = self.meteo.sis.values
         self.pgrad = self.meteo.pgrad.values
         self.tgrad = self.meteo.tgrad.values
         self.ref_hgt = self.meteo.ref_hgt
         self._days_since_solid_precipitation = None
-
+        if filename == 'climate_daily':
+            self.tmin = self.meteo.tmin.values
+            self.tmax = self.meteo.tmax.values
+            self.sis = self.meteo.sis.values
     @property
     def heights(self):
         return self._heights
@@ -939,7 +939,11 @@ class GlacierMeteo(object):
         -------
         The location of the date in the index as integer.
         """
-        return self.index.get_loc(date)
+
+        if type(date) in [list, pd.core.indexes.datetimes.DatetimeIndex]:
+            return np.where(self.index.isin(date))
+        else:
+            return self.index.get_loc(date)
 
     def get_tmean_at_heights(self, date, heights=None):
 
@@ -958,15 +962,16 @@ class GlacierMeteo(object):
         """
         Calculate the temperature for melt.
 
-        By default, the inversion fowline heights from the GlacierDirectory
-        are used, but heighst can also be supplied as keyword.
+        By default, the inversion flowline heights from the GlacierDirectory
+        are used, but heights can also be supplied as keyword.
 
         Parameters
         ----------
         date: datetime.datetime
             Date for which the temperatures for melt shall be calculated.
         t_melt: float
-            Temperature threshold when melt occurs (deg C).
+            Temperature threshold when melt occurs (deg C). Default: None
+            (parse from configuration).
         heights: np.array
             Heights at which to evaluate the temperature for melt. Default:
             None (take the heights of the GlacierDirectory inversion flowline).
@@ -977,7 +982,14 @@ class GlacierMeteo(object):
             Array with temperatures above melt threshold, clipped to zero.
         """
 
+        if t_melt is None:
+            t_melt = cfg.PARAMS['temp_melt']
+
+        if heights is None:
+            heights = self.heights.copy()
+
         temp_at_hgts = self.get_tmean_at_heights(date, heights)
+        # todo: simplify this by clipping (t_melt, None) or using t[t lt t_melt] = 0.
         above_melt = temp_at_hgts - t_melt
         return np.clip(above_melt, 0, None)
 
