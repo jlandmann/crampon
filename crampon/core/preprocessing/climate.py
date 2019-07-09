@@ -237,32 +237,32 @@ def process_custom_climate_data_crampon(gdir):
     gdir.write_pickle(out, 'climate_info')
 
 
-@entity_task(log)
+@entity_task(log, writes=['spinup_climate_daily'])
 def process_spinup_climate_data(gdir):
-    """Processes the homogenized station data before 1961.
-
-    Temperature should be extrapolated from the surrounding stations with
-    monthly gradients.
-    Precip correction should be calibrated with winter MBs
     """
-
-    if not (('climate_file' in cfg.PATHS) and
-            os.path.exists(cfg.PATHS['climate_file'])):
-        raise IOError('Custom climate file {} not found'
-                      .format(cfg.PATHS['climate_file']))
+    Process homogenized gridded data before 1961 into a spinup climate.
+    """
+    # todo: double code with climate processing: how to do a wrapper function?
+    fpath = os.path.join(cfg.PATHS['climate_dir'],
+                         cfg.BASENAMES['spinup_climate_daily'])
+    if not os.path.exists(fpath):
+        raise IOError('Spinup climate file {} not found'.format(fpath))
 
     # read the file
-    fpath = cfg.PATHS['climate_file']
-    nc_ts = salem.GeoNetcdf(fpath)
+    nc_ts = xr.open_dataset(fpath)
 
     # geoloc
-    lon = nc_ts._nc.variables['lon'][:]
-    lat = nc_ts._nc.variables['lat'][:]
+    lon = nc_ts.coords['lon'].values
+    lat = nc_ts.coords['lat'].values
 
     # Gradient defaults
     use_grad = cfg.PARAMS['temp_use_local_gradient']
     def_grad = cfg.PARAMS['temp_default_gradient']
     g_minmax = cfg.PARAMS['temp_local_gradient_bounds']
+
+    use_pgrad = cfg.PARAMS['prcp_use_local_gradient']
+    def_pgrad = cfg.PARAMS['prcp_default_gradient']
+    pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
 
     # get closest grid cell and index
     ilon = np.argmin(np.abs(lon - gdir.cenlon))
@@ -271,53 +271,168 @@ def process_spinup_climate_data(gdir):
     ref_pix_lat = lat[ilat]
 
     # Some special things added in the crampon function
-    iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon, ilat,
-                                                          def_grad, g_minmax,
-                                                          use_grad)
+    #iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon, ilat,
+    #                                                      def_grad, g_minmax,
+    #                                                      use_grad, def_pgrad,
+    #                                                      pg_minmax, use_pgrad)
+
+    local_climate = nc_ts.isel(dict(lat=ilat, lon=ilon))
+    iprcp = local_climate.prcp
+    itemp = local_climate.temp
+    ihgt = local_climate.hgt
+
+    if use_grad != 0:
+        itgrad = utils.get_tgrad_from_window(nc_ts, ilat, ilon, use_grad,
+                                       def_grad, g_minmax)
+    else:
+        itgrad = np.zeros(len(nc_ts.time)) + def_grad
+    if use_pgrad != 0:
+        ipgrad = utils.get_pgrad_from_window(nc_ts, ilat, ilon, use_pgrad,
+                                       def_pgrad, pg_minmax)
+    else:
+        ipgrad = np.zeros(len(nc_ts.time)) + def_pgrad
 
     # Set temporal subset for the ts data depending on frequency:
-    # hydro years if monthly data, else no restriction
-    yrs = nc_ts.time.year
-    y0, y1 = yrs[0], yrs[-1]
-    time = nc_ts.time
-    if pd.infer_freq(nc_ts.time) == 'MS':  # month start frequency
-        nc_ts.set_period(t0='{}-10-01'.format(y0), t1='{}-09-01'.format(y1))
-        ny, r = divmod(len(time), 12)
-        if r != 0:
-            raise ValueError('Climate data should be N full years exclusively')
-        gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
-                                        ref_pix_lon, ref_pix_lat)
-    elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
-        nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
-        ny, r = divmod(len(time), 12)
-        if r != 0:
-            raise ValueError('Climate data should be N full years exclusively')
-        gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
-                                        ref_pix_lon, ref_pix_lat)
-    elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
-        # Doesn't matter if entire years or not, BUT a correction for y1 to be
-        # the last hydro/glacio year is needed
-        if not '{}-09-30'.format(y1) in nc_ts.time:
-            y1 = yrs[-2]
+    time = [pd.Timestamp(t) for t in nc_ts.time.values]
+    if pd.infer_freq(time) == 'D':  # day start frequency
         # Ok, this is NO ERROR: we can use the function
         # ``write_monthly_climate_file`` also to produce a daily climate file:
         # there is no reference to the time in the function! We should just
         # change the ``file_name`` keyword!
-        gdir.write_monthly_climate_file(time, iprcp, itemp, igrad, ihgt,
-                                        ref_pix_lon, ref_pix_lat,
-                                        file_name='climate_daily',
-                                        time_unit=nc_ts._nc.variables['time']
-                                        .units)
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
+                                        ihgt, ref_pix_lon, ref_pix_lat,
+                                        file_name='spinup_climate_daily',
+                                        time_unit=nc_ts.time.encoding['units'])
     else:
         raise NotImplementedError('Climate data frequency not yet understood')
 
-    # for logging
-    end_date = time[-1]
 
-    # metadata
-    out = {'climate_source': fpath, 'hydro_yr_0': y0 + 1,
-           'hydro_yr_1': y1, 'end_date': end_date}
-    gdir.write_pickle(out, 'climate_info')
+def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
+    """
+    Process homogenized gridded data before 1961 [1]_ into a spinup climate.
+
+    Parameters
+    ----------
+    write_to: str or None
+        Directory where the output file should be written to. Default: the
+        'climate_dir' in the crampon configuration PATHS dictionary.
+    hfile: str or None
+        Path to a netCDF file containing a DEM of the area (used for assembling
+        the file that OGGM likes. Needs to cover the same area in the same
+        extent ans resolution as the meteo files. Default: the 'hfile' in the
+        crampon configuration PATHS dictionary.
+    which: int
+        The begin year of the spinup data. The are two version: one begins 1864
+        and is based on 20 homogenized stations for temperature (17 for
+        precipitation), the other begins 1901 and is based on 28 homogenized
+        stations for temperature (69 for precipitation). Default: 1901.
+
+    References
+    ----------
+    .. [1] : Isotta, F. A., Begert, M., & Frei, C. ( 2019). Long‐term
+             consistent monthly temperature and precipitation grid data sets
+             for Switzerland over the past 150 years. Journal of Geophysical
+             Research: Atmospheres, 124, 3783– 3799.
+             https://doi.org/10.1029/2018JD029910
+    .. [2] : https://www.meteoschweiz.admin.ch/home/klima/schweizer-klima-im-detail/doc/Prod_rec.pdf
+    """
+
+    # todo: this is double code with make_climate_file: how to remove?
+    if not write_to:
+        try:
+            write_to = cfg.PATHS['climate_dir']
+        except KeyError:
+            raise KeyError('Must supply write_to or initialize the crampon'
+                           'configuration.')
+    if not hfile:
+        try:
+            hfile = cfg.PATHS['hfile']
+        except KeyError:
+            raise KeyError('Must supply hfile or initialize the crampon'
+                           'configuration.')
+
+    outfile = os.path.join(write_to, cfg.BASENAMES['spinup_climate_daily'])
+
+    globdir = 'griddata/reconstruction/*{}/'
+    if sys.platform.startswith('win'):
+        globdir = globdir.replace('/', '\\')
+
+    # for this, a VPN to Cirrus must exist, the files are not on the FTP
+    try:
+        cirrus = utils.CirrusClient()
+        for var in ['RrecabsM', 'TrecabsM']:
+            _, _ = cirrus.sync_files(
+                '/data/griddata', write_to,
+                globpattern='*{}*.nc'.format(var))
+    except OSError:  # this is almost always sufficient
+        log.info('Reconstructed grids were not freshly retrieved from '
+                 'Cirrus. Continuing with old files...')
+        pass
+
+    to_merge = glob(
+        os.path.join(write_to, (globdir + '*.nc').format(str(which))))
+    temp = xr.open_dataset([t for t in to_merge if 'TrecabsM' in t][0],
+                             decode_times=False)
+    prec = xr.open_dataset([r for r in to_merge if 'RrecabsM' in r][0],
+                             decode_times=False)
+
+    # drop some MeteoSwiss stuff
+    prec = prec.drop(['dummy', 'longitude_latitude'])
+    temp = temp.drop(['dummy', 'longitude_latitude'])
+
+    # work on calendar - cftime can't read "months since" for "standard" cal.
+    def _fix_time(ds):
+        old_units = ds.time.units
+        calendar_bgstr = ds.time.units.split(' ')[2]
+        calendar_bgyear = int(calendar_bgstr.split('-')[0])
+        calendar_endstr = '{}-01-31'.format(
+            str(int(calendar_bgyear + np.ceil(max(ds.time) / 12))))
+        # take "2SM" to get the 15th of every month. Not perfect, but there is
+        # no 'previous' interpolation method yet in xarray (but in scipy!)
+        # todo: Switch '2SM' back to 'MS' when interpolate 'previous' available
+        ds['time'] = pd.date_range(calendar_bgstr, calendar_endstr,
+                                   freq='2SM')[ds.time.values.astype(int)]
+        ds.time.encoding['units'] = old_units.replace('months', 'days')
+        return ds
+
+    # we assume their structure is the same
+    prec = _fix_time(prec)
+    temp = _fix_time(temp)
+
+    hgt = utils.read_netcdf(hfile)
+    _, hgt = xr.align(temp, hgt, join='left')
+
+    if 'TrecabsM{}'.format(str(which)) in temp.variables:
+        temp = temp.rename({'TrecabsM{}'.format(str(which)): 'temp'})
+    if 'RrecabsM{}'.format(str(which)) in prec.variables:
+        prec = prec.rename({'RrecabsM{}'.format(str(which)): 'prcp'})
+
+    month_length = xr.DataArray(utils.get_dpm(prec.time.to_index(),
+                                              calendar='standard'),
+                                coords=[prec.time], name='month_length')
+    # generate "daily precipitation"
+    prec = prec / month_length
+
+    # resample artificially to daily - no 'previous' available yet
+    old_t_units = prec.time.units
+    # todo: replace 'nearest' with 'previous' when available
+    prec = prec.interp(time=pd.date_range(pd.Timestamp(min(prec.time).item()) -
+                                          pd.tseries.offsets.MonthBegin(1),
+                                          pd.Timestamp(max(prec.time).item()) +
+                                          pd.tseries.offsets.MonthEnd(1)),
+                       method='nearest', kwargs={'fill_value':'extrapolate'})
+    temp = temp.interp(time=pd.date_range(pd.Timestamp(min(temp.time).item()) -
+                                          pd.tseries.offsets.MonthBegin(1),
+                                          pd.Timestamp(max(temp.time).item()) +
+                                          pd.tseries.offsets.MonthEnd(1)),
+                       method='nearest', kwargs={'fill_value':'extrapolate'})
+    nc_ts = xr.merge([temp, prec, hgt])
+    nc_ts = nc_ts.sel(time=slice(None, '1960-12-31'))
+    nc_ts.time.encoding['units'] = old_t_units  # no way to keep when interp
+
+    # ensure it's compressed when exporting
+    nc_ts.encoding['zlib'] = True
+    nc_ts.to_netcdf(outfile)
 
 
 def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
