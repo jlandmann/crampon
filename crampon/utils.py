@@ -1211,7 +1211,12 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     paths = sorted(files)
     datasets = [read_netcdf(p, chunks, tfunc) for p in paths]
 
-    combined = xr.combine_nested(datasets, concat_dim=dim)
+    # concat is much faster, so combine only where necessary
+    try:
+        combined = xr.concat(datasets, dim='time')
+    except ValueError:
+        # vars can vary over time (e.g. 'geographic_projection' in msgSISD)
+        combined = xr.combine_by_coords(datasets, data_vars='minimal')
     return combined
 
 
