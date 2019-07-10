@@ -130,6 +130,10 @@ def try_backup(gdirs):
                 cfg.PATHS['modelrun_backup_dir_2']))
 
 
+def daily_cosmo_tasks():
+    make_nwp_file()
+
+
 def weekly_tasks(gdirs):
     """
     A collection of tasks to perform every week.
