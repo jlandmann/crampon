@@ -88,8 +88,12 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
         begin_clim = utils.get_begin_last_flexyear(dt.datetime(bgyear, 12, 31))
         end_clim = utils.get_begin_last_flexyear(dt.datetime(endyear, 12, 31))
 
-        # copying heights & widths is important, otherwise heights change
-        day_model = mbm(gdir, bias=0.)
+        # todo: pick up the snow cover from the spinup phase here
+
+        if isinstance(mbm, utils.SuperclassMeta):
+            day_model = mbm(gdir, bias=0.)
+        else:
+            day_model = copy.copy(mbm)
         mb = []
         run_span = pd.date_range(begin_clim, end_clim)
         for date in run_span:
@@ -114,7 +118,8 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
     # merge all models together
     merged = xr.merge(ds_list)
     # todo: units are hard coded and depend on method used above
-    merged.attrs.update({'id': g.rgi_id, 'name': g.name, 'units': 'm w.e.'})
+    merged.attrs.update({'id': gdir.rgi_id, 'name': gdir.name,
+                         'units': 'm w.e.'})
     if write:
         merged.mb.append_to_gdir(gdir, 'mb_daily', reset=reset)
 
@@ -185,7 +190,10 @@ def make_mb_current_mbyear(gdir, begin_mbyear, mb_model=None, snowcover=None,
             it += 1
 
             pdict = dict(zip(mbm.cali_params_list, params))
-            day_model_curr = mbm(gdir, **pdict, snowcover=sc, bias=0.)
+            if isinstance(mbm, utils.SuperclassMeta):
+                day_model_curr = mbm(gdir, **pdict, snowcover=sc, bias=0.)
+            else:
+                day_model_curr = copy.copy(mbm)
 
             mb_now = []
             for date in curr_year_span:
