@@ -21,6 +21,7 @@ from crampon import graphics, utils
 from crampon.core.models.massbalance import MassBalance, BraithwaiteModel, \
     PellicciottiModel, OerlemansModel, SnowFirnCover
 import numpy as np
+import copy
 
 # Logging options
 logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
@@ -223,7 +224,8 @@ def make_mb_current_mbyear(gdir, begin_mbyear, mb_model=None, snowcover=None,
         ds_list.append(mb_ds)
 
     ens_ds = xr.merge(ds_list)
-    ens_ds.attrs.update({'id': g.rgi_id, 'name': g.name, 'units': 'm w.e.'})
+    ens_ds.attrs.update({'id': gdir.rgi_id, 'name': gdir.name,
+                         'units': 'm w.e.'})
 
     if write:
         ens_ds.mb.append_to_gdir(g, 'mb_current', reset=reset)
