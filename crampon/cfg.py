@@ -82,7 +82,7 @@ ONE_FIFTH = 1./5.
 
 # the mass balance models ready to use
 MASSBALANCE_MODELS = ['BraithwaiteModel', 'PellicciottiModel',
-                      'OerlemansModel']
+                      'OerlemansModel', 'HockModel']
 
 # Added from CRAMPON:
 _doc = 'CSV output from the calibration for the different models, including' \
