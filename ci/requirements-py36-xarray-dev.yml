@@ -13,7 +13,7 @@ dependencies:
   - shapely
   - geopandas
   - rasterio
-  - pandas
+  - pandas>=0.25
   - dask
   - matplotlib
   - Pillow

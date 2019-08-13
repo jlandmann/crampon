@@ -12,7 +12,7 @@ dependencies:
   - shapely
   - geopandas
   - rasterio
-  - pandas
+  - pandas>=0.25
   - xarray>=0.12.2
   - dask
   - matplotlib
