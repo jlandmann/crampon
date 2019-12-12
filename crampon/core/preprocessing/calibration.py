@@ -53,11 +53,12 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
         The pandas.DataFrame with preprocessed values.
     """
 
-    if mb_dir:
+    if mb_dir is not None:
         mb_file = glob.glob(
             os.path.join(mb_dir, '{}*'.format(gdir.rgi_id)))[0]
-    mb_file = glob.glob(
-        os.path.join(cfg.PATHS['mb_dir'], '{}_*'.format(gdir.rgi_id)))[0]
+    else:
+        mb_file = glob.glob(
+            os.path.join(cfg.PATHS['mb_dir'], '{}_*'.format(gdir.rgi_id)))[0]
 
     # we have varying date formats (e.g. '19440000' for Silvretta)
     def date_parser(d):
