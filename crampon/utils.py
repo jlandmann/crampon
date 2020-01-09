@@ -2224,7 +2224,7 @@ class GlacierDirectory(object):
             return df
         else:
             if isinstance(mb_model, str):
-                return df.filter(mb_model)
+                return df.filter(regex=mb_model)
             else:
                 return df.filter(regex=mb_model.__name__)
 
