@@ -2205,7 +2205,7 @@ class GlacierDirectory(object):
 
         Parameters
         ----------
-        mb_model: `py:class:crampon.core.massbalance.MassBalanceModel`
+        mb_model: `py:class:crampon.core.massbalance.MassBalanceModel` or str
             Model to filter the calibration for.
         filesuffix: str
             Suffix for calibration file name (used in experiments).
@@ -2223,7 +2223,10 @@ class GlacierDirectory(object):
         if mb_model is None:
             return df
         else:
-            return df.filter(regex=mb_model.__name__)
+            if isinstance(mb_model, str):
+                return df.filter(mb_model)
+            else:
+                return df.filter(regex=mb_model.__name__)
 
     def read_shapefile(self, filename, filesuffix=''):
         return self.OGGMGD.read_shapefile(filename, filesuffix=filesuffix)
