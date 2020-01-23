@@ -1106,13 +1106,17 @@ class MeteoTSAccessor(object):
         return self._obj
 
 
-def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
-                              outfile):
+def climate_files_from_netcdf(tfile, pfile, hfile, outfile, tminfile=None,
+                              tmaxfile=None, rfile=None):
     """
     Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
 
-    The file format will be as OGGM likes it.
+    There will be at least one file created: the OGGM 'climate_monthly' file,
+    containing the variables 'temp' and 'prcp'. If the given name for outfile
+    is not the path to the monthly climate file, then additionally outfile is
+    generated, containg also all other variables. The monthly climate is in any
+    case calculated from a monthly resampling of the daily values.
     The temporal extent of the file will be the inner or outer join of the time
     series extent of the given input files .
 
@@ -1120,18 +1124,18 @@ def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
     ----------
     tfile: str
         Path to mean temperature netCDF file.
-    tminfile: str
-        Path to minimum temperature netCDF file.
-    tmaxfile: str
-        Path to maximum temperature netCDF file.
     pfile: str
         Path to precipitation netCDF file.
-    rfile: str
-        Path to radiation netCDF file.
     hfile: str
         Path to the elevation netCDF file.
     outfile: str
         Path to and name of the written file.
+    tminfile: str, optional
+        Path to minimum temperature netCDF file.
+    tmaxfile: str, optional
+        Path to maximum temperature netCDF file.
+    rfile: str, optional
+        Path to radiation netCDF file.
 
     Returns
     -------
@@ -1166,6 +1170,16 @@ def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
     # ensure it's compressed when exporting
     nc_ts.encoding['zlib'] = True
     nc_ts.to_netcdf(outfile)
+
+    # to be sure, produce the OGGM climate file anyway
+    if 'climate_monthly' not in outfile:
+        outfile_oggm = os.path.join(os.path.dirname(outfile),
+                                    'climate_monthly.nc')
+        temp_monthly = temp.resample(time="MS").mean()
+        prec_monthly = prec.resample(time="MS").sum()
+        nc_ts_monthly = xr.merge([temp_monthly, prec_monthly])
+        nc_ts_monthly.encoding['zlib'] = True
+        nc_ts_monthly.to_netcdf(outfile_oggm)
 
 
 def read_netcdf(path, chunks=None, tfunc=None, **kwargs):

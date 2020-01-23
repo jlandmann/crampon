@@ -647,8 +647,8 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
     outfile = cfg.PATHS['climate_file']
 
     log.info('Combining TEMP, TMIN, TMAX, PRCP, SIS and HGT...')
-    utils.daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile,
-                                    hfile, outfile)
+    utils.climate_files_from_netcdf(tfile, pfile, hfile, outfile, tminfile,
+                                    tmaxfile, rfile)
     log.info('Done combining TEMP, TMIN, TMAX, PRCP, SIS and HGT.')
 
     return outfile
