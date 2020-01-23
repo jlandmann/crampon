@@ -2725,7 +2725,7 @@ class SnowFirnCover(object):
         h = np.zeros_like(range(self.n_heights), dtype=np.float32)
         where_type = self.get_type_indices(layertype)
         h_actual = np.nansum(np.atleast_2d(self.sh[where_type]), axis=0)
-        h[where_type[0]] = h_actual[where_type[0]]
+        h[where_type[1]] = h_actual[where_type[1]]
         return h
 
     def get_mean_density(self):
