@@ -391,8 +391,15 @@ def make_mb_current_mbyear(gdir, begin_mbyear, mb_model=None, snowcover=None,
     else:
         mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
 
-    yesterday = utils.get_cirrus_yesterday()
-    yesterday_str = yesterday.strftime('%Y-%m-%d')
+    last_day = utils.get_cirrus_yesterday()
+    # if begin more than one year ago, clip to make current MB max 1 year long
+    max_end = pd.Timestamp('{}-{}-{}'.format(begin_mbyear.year + 1,
+                                                  begin_mbyear.month,
+                                                  begin_mbyear.day)) - \
+              pd.Timedelta(days=1)
+    if last_day > max_end:
+        last_day = max_end
+    last_day_str = last_day.strftime('%Y-%m-%d')
     begin_str = begin_mbyear.strftime('%Y-%m-%d')
 
     curr_year_span = pd.date_range(start=begin_str, end=last_day_str,
@@ -404,13 +411,90 @@ def make_mb_current_mbyear(gdir, begin_mbyear, mb_model=None, snowcover=None,
         stacked = None
         heights, widths = gdir.get_inversion_flowline_hw()
 
-        param_prod = np.array(
-            utils.get_possible_parameters_from_past(gdir, mbm, only_pairs=True,
-                                                    latest_climate=True,
-                                                    as_list=True))
+        if 'fischer' in suffix:
+            constrain_with_bw_prcp_fac = True
+            latest_climate = False
+
+        else:
+            constrain_with_bw_prcp_fac = True
+            latest_climate = True
+
+        pg = ParameterGenerator(gdir, mbm, latest_climate=latest_climate,
+                 only_pairs=True,
+                 constrain_with_bw_prcp_fac=constrain_with_bw_prcp_fac,
+                 bw_constrain_year=begin_mbyear.year + 1,
+                 narrow_distribution=0., output_type='array',
+                 suffix=suffix)
+        try:
+            param_prod = pg.from_single_glacier()
+        except pd.core.indexing.IndexingError:
+            continue
 
         # todo: select by model or start with ensemble median snowcover?
-        sc = SnowFirnCover.from_dataset(snowcover.sel(model=mbm.__name__))
+        it = 0
+        for params in param_prod:
+            it += 1
+
+            sc = SnowFirnCover.from_dataset(snowcover.sel(model=mbm.__name__))
+
+            pdict = dict(zip(mbm.cali_params_list, params))
+            if isinstance(mbm, utils.SuperclassMeta):
+                try:
+                    day_model_curr = mbm(gdir, **pdict, snowcover=sc, bias=0.,
+                                         cali_suffix=suffix)
+                except:  # model not in cali file (for fischer geod. cali)
+                    mb_models.remove(mbm)
+                    continue
+            else:
+                day_model_curr = copy.copy(mbm)
+
+            mb_now = []
+            for date in curr_year_span:
+                # Get the mass balance and convert to m per day
+                tmp = day_model_curr.get_daily_specific_mb(heights, widths,
+                                                           date=date)
+                day_model_curr.snowcover.densify_snow_anderson(date)
+                mb_now.append(tmp)
+
+            if stacked is not None:
+                stacked = np.vstack((stacked, mb_now))
+            else:
+                stacked = mb_now
+
+        if isinstance(stacked, np.ndarray):
+            stacked = np.sort(stacked, axis=0)
+        else:
+            # the Fischer case
+            stacked = np.array(stacked)
+
+        mb_for_ds = np.moveaxis(np.atleast_3d(np.array(stacked)), 1, 0)
+        # todo: units are hard coded and depend on method used above
+        mb_ds = xr.Dataset({'MB': (['time', 'member', 'model'], mb_for_ds)},
+                           coords={'member': (['member', ],
+                                              np.arange(mb_for_ds.shape[1])),
+                                   'model': (['model', ],
+                                             [day_model_curr.__name__]),
+                                   'time': (['time', ],
+                                            pd.to_datetime(curr_year_span)),
+                                   })
+
+        ds_list.append(mb_ds)
+
+    ens_ds = xr.merge(ds_list)
+    ens_ds.attrs.update({'id': gdir.rgi_id, 'name': gdir.name,
+                         'units': 'm w.e.'})
+
+    if write:
+        ens_ds.mb.append_to_gdir(gdir, 'mb_current' + suffix, reset=reset)
+
+    # check at the point where we cross the MB budget year
+    if dt.date.today == (begin_mbyear + dt.timedelta(days=1)):
+        mb_curr = gdir.read_pickle('mb_current' + suffix)
+        mb_curr = mb_curr.sel(time=slice(begin_mbyear, None))
+        gdir.write_pickle(mb_curr, 'mb_current' + suffix)
+
+    return ens_ds
+
 
         it = 0
         for params in param_prod:
