@@ -2109,11 +2109,11 @@ class GlacierDirectory(object):
             self.terminus_type = ttkeys[gtype[1]]
             self.is_tidewater = self.terminus_type in ['Marine-terminating',
                                                        'Lake-terminating']
-            self.inversion_calving_rate = 0.
-            self.is_icecap = self.glacier_type == 'Ice cap'
-
             # make OGGM compatible
             self.status = self.OGGMGD.status
+            self.is_nominal = self.status == 'Nominal glacier'
+            self.inversion_calving_rate = 0.
+            self.is_icecap = self.glacier_type == 'Ice cap'
 
             # Hemisphere
             self.hemisphere = 'sh' if self.cenlat < 0 else 'nh'
@@ -2213,6 +2213,14 @@ class GlacierDirectory(object):
                                         use_compression=use_compression,
                                         filesuffix=filesuffix)
 
+    def read_json(self, filename, filesuffix=''):
+        return self.OGGMGD.read_json(filename=filename,
+                                        filesuffix=filesuffix)
+
+    def write_json(self, var, filename, filesuffix=''):
+        return self.OGGMGD.write_json(var=var, filename=filename,
+                                      filesuffix=filesuffix)
+
     def get_calibration(self, mb_model=None, filesuffix=''):
         """
         Read the glacier calibration as a pandas.DataFrame.
@@ -2252,8 +2260,9 @@ class GlacierDirectory(object):
     def get_inversion_flowline_hw(self):
         return self.OGGMGD.get_inversion_flowline_hw()
 
-    def log(self, task_name, err=None):
-        return self.OGGMGD.log(task_name=task_name, err=err)
+    def log(self, task_name, *, err=None, task_time=None):
+        return self.OGGMGD.log(task_name=task_name, err=err,
+                               task_time=task_time)
 
     def get_task_status(self, task_name):
         return self.OGGMGD.get_task_status(task_name=task_name)
