@@ -533,3 +533,61 @@ def get_potential_irradiation_with_toposhade(gdir):
     # distribute back to original grid
     ipot_reproj = ds.salem.transform(ipot_ds)
     ipot_reproj.to_netcdf(gdir.get_filepath('ipot'))
+
+
+def irradiation_top_of_atmosphere(doy, latitude_deg, solar_constant=None):
+    """
+    Calculate irradiation at the top of the atmosphere.
+
+    The calculation depends on the position (latitude) of the earth, day of
+    year and the solar constant. The output value is a daily mean. Equations
+    from [1]_ as presented in [2]_ and [3]_.
+
+    Parameters
+    ----------
+    doy: array
+        Day(s) of year for which to get the TOA irradiation.
+    latitude_deg: array
+        Latitude(s) for which to get the TOA irradiation.
+    solar_constant: float or None
+        The solar constant. If None, then value from cfg is taken. Default:
+        None.
+
+    Returns
+    -------
+    s_toa: array
+        Solar irradiation at the top of atmosphere for the given parameters.
+
+    References
+    ----------
+    .. [1] : Iqbal, M.: An introduction to solar radiation, Academic Press, New
+             York, 1983.
+    .. [2] : https://bit.ly/2sxT3hE
+    .. [3] : https://bit.ly/2Si0KDD
+    """
+
+    if solar_constant is None:
+        solar_constant = cfg.SOLAR_CONSTANT
+
+    # extend shapes and make radians
+    doy = np.atleast_2d(doy).T
+    latitude_rad = np.atleast_2d((np.deg2rad(latitude_deg)))
+
+    # declination  of the sun (approximated as in [2]_.)
+    delta = 0.4093 * np.sin(((2. * np.pi) / 365. * doy) - 1.3944)
+
+    # ratio of mean & current sun-earth distance approxim. from ([1]_ in [2]_)
+    d0d = (1 + 0.033 * np.cos(((2. * np.pi * doy) / 365.)))
+
+    # cosine of sun hour angle
+    cos_omega = - np.tan(latitude_rad) * np.tan(delta)
+    # limit cosine of omega to +- 1, so that there can be polar day and night
+    cos_omega = np.clip(cos_omega, -1., 1.)
+    omega = np.arccos(cos_omega)
+
+    # putting all together
+    s_toa = solar_constant * d0d * 1 / np.pi * (
+            omega * np.sin(latitude_rad) * np.sin(delta) + np.cos(
+        latitude_rad) * np.cos(delta) * np.sin(omega))
+
+    return s_toa

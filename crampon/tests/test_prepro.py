@@ -20,7 +20,7 @@ import xarray as xr
 
 # Local imports
 import crampon.cfg as cfg
-from crampon.core.preprocessing import gis, climate
+from crampon.core.preprocessing import gis, climate, radiation
 from oggm.utils import get_demo_file as get_oggm_demo_file
 from crampon.tests import HAS_NEW_GDAL, RUN_PREPRO_TESTS
 
@@ -171,3 +171,67 @@ class TestGlacierMeteo(unittest.TestCase):
     @pytest.mark.skip(reason='No lightweight test dataset yet')
     def test_get_precipitation_liquid_solid(self):
         pass
+
+
+class TestRadiation(unittest.TestCase):
+
+    def setUp(self):
+        cfg.initialize()
+
+        # test directory
+        self.testdir = os.path.join(cfg.PATHS['test_dir'], 'tmp_prepro')
+        if not os.path.exists(self.testdir):
+            os.makedirs(self.testdir)
+        self.clean_dir()
+
+    def tearDown(self):
+        self.rm_dir()
+
+    def rm_dir(self):
+        shutil.rmtree(self.testdir)
+
+    def clean_dir(self):
+        shutil.rmtree(self.testdir)
+        os.makedirs(self.testdir)
+
+    def test_irradiation_top_of_atmosphere(self):
+        # test equator, north pole, south pole, 45 deg north
+        # for testing, we set the solar constant to a fixed value
+        result = radiation.irradiation_top_of_atmosphere(np.arange(1, 367),
+                                                         np.array(
+                                                             [0., 90., -90.,
+                                                              45.]),
+                                                         solar_constant=1367.)
+
+        # equator
+        np.testing.assert_equal(np.count_nonzero(result[:, 0]), 366)
+        np.testing.assert_almost_equal(np.min(result[:, 0]), 386.1, decimal=1)
+        np.testing.assert_almost_equal(np.max(result[:, 0]), 438.9, decimal=1)
+        np.testing.assert_almost_equal(np.mean(result[:, 0]), 417.0, decimal=1)
+        np.testing.assert_almost_equal(np.argmin(result[:, 0]), 173)
+        np.testing.assert_almost_equal(np.argmax(result[:, 0]), 69)
+
+        # north pole
+        np.testing.assert_equal(np.count_nonzero(result[:, 1]), 182)
+        np.testing.assert_almost_equal(np.min(result[:, 1]), 0., 1)
+        np.testing.assert_almost_equal(np.max(result[:, 1]), 526.3, 1)
+        np.testing.assert_almost_equal(np.mean(result[:, 1]), 169.8, 1)
+        np.testing.assert_almost_equal(np.argmin(result[:, 1]), 0)
+        np.testing.assert_almost_equal(np.argmax(result[:, 1]), 171)
+
+        # south pole - 184 because of rounding difference
+        np.testing.assert_equal(np.count_nonzero(result[:, 2]), 184)
+        np.testing.assert_almost_equal(np.min(result[:, 2]), 0., 1)
+        np.testing.assert_almost_equal(np.max(result[:, 2]), 561.7, 1)
+        np.testing.assert_almost_equal(np.mean(result[:, 2]), 180.2, 1)
+        np.testing.assert_almost_equal(np.argmin(result[:, 2]), 81)
+        np.testing.assert_almost_equal(np.argmax(result[:, 2]), 354)
+
+        # 45 deg north
+        np.testing.assert_equal(np.count_nonzero(result[:, 3]), 366)
+        np.testing.assert_almost_equal(np.max(result[:, 3]), 485.3, 1)
+        np.testing.assert_almost_equal(np.min(result[:, 3]), 120.7, 1)
+        np.testing.assert_almost_equal(np.mean(result[:, 3]), 304.6, 1)
+        np.testing.assert_almost_equal(np.argmax(result[:, 3]), 170)
+        np.testing.assert_almost_equal(np.argmin(result[:, 3]), 354)
+
