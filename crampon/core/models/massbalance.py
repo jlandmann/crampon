@@ -235,7 +235,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: datetime.datetime or pd.Timestamp
             Date at which mass balance should be calculated.
         **kwargs: dict-like, optional
             Arguments passed to the pd.DatetimeIndex.get_loc() method that
@@ -312,7 +312,7 @@ class DailyMassBalanceModel(MassBalanceModel):
             The altitudes at which the mass-balance will be computed.
         widths: ndarray
             The widths of the flowline (necessary for the weighted average).
-        date: datetime.datetime or array of datetime.datetime
+        date: pd.Timestamp or array of pd.Timestamp
             The date(s) when to calculate the specific mass balance.
 
         Returns
@@ -358,6 +358,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         Units: [m s-1], or meters of ice per second
         Note: `year` is optional because some simpler models have no time
         component.
+
         Parameters
         ----------
         heights: ndarray
@@ -667,7 +668,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
         **kwargs: dict-like, optional
             Arguments passed to the pd.DatetimeIndex.get_loc() method that
@@ -775,7 +776,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
         Parameters
         ----------
-        date: datetime.datetime
+        date: datetime.datetime or pd.Timestamp
             The date for which to update the snow cover.
         mb: array-like
             Mass balance at given heights.
@@ -883,7 +884,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
         **kwargs: dict-like, optional
             Arguments passed to the pd.DatetimeIndex.get_loc() method that
@@ -1145,7 +1146,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
         **kwargs: dict-like, optional
             Arguments passed to the pd.DatetimeIndex.get_loc() method that
@@ -1366,7 +1367,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
         **kwargs: dict-like, optional
             Arguments passed to the pd.DatetimeIndex.get_loc() method that
