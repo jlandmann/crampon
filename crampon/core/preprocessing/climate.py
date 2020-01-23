@@ -928,6 +928,19 @@ class GlacierMeteo(object):
         return self._heights
 
     @lazy_property
+    def data_quantiles(self, var_name):
+        """ Precipitation distribution quantiles to estimate the error."""
+        return self.meteo[var_name].quantiles(np.arange(0, 1.01, 0.01),
+                                              dim='time')
+
+    @lazy_property
+    def prcp_corr_annual_cycle(self):
+        """
+        Precipitation corrected by the annual cycle of the correction factor.
+        """
+        return prcp_fac_annual_cycle(self.meteo['time.dayofyear']) * self.prcp
+
+    @lazy_property
     def days_since_solid_precipitation(self, heights, min_amount=0.002,
                                       method=None, **kwargs):
         """
