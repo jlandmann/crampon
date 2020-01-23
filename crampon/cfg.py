@@ -202,6 +202,8 @@ def initialize(file=None):
 
     # run params
     oggmcfg.PARAMS['run_period'] = [int(vk) for vk in cp.as_list('run_period')]
+    k = 'glamos_ids'
+    oggmcfg.PARAMS[k] = [str(vk) for vk in cp.as_list(k)]
 
     # Multiprocessing pool
     oggmcfg.PARAMS['use_multiprocessing'] = cp.as_bool('use_multiprocessing')
@@ -277,7 +279,8 @@ def initialize(file=None):
            'prcp_scaling_factor', 'tminmax_available', 'use_intersects',
            'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
            'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
-           'run_mb_calibration', 'albedo_method']
+           'run_mb_calibration', 'albedo_method', 'glamos_ids',
+           'begin_mbyear_month', 'begin_mbyear_day']
     for k in ltr:
         cp.pop(k, None)
 
