@@ -15,6 +15,11 @@ from rasterio.warp import reproject, Resampling
 from rasterio.merge import merge as merge_tool
 from scipy.interpolate import interp1d
 from crampon import cfg
+from crampon.utils import entity_task
+import logging
+
+# Module logger
+log = logging.getLogger(__name__)
 
 
 @jit(nopython=True)
