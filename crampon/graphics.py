@@ -798,11 +798,16 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
     years.extend(mbcyears)
 
     greyshades = len(years) - len(mbcyears)
-    if greyshades > 256:  # the length of the palette
-        greyshades = np.lib.pad(np.arange(256), pad_width=greyshades-256,
-                                mode='symmetric')
     current_colors = [c for c, _ in CURR_COLORS[:len(mbcyears)]]
-    custompalette = grey(greyshades) + current_colors
+    if greyshades > 256:  # the length of the palette
+        custompalette = []
+        for n in range(int(np.floor(greyshades / 256.))):
+            custompalette.extend(grey(256))
+
+        custompalette.extend(grey(greyshades % 256.))
+        custompalette.extend(current_colors)
+    else:
+        custompalette = grey(greyshades) + current_colors
 
     xs = [np.arange(arr.shape[1])] * arr.shape[0]
     ys = arr.tolist()
