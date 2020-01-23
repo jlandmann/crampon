@@ -27,7 +27,8 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
-                 heights_widths=(None, None), param_ep_func=np.nanmean):
+                 heights_widths=(None, None), param_ep_func=np.nanmean,
+                 cali_suffix=''):
 
         """
         Model to calculate the daily mass balance of a glacier.
@@ -40,6 +41,8 @@ class DailyMassBalanceModel(MassBalanceModel):
         prcp_fac:
         filename:
         filesuffix:
+        cali_suffix: str
+            Suffix for getting the calibration file.
         # todo: wouldn't it rather make sense to make a gdir from beginning on that has only fewer heights? Conflict with stability of flow approach?!!
         heights_widths: tuple
             Heights and widths if not those from the gdir shall be taken
@@ -64,7 +67,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         if any([p is None for p in [mu_star, prcp_fac, bias]]):
             # do not filter for mb_model here, otherwise mu_star is not found
             # ('self' can also be a downstream inheriting class!)
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
 
         # DailyMassbalanceModel should also be able to grab OGGM calibrations
         if mu_star is None:
@@ -427,11 +430,12 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
                  filename='climate_daily',
-                 filesuffix=''):
+                 filesuffix='', cali_suffix='', snow_redist=True):
 
         super().__init__(gdir, mu_star=mu_star, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
-                         filesuffix=filesuffix, param_ep_func=np.nanmean)
+                         filesuffix=filesuffix, param_ep_func=np.nanmean,
+                         cali_suffix=cali_suffix)
 
         if snow_init is None:
            self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
@@ -494,7 +498,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
                  filename='climate_daily',
-                 filesuffix=''):
+                 filesuffix='', cali_suffix=''):
         """
         Implementing the temperature index melt model by Braithwaite.
 
@@ -542,20 +546,20 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
                          filename=filename, heights_widths=heights_widths,
                          filesuffix=filesuffix, snowcover=snowcover,
-                         snow_init=snow_init)
+                         snow_init=snow_init, cali_suffix=cali_suffix)
 
         self.ratio_s_i = cfg.PARAMS['ratio_mu_snow_ice']
 
         if mu_ice is None:
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             mu_ice = cali_df[self.__name__ + '_' + 'mu_ice']
         if (mu_ice is not None) and (mu_snow is None):
             mu_snow = mu_ice * self.ratio_s_i
         if (mu_ice is None) and (mu_snow is None):
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             mu_snow = cali_df[self.__name__ + '_' + 'mu_ice'] * self.ratio_s_i
         if bias is None:
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             if cfg.PARAMS['use_bias_for_run']:
                 bias = cali_df[self.__name__ + '_' + 'bias']
             else:
@@ -563,7 +567,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                                     data=np.zeros_like(cali_df.index,
                                                        dtype=float))
         if prcp_fac is None:
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             prcp_fac = cali_df[self.__name__ + '_' + 'prcp_fac']
 
         self.mu_ice = mu_ice
@@ -820,20 +824,20 @@ class HockModel(DailyMassBalanceModelWithSnow):
     def __init__(self, gdir, mu_hock=None, a_ice=None,
                  prcp_fac=None, bias=None, snow_init=None, snowcover=None,
                  filename='climate_daily', heights_widths=(None, None),
-                 albedo_method=None, filesuffix=''):
+                 albedo_method=None, filesuffix='', cali_suffix=''):
         # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=mu_hock, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover)
+                         snowcover=snowcover, cali_suffix=cali_suffix)
 
         if mu_hock is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.mu_hock = cali_df[self.__name__ + '_' + 'mu_hock']
         else:
             self.mu_hock = mu_hock
         if a_ice is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.a_ice = cali_df[self.__name__ + '_' + 'a_ice']
         else:
             self.a_ice = a_ice
@@ -1032,7 +1036,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     def __init__(self, gdir, tf=None, srf=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  filename='climate_daily', heights_widths=(None, None),
-                 albedo_method=None, filesuffix=''):
+                 albedo_method=None, filesuffix='', cali_suffix=''):
         # todo: Documentation
         """
 
@@ -1072,7 +1076,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         super().__init__(gdir, mu_star=tf, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover)
+                         snowcover=snowcover, cali_suffix=cali_suffix)
 
         self.albedo = GlacierAlbedo(self.heights) #TODO: finish Albedo object
 
@@ -1090,12 +1094,12 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             self.update_albedo = self.albedo.update_ensemble
 
         if tf is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.tf = cali_df[self.__name__ + '_' + 'tf']
         else:
             self.tf = tf
         if srf is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.srf = cali_df[self.__name__ + '_' + 'srf']
         else:
             self.srf = srf
@@ -1287,12 +1291,12 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
     def __init__(self, gdir, c0=None, c1=None, prcp_fac=None, bias=None,
                  snow_init=None, snowcover=None, filename='climate_daily',
                  heights_widths=(None, None), albedo_method=None,
-                 filesuffix=''):
+                 filesuffix='', cali_suffix=''):
         # todo: here we hand over c0 to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=c0, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover)
+                         snowcover=snowcover, cali_suffix=cali_suffix)
 
         self.albedo = GlacierAlbedo(self.heights)  # TODO: finish Albedo object
 
@@ -1311,12 +1315,12 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             self.update_albedo = self.albedo.update_ensemble
 
         if c0 is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.c0 = cali_df[self.__name__ + '_' + 'c0']
         else:
             self.c0 = c0
         if c1 is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.c1 = cali_df[self.__name__ + '_' + 'c1']
         else:
             self.c1 = c1
