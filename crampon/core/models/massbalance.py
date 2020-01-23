@@ -3298,7 +3298,7 @@ class SnowFirnCover(object):
 
         days2reduce = days.copy()
 
-        for dt in (np.ones(int(np.nanmax(days))) * 24 * 3600):
+        for dt in (np.ones(int(np.nanmax(days))) * cfg.SEC_IN_DAY):
 
             current_rho = self.rho
             si_ratio = current_rho / cfg.RHO
@@ -4246,18 +4246,17 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     for date in run_time:
 
         # Get the mass balance and convert to m w.e. per day
-        #if mb is None:
-        tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * \
+        if mb is None:
+            tmp = day_model.get_daily_mb(heights, date=date) * cfg.SEC_IN_DAY * \
                   cfg.RHO / cfg.RHO_W
-        #else:
-        #    tmp = mb.sel(time=date).MB.values
+        else:
+            tmp = mb.sel(time=date).MB.values[0]
 
         swe = tmp.copy()
         rho = np.ones_like(tmp) * get_rho_fresh_snow_anderson(
             meteo.meteo.sel(time=date).temp.values + cfg.ZERO_DEG_KELVIN)
         temperature = swe.copy()
         if temp_update.lower() == 'exact':
-            # Todo: place real temperature here
             temperature[~pd.isnull(swe)] = \
                 meteo.get_tmean_at_heights(date, heights)[~pd.isnull(swe)]
         temperature[~pd.isnull(swe)] = cfg.ZERO_DEG_KELVIN
