@@ -65,7 +65,10 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
     """
 
     if mb_model:
-        mb_models = [mb_model]
+        if type(mb_model) == list:
+            mb_models = mb_model
+        else:
+            mb_models = [mb_model]
     else:
         mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
 
