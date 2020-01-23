@@ -4051,6 +4051,83 @@ class MassBalance(object, metaclass=SuperclassMeta):
             raise ValueError('Value {} for balance is not recognized.'.
                              format(which))
 
+    def get_climate_reference_period(self, ref_period='latest',
+                                     mbyear_beginmonth=None,
+                                     mbyear_beginday=None):
+        """
+        Clip the mass balance to a WMO climate reference period.
+
+        Parameters
+        ----------
+        ref_period: str or tuple
+            Which reference period to clip to. Allowed: '1961-1990',
+            '1981-2010', 'latest' or a tuple of integer years and/or None.
+            Accounting for the usual begin of hydrological years, we start
+            clipping already e.g. on OCT 1st 1960 for the 1961-1990 reference
+            period. Default: 'latest' (looks automatically for the latest
+            reference period).
+        mbyear_beginmonth: int
+            Month when mass budget year shall begin.
+        mbyear_beginday: int
+            Day when mass budget year shal begin.
+
+        Returns
+        -------
+        mb_refp: crampon.core.models.massbalance.MassBalance
+            Mass balance clipped to the given reference period.
+        """
+        if mbyear_beginmonth is None:
+            mbyear_beginmonth = cfg.PARAMS['begin_mbyear_month']
+        if mbyear_beginday is None:
+            mbyear_beginday = int(cfg.PARAMS['begin_mbyear_day'])
+
+        if isinstance(ref_period, (tuple, list, np.array)):
+            if ref_period[0] is None:
+                clip_start = None
+            else:
+                clip_start = dt.datetime(ref_period[0], mbyear_beginmonth,
+                                     mbyear_beginday)
+            if ref_period[1] is None:
+                clip_end = None
+            else:
+                clip_end = dt.datetime(ref_period[1], mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == 'latest_ref':
+            latest_ref_endyear = np.floor(dt.datetime.today().year / 10.) * 10.
+            latest_ref_beginyear = latest_ref_endyear - 30
+            clip_start = dt.datetime(latest_ref_beginyear, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(latest_ref_endyear, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == 'latest':
+            today = dt.datetime.today()
+            if today > dt.datetime(today.year, mbyear_beginmonth,
+                                   mbyear_beginday):
+                latest_endyear = today.year - 1
+            else:
+                latest_endyear = today.year
+            latest_beginyear = latest_endyear - 30
+            clip_start = dt.datetime(latest_beginyear, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(latest_endyear, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == '1961-1990':
+            clip_start = dt.datetime(1960, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(1990, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == '1981-2010':
+            clip_start = dt.datetime(1980, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(2010, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        else:
+            raise ValueError('Given value for climate reference period to clip'
+                             ' to is not understood.')
+
+        return self._obj.sel(time=slice(clip_start, clip_end))
+
+
 
 class PastMassBalance(MassBalance):
     """
