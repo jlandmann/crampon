@@ -286,7 +286,7 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None):
         'fillColor': feature['properties']['polycolor'],
         'color': feature['properties']['polycolor'],
         'weight': 1,
-        'fillOpacity': 0.8,
+        'fillOpacity': 0.9,
     }
 
     def highlight_function(feature):
