@@ -14,6 +14,12 @@ from collections import OrderedDict
 from itertools import product
 import pandas as pd
 
+import logging
+
+# Module logger
+log = logging.getLogger(__name__)
+
+
 
 class DailyMassBalanceModel(MassBalanceModel):
     """
