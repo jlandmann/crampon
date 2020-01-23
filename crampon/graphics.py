@@ -1299,3 +1299,41 @@ def plot_holfuy_station_availability():
 
     plt.legend(fontsize=fontsize, loc='upper right')
     plt.show()
+
+
+def camera_station_map():
+    from shapely.geometry import Point
+    from salem import GoogleVisibleMap
+
+    holfuy_df = pd.read_csv(
+        'c:\\users\\johannes\\documents\\holfuyretriever\\holfuy_data.csv')
+    holfuy_df['geometry'] = list(zip(holfuy_df.Easting, holfuy_df.Northing))
+    holfuy_df['geometry'] = holfuy_df['geometry'].apply(Point)
+    gdf = gpd.GeoDataFrame(holfuy_df, geometry='geometry',
+                           crs=21781)
+    # for whatever reason, the crs needs extra invitation
+    gdf.crs = {'init': 'epsg:21781'}
+    points = gdf.to_crs(epsg=4326).copy()
+
+    g = GoogleVisibleMap(x=np.array([7.4, 8.4]), y=np.array([46., 46.6]),
+                         scale=2,  # scale is for more details
+                         maptype='satellite')  # try out also: 'terrain'
+    ggl_img = g.get_vardata()
+
+    fig, ax = plt.subplots()
+    ds = salem.open_xr_dataset(cfg.PATHS['hfile'])
+    ds_sub = ds.salem.subset(corners=((45.95, 46.7), (7.3, 8.5)),
+                             crs=salem.wgs84)
+    smap = Map(g.grid, factor=1, countries=False)
+    smap.set_rgb(ggl_img)
+    smap.set_scale_bar(location=(0.88, 0.94), add_bbox=True, bbox_kwargs={'facecolor':'w'}, text_kwargs={'fontsize':14})  # add scale
+    smap.set_shapefile(os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                                    'VEC200_LANDESGEBIET_LV03.shp'),
+                       edgecolor='k', facecolor='None')
+    smap.visualize(ax=ax)
+    points['grid_x'], points['grid_y'] = smap.grid.transform(
+        points.geometry.x.values, points.geometry.y.values)
+    ax.scatter(points.grid_x, points.grid_y, color='r', s=80)
+    plt.setp(ax.get_xticklabels(), fontsize=20)
+    plt.setp(ax.get_yticklabels(), fontsize=20)
+    plt.show()
