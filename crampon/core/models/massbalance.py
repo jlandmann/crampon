@@ -1479,23 +1479,307 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         # kg m-2 = kg m-2 - kg m-2
         mb_day = iprcp_corr - melt
 
-        # todo: take care of temperature!?
-        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
-            self.meteo.get_tmean_at_heights(date,
-                                            heights) + cfg.ZERO_DEG_KELVIN)
-        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
-        self.time_elapsed = date
+class ParameterGenerator(object):
+    """Interface to calibrated temperature index model parameters."""
 
-        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
-        # TODO: THIS IS ACTUALLY NEITHER HERE NOR IN PELLIMODEL ALLOWED; BECAUSE WE USE THE SNOW DENSITY TO DETERMINE THE TYPE, WHICH IN TURN DETERMINES THE ALBEDO; THUS WE EVEN NEED STO DENSIFY!
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+    def __init__(self, gdir=None, mb_model=None, latest_climate=False,
+                 only_pairs=True, constrain_with_bw_prcp_fac=False,
+                 bw_constrain_year=None, narrow_distribution=False,
+                 output_type=None, suffix=''):
+        """
+        Instantiate.
 
-        # return kg m-2 s-1 kg-1 m3 = m ice s-1
-        icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
-        return icerate
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The glacier directory for which to get parameter values.
+        mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
+                  or str
+            The mass balance model to get the parameters for.
+        latest_climate: bool
+            If only the last 30 years of the claibration period shall be
+            considered.
+        only_pairs:
+            Determines whether there are only parameter combinations used which
+            have already appeared, no random mixing. If False, the all
+            available parameters are randomly mixed.
+        constrain_with_bw_prcp_fac: bool
+            If True and in the last row of the calibration dataframe only a
+            prcp correction factor is given, all possible combinations will be
+            restricted to this factor and the possible melt factors.
+            Default: True.
+        bw_constrain_year: int or None
+            If given, this can force to set the precipitation correction factor
+            to the value of the given year. Mostly used for hindcast
+            experiments (e.g. a mass budget year has already been fully
+            calibrated, but we want to pretend the melt factors are still
+            unknown.
+        narrow_distribution: bool
+            Whether to narrow down the distribution, i.e. clipping off the
+            edges of the found parameter ranges. Default: False
+        output_type = str or None
+            Desired output type for the functions. Allowed: 'array' or 'list.
+            Default: None (don't force output of the function to be something
+            else).
+            # todo: move this a keyword to the methods
+        suffix: str
+            Suffix for calibration file to generate parameters from, e.g.
+            '_fischer_unique'.
+        """
+        self.gdir = gdir
+        if isinstance(mb_model, str):
+            mb_model = eval(mb_model)
+        self.mb_model = mb_model
+        self.latest_climate = latest_climate
+        self.only_pairs = only_pairs
+        self.constrain_with_bw_prcp_fac = constrain_with_bw_prcp_fac
+        self.bw_constrain_year = bw_constrain_year
+        self.narrow_distribution = narrow_distribution
+        self.output_type = output_type
+        self.suffix = suffix
+
+    @lazy_property
+    def single_glacier_params(self):
+        """Get unique parameters for a single glacier."""
+        cali_df = self.gdir.get_calibration(self.mb_model,
+                                            filesuffix=self.suffix)
+        cali_filtered = cali_df.filter(regex=self.mb_model.__name__)
+        cali_sel = cali_filtered[~cali_filtered.duplicated()]
+        # important: be sure columns match the "order" of the params
+        cali_sel = cali_sel[[self.mb_model.__name__ + '_' + i for i in
+                             self.mb_model.cali_params_list]]
+        return cali_sel
+
+    @lazy_property
+    def pooled_params(self, which='glamos'):
+        """Get pooled parameters from all calibrated glaciers"""
+        if which == 'glamos':
+            calibrated_ids = cfg.PARAMS['glamos_ids']
+        else:  # "all" could be an option after iter. calibration on LFI done
+            raise NotImplementedError
+        bdir = cfg.PATHS['working_dir'] + '/per_glacier/'
+        calibrated_gdirs = [utils.GlacierDirectory(gid, base_dir=bdir) for gid
+                            in calibrated_ids]
+        all_dfs = []
+        for g in calibrated_gdirs:
+            try:
+                all_dfs.append(g.get_calibration(self.mb_model,
+                                                 filesuffix=self.suffix))
+            except:
+                pass
+        pool_filt = [df.filter(regex=self.mb_model.__name__) for df in all_dfs]
+        pool_uni = [pf.drop_duplicates().dropna() for pf in pool_filt]
+        # list comprehension necessary to keep column order (prcp_fac last!)
+        pool_df = pd.concat([p for p in pool_uni if not p.empty])
+        return pool_df
+
+    def from_single_glacier(self, clip_years=None):
+        """Generate parameters from the calibration of the given glacier only.
+
+        Parameters
+        ----------
+        clip_years: tuple or None
+            Whether parameters should be clipped to specified year range.
+        """
+        cali_sel = self.single_glacier_params
+
+        if clip_years is not None:
+            if clip_years[0] is not None:
+                cali_sel = cali_sel[cali_sel.index.year >= clip_years[0]]
+            if clip_years[1] is not None:
+                cali_sel = cali_sel[cali_sel.index.year <= clip_years[1]]
+
+        # TODO: check from theory if this is a clever idea
+        if self.latest_climate:
+            try:
+                cali_sel = cali_sel[(dt.datetime.now().year -
+                                     cali_sel.index.year) <= 30.]
+            except IndexError:
+                pass
+
+        if self.only_pairs:
+            param_prod = cali_sel.copy()
+        else:
+            param_prod = product(*cali_sel.T)
+
+        # todo: the output format is a mess now: list, array or product
+        # todo: this is a complicated mixture of constrain_with_bw_prcp_fac and bw_constrain_year
+        param_prod = np.array(list(param_prod.values))
+        if self.constrain_with_bw_prcp_fac:
+            log.info('PRCP_FAC is constrained with BW prcp_fac.')
+            constrain_pfac = self.get_constraining_prcp_fac(cali_sel)
+            if ~np.isnan(constrain_pfac):
+                param_prod[:, self.mb_model.cali_params_list.index(
+                    'prcp_fac')] = constrain_pfac
+
+        if self.narrow_distribution > 0.:
+            param_prod = self.narrow_down_distribution(
+                self.narrow_distribution)
+
+        return self.generate_output(param_prod)
+
+    def from_cali_pool(self, clip_years=None):
+        """Generate parameters from the pool of all calibrated parameters."""
+
+        cali_sel = self.pooled_params
+
+        if clip_years is not None:
+            if clip_years[0] is not None:
+                cali_sel = cali_sel[cali_sel.index.year >= clip_years[0]]
+            if clip_years[1] is not None:
+                cali_sel = cali_sel[cali_sel.index.year <= clip_years[1]]
+
+        # TODO: check from theory if this is a clever idea
+        if self.latest_climate:
+            try:
+                cali_sel = cali_sel[(dt.datetime.now().year -
+                                     cali_sel.index.year) <= 30.]
+            except IndexError:
+                pass
+
+        if self.only_pairs:
+            param_prod = cali_sel.copy()
+        else:
+            param_prod = product(*cali_sel.T)
+
+        if (self.narrow_distribution is not None) and \
+                (self.narrow_distribution > 0.):
+            param_prod = self.narrow_down_distribution(param_prod,
+                self.narrow_distribution)
+
+        return self.generate_output(param_prod)
+
+    def narrow_down_distribution(self, params, n_percent=None, ends='both'):
+        """Narrows down the distribution of parameters by clipping off ends.
+
+        Parameters
+        ----------
+        params: np.array
+            Parameter distributon to be clipped.
+        n_percent: float
+            Determine how many percent shall be clipped off.
+        ends: str
+            Where the percentage given shall be clipped off. Can be either
+            'both', 'lower' or 'upper'. Default: 'both'.
+        """
+        if n_percent is None:
+            n_percent = self.narrow_distribution
+
+        # todo: which parameter to choose for clipoff? -> the one with the biggest normalized variance
+        out = params.copy()
+        for n in range(len(params.columns)):
+            out = params[(params[params.columns[n]] > params[params.columns[n]].quantile(n_percent/100.)) &
+                         (params[params.columns[n]] < params[params.columns[n]].quantile(1-n_percent/100.))]
+        return out
+
+    def get_constraining_prcp_fac(self, cali_sel):
+        """
+        Extract the prcp_fac for constraining from the calibration dataframe.
+
+        We distinguish several cases:
+        1) The year from which the prcp_fac shall be taken is not given. The
+           prcp_fac of the last year in the dataframe is taken
+        2) The year from which the prcp_fac shall be taken is given. If there
+           is a prcp_fac for this year, it is taken, otherwise NaN is returned!
+        3) It doesn't make sense to take it from the given calibration
+           dataframe. This is the case when the calibration dataframe contains
+           calibrated parameters from geodetic mass balances. In this case,
+           take the constraining factor from the GLAMOS calibration files - if
+           available. If not available, the we take the mean (to be sure) of
+           the given dataframe.
+
+
+
+        Parameters
+        ----------
+        cali_sel: pd.Dataframe
+            dataframe containing the calibrated parameters.
+
+        Returns
+        -------
+        constr_pfac: float or np.nan
+            The constraining precipitation correction factor. It is NaN when
+            the value desired is not available (especially when the year from
+             which it shall be atken is not there).
+        """
+        # todo: this is maybe too hard-coded
+        print(self.suffix)
+        if not ('fischer' in self.suffix.lower()):
+
+            if self.bw_constrain_year is None:
+                if ~pd.isnull(cali_sel.tail(1)[
+                    self.mb_model.__name__ + '_' + 'prcp_fac']).item() and \
+                    pd.isnull(cali_sel.tail(1)[self.mb_model.__name__ + '_' +
+                    self.mb_model.cali_params_list[0]]).item():
+                    constr_pfac = cali_sel.tail(1)[self.mb_model.__name__
+                                                      + '_prcp_fac'].item()
+                else:
+                    constr_pfac = np.nan
+            else:
+                try:
+                    # + 1 because we selected dropna keep the first date
+                    cali_sel.loc[
+                        cali_sel.index.year + 1 == self.bw_constrain_year,
+                        self.mb_model.__name__ + '_prcp_fac'].item()
+                    constr_pfac = cali_sel.loc[
+                        cali_sel.index.year + 1 == self.bw_constrain_year,
+                        self.mb_model.__name__ + '_prcp_fac'].item()
+                except ValueError:  # no value there yet to constrain with
+                    constr_pfac = np.nan
+        else:
+            try:
+                glamos_cali = ParameterGenerator(self.gdir, self.mb_model,
+                                                 self.latest_climate,
+                                                 self.only_pairs,
+                                                 self.constrain_with_bw_prcp_fac,
+                                                 self.bw_constrain_year,
+                                                 self.narrow_distribution,
+                                                 output_type='array',
+                                                 suffix='')
+                glamos_cali.bw_constrain_year = glamos_cali.single_glacier_params.tail(
+                    1).index.item()
+                log.info('Constraining precipitation correction factor is '
+                         'taken from GLAMOS calibration.')
+                constr_pfac = glamos_cali.get_constraining_prcp_fac(
+                    glamos_cali.single_glacier_params)
+            except FileNotFoundError:
+                log.warning('Precipitation correction factor could not be '
+                         'constrained, GLAMOS calibration file is is missing.')
+                # return mean
+                constr_pfac = cali_sel[self.mb_model.__name__ +
+                                       '_prcp_fac'].mean().item()
+        print("winter MB is constrained with PRCP_FAC of ", constr_pfac)
+        return constr_pfac
+
+    def generate_output(self, params):
+        """Generate desired output format."""
+
+        if isinstance(params, type(product)):
+            if self.output_type == 'array':
+                params = np.array(list(params))
+            elif self.output_type == 'list':
+                params = list(params)
+            else:
+                pass
+        elif isinstance(params, np.ndarray):
+            if self.output_type == 'list':
+                params = params.tolist()
+            else:
+                pass
+        elif isinstance(params, list):
+            if self.output_type == 'array':
+                params = np.array(params)
+        elif isinstance(params, pd.DataFrame):
+            if self.output_type == 'array':
+                params = params.values
+            elif self.output_type == 'list':
+                params = list(params.values)
+            else:
+                pass
+        else:
+            pass
+
+        return params
 
 
 @unique
