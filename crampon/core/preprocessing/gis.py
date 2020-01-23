@@ -511,3 +511,109 @@ def calculate_geodetic_deltav(gdir, fill_threshold=0.1):
         ix += 1
 
     gvc_df.to_csv(gdir.get_filepath('geodetic_dv'))
+
+
+def scipy_idw(x, y, z, xi, yi):
+    """
+    Inverse distance weight unsing scipy's radial basis function.
+
+    From _[1].
+
+    Parameters
+    ----------
+    x: array
+        x coordinates of the data points.
+    y: array
+        y coordinates of the data points.
+    z: array
+        Value of the data points
+    xi: array
+        x values of the points where to interpolate.
+    yi: array
+        y values of the points where to interpolate.
+
+    Returns
+    -------
+    array:
+        Interpolated values at xi and yi.
+
+    References
+    ----------
+    _[1]: https://stackoverflow.com/questions/3104781/inverse-distance-weighted-idw-interpolation-with-python
+    """
+    from scipy.interpolate import Rbf
+    interp = Rbf(x, y, z, function='linear')
+    return interp(xi, yi)
+
+
+def distance_matrix(x0, y0, x1, y1):
+    """
+    Make a distance matrix between pairwise observations.
+
+    Modified from _[1].
+
+    Parameters
+    ----------
+    x0: array
+        X coordinates of the first observations.
+    y0: array
+        Y coordinates of the first observations.
+    x1: array
+        X coordinates of the second observations.
+    y1: array
+        Y coordinates of the second observations.
+
+    Returns
+    -------
+    array:
+        Array with distances between each of the observation points.
+
+    References
+    ----------
+    _[1]: http://stackoverflow.com/questions/1871536
+    """
+    obs = np.vstack((x0, y0)).T
+    interp = np.vstack((x1, y1)).T
+
+    d0 = np.subtract.outer(obs[:, 0], interp[:, 0])
+    d1 = np.subtract.outer(obs[:, 1], interp[:, 1])
+
+    return np.hypot(d0, d1)
+
+
+def simple_idw(x, y, z, xi, yi):
+    """
+    Simple inverse distance weighting.
+
+    From _[1].
+
+
+    Parameters
+    ----------
+    x: array
+        X coordinates of the observations.
+    y: array
+        Y coordinates of the observations.
+    z: array
+        Observation values.
+    xi: array
+        X coordinates where to interpolate the observations to.
+    yi: array
+        Y coordinates where to interpolate the observations to.
+
+    Returns
+    -------
+    zi: array
+        Interpolated (extrapolated) observations at points given in xi and yi.
+    """
+    dist = distance_matrix(x, y, xi, yi)
+
+    # In IDW, weights are 1 / distance
+    weights = 1.0 / dist
+
+    # Make weights sum to one
+    weights /= weights.sum(axis=0)
+
+    # Multiply the weights for each interpolated point by all observed Z-values
+    zi = np.dot(weights.T, z)
+    return zi
