@@ -846,7 +846,10 @@ def update_climate(gdir, clim_all=None):
     None
     """
     if clim_all is None:
+        need_close = True
         clim_all = xr.open_dataset(cfg.PATHS['climate_file'])
+    else:
+        need_close = False
     last_day_clim = clim_all.time[-1]
     # todo: radiation still not operational -> take last 62 days to be sure
     last_day = last_day_clim - pd.Timedelta(days=62)
@@ -882,6 +885,9 @@ def update_climate(gdir, clim_all=None):
         updated = gclim.combine_first(clim_all_sel)
         gclim.close()
         updated.to_netcdf(gdir.get_filepath('climate_daily'))
+
+    if need_close is True:
+        clim_all.close()
 
 
 class GlacierMeteo(object):
