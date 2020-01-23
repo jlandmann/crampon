@@ -2134,7 +2134,7 @@ class SnowFirnCover(object):
     def ice_melt(self, value):
         self._ice_melt = value
 
-    def to_dataset(self):
+    def to_dataset(self, date=None):
         """
         Convert the SnowFirnCover object into an xarray dataset.
 
@@ -2142,10 +2142,15 @@ class SnowFirnCover(object):
         -------
         ds: xr.Dataset
         """
-
-        time = pd.to_datetime((np.nanmax(self.origin[~pd.isnull(self.origin)])
-                               + dt.timedelta(days=np.nanmin(self.age_days))))
-        print(time)
+        if date is None:
+            try:
+                time = pd.to_datetime((np.nanmax(
+                    self.origin[~pd.isnull(self.origin)]) + dt.timedelta(
+                    days=np.nanmin(self.age_days))))
+            except ValueError:
+                time = np.nan  # stupid, but the best solution?
+        else:
+            time = date
 
         ds = xr.Dataset({'swe': (['fl_id', 'layer', 'time'],
                                  np.atleast_3d(self.swe)),
@@ -2211,11 +2216,14 @@ class SnowFirnCover(object):
         if (ds is not None) and (path is not None):
             raise ValueError('Only one of "path" and "ds" can be given.')
 
-        # length of time axis may only be one
-        if len(ds.time) > 1:
+        # if time coordinate is indexed: length of time may only be one
+        if ('time' in ds.coords.indexes.keys()) and len(ds.time) > 1:
             raise ValueError('Time dimension may only have length one.')
-
-        ds = ds.isel(time=0)
+        elif ('time' in ds.coords.indexes.keys()) and len(ds.time) == 1:
+            ds = ds.isel(time=0)
+        # if there is no time coord, that's also fine
+        else:
+            pass
 
         if path is not None:
             ds = xr.open_dataset(path)
@@ -2235,7 +2243,7 @@ class SnowFirnCover(object):
         origin = ds.origin.values
         origino = origin.astype(object)
         for i, j in product(range(origin.shape[0]), range(origin.shape[1])):
-            if origino[i][j] is None:
+            if (origino[i][j] is None) or pd.isnull(origin[i][j]):
                 origino[i][j] = np.nan
             else:
                 origino[i][j] = pd.to_datetime(
