@@ -268,9 +268,9 @@ def process_custom_climate_data_crampon(gdir):
     end_date = time[-1]
 
     # metadata
-    out = {'climate_source': fpath, 'hydro_yr_0': y0 + 1,
-           'hydro_yr_1': y1, 'end_date': end_date}
-    gdir.write_pickle(out, 'climate_info')
+    out = {'baseline_climate_source': fpath, 'baseline_hydro_yr_0': y0 + 1,
+           'baseline_hydro_yr_1': y1}
+    gdir.write_json(out, 'climate_info')
 
 
 @entity_task(log, writes=['spinup_climate_daily'])
