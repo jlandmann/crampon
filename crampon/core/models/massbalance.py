@@ -3792,6 +3792,41 @@ class MassBalance(object, metaclass=SuperclassMeta):
         """Calculate quantiles with user input."""
         return x.quantile(qs, keep_attrs=True)
 
+    @staticmethod
+    def nan_or_cumsum(x):
+        """Return only valid cumulative sums, i.e. where not everything is zero
+        (stemming from NaN)"""
+        res = MassBalance.time_cumsum(x)
+        if (res == 0.).all():
+            res = res.where(res.MB != 0.)
+        return res
+
+    def select_doy_span(self, doy_begin, doy_end):
+        """
+        Select all days within a span between two DOYs.
+
+        Parameters
+        ----------
+        doy_begin: int
+            First DOY of selection time span.
+        doy_end: int
+            Last DOY of selection time span.
+
+        Returns
+        -------
+        xr.Dataset:
+            The MassBalance dataset, but each year clipped to the DOY range.
+        """
+        def in_span(doys, bgdate_doy, enddate_doy):
+            """Get all dates in time span of DOYs (days of year)."""
+            if bgdate_doy > enddate_doy:
+                return (bgdate_doy <= doys) | (enddate_doy >= doys)
+            else:
+                return (bgdate_doy <= doys) & (enddate_doy >= doys)
+
+        return self._obj.sel(time=in_span(self._obj['time.dayofyear'],
+                                          doy_begin, doy_end))
+
     def convert_to_meter_we(self):
         """
         If unit is ice flux (m ice s-1), convert it to meter water equivalent
