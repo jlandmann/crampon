@@ -142,6 +142,41 @@ class MeteoSuisseGrid(object):
         """
 
 
+
+def prcp_fac_annual_cycle(doy):
+    """
+    Interpolate the annual cycle of the precipitation correction factor.
+
+    Values are from [1]_, figure 3.1.3 (above 2000 m.a.s.l.). The returned
+    value is an *additional factor* that should be multiplied with the
+    precipitation correction factor. E.g., when the mean precipitation
+    correction factor is 1.25, then this additional factor would let it vary
+    between 1.35 (summer) and 1.15 (winter). These additional correction are
+    not (yet) captured in the RhiresD product.
+
+    Parameters
+    ----------
+    doy: int or np.array
+        Day(s) of year for which to give an estimate of the additional annual
+        precipitation correction factor variability. Here, we take the real
+        DOY, not the mass budget DOY.
+
+    Returns
+    -------
+    np.array
+        Temperature mean absolute error for the respective month(s).
+
+    References
+    ----------
+    [1]_.. : Sevruk, B. (1985): Systematischer Niederschlagsmessfehler in
+             der Schweiz. In: Sevruk, B. (1985): Der Niederschlag in der
+             Schweiz. Geographischer Verlag  Kuemmerly und Frey, Bern, p.69
+    """
+
+    # -90 because the curve starts beginning of April
+    # 0.08 = 1.35/1.25 (max/mean)
+    return 0.08 * - np.sin((doy - 90.) * (2 * np.pi / 365.)) + 1.
+
 # This writes 'climate_monthly' in the original version (doesn't fit anymore)
 @entity_task(log)
 def process_custom_climate_data_crampon(gdir):

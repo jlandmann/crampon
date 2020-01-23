@@ -101,6 +101,13 @@ class TestClimate(unittest.TestCase):
                                                      np.array([2600, 2700]))
         np.testing.assert_equal(p_hgt, np.array([[5.15, 5.3], [10.5, 11.]]))
 
+    def test_prcp_fac_annual_cycle(self):
+        cycle = climate.prcp_fac_annual_cycle(np.arange(1, 367))
+        np.testing.assert_equal(np.argmin(cycle), 180)
+        np.testing.assert_equal(np.argmax(cycle), 363)
+        np.testing.assert_almost_equal(np.max(cycle), 1.08, 6)
+        np.testing.assert_almost_equal(np.min(cycle), 0.92, 6)
+
 
 class TestGlacierMeteo(unittest.TestCase):
 

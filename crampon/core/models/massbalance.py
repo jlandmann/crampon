@@ -149,6 +149,17 @@ class DailyMassBalanceModel(MassBalanceModel):
 
         self._time_elapsed = None
 
+        # determine the annual cyclicity of the precipitation correction factor
+        # this assumes that every year has the length of a leap year (shouldn't
+        # matter) and that the winter calibration phase is always OCT-APR
+        prcp_fac_annual_cycle = climate.prcp_fac_annual_cycle(
+            np.arange(1, sum(cfg.DAYS_IN_MONTH_LEAP) + 1))
+        prcp_fac_cyc_winter_mean = np.mean(np.hstack([
+            prcp_fac_annual_cycle[-sum(cfg.DAYS_IN_MONTH_LEAP[-3:]):],
+            prcp_fac_annual_cycle[:sum(cfg.DAYS_IN_MONTH_LEAP[:4])]]))
+        self.prcp_fac_cycle_multiplier = prcp_fac_annual_cycle / \
+                                         prcp_fac_cyc_winter_mean
+
     @property
     def time_elapsed(self):
         return self._time_elapsed
@@ -686,6 +697,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         tempformelt = self.get_tempformelt(temp)
         prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
 
+        prcpsol *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
         if isinstance(self.mu_ice, pd.Series):
@@ -899,6 +912,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
         tempformelt = self.get_tempformelt(temp)
         prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+
+        prcpsol *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
@@ -1142,8 +1157,9 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         isis = self.meteo.sis[ix]
 
         tmean = self.meteo.get_tmean_at_heights(date, heights)
-        # Todo: make precip calculation method a member of cfg.PARAMS
         prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date, heights)
+
+        prcpsol_unc *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
@@ -1364,6 +1380,8 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         # Todo: make precip calculation method a member of cfg.PARAMS
         prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date,
                                                                    heights)
+
+        prcpsol_unc *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
