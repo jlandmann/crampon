@@ -7,8 +7,10 @@ import crampon.cfg as cfg
 # Entity tasks
 from crampon.core.preprocessing.gis import define_glacier_region
 from crampon.core.preprocessing.gis import glacier_masks
+from crampon.core.preprocessing.gis import simple_glacier_masks
 from crampon.core.preprocessing.centerlines import compute_centerlines
 from crampon.core.preprocessing.centerlines import compute_downstream_line
+from crampon.core.preprocessing.centerlines import compute_downstream_bedshape
 from crampon.core.preprocessing.centerlines import catchment_area
 from crampon.core.preprocessing.centerlines import catchment_intersections
 from crampon.core.preprocessing.centerlines import initialize_flowlines
