@@ -72,6 +72,12 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
     else:
         mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
 
+    try:
+        cali_frame = calibration.get_measured_mb_glamos(gdir)
+        cali_dates = cali_frame[['date0', 'date1', 'date_s', 'date_f']].values
+    except (FileNotFoundError, IndexError):
+        cali_dates = None
+
     today = dt.datetime.now()
     if endyear is None:
         t_month, t_day = today.month, today.day
@@ -84,6 +90,7 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
 
     ds_list = []
     sc_list = []
+    mb_models_used = []
     for exp, mbm in enumerate(mb_models):
         if hasattr(mbm, 'calibration_timespan'):
             if mbm.calibration_timespan[0]:
@@ -107,15 +114,22 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
         else:
             day_model = copy.copy(mbm)
         mb = []
+        sc_list_one_model = []
+        sc_date_list = []
         run_span = pd.date_range(begin_clim, end_clim)
         for date in run_span:
             # Get the mass balance and convert to m per day
             tmp = day_model.get_daily_specific_mb(heights, widths, date=date)
             mb.append(tmp)
 
+            if (cali_dates is not None) and (date in cali_dates):
+                sc_list_one_model.append(day_model.snowcover.to_dataset(date=date))
+                sc_date_list.append(date)
+
             # todo: when are clever moments to store the snowcover?
             if date == end_clim:
-                sc_list.append(day_model.snowcover.to_dataset())
+                sc_list_one_model.append(day_model.snowcover.to_dataset(date=date))
+                sc_date_list.append(date)
 
         mb_for_ds = np.moveaxis(np.atleast_3d(np.array(mb)), 1, 0)
         mb_ds = xr.Dataset({'MB': (['time', 'member', 'model'], mb_for_ds)},
@@ -380,7 +394,7 @@ def make_mb_current_mbyear(gdir, begin_mbyear, mb_model=None, snowcover=None,
     yesterday_str = yesterday.strftime('%Y-%m-%d')
     begin_str = begin_mbyear.strftime('%Y-%m-%d')
 
-    curr_year_span = pd.date_range(start=begin_str, end=yesterday_str,
+    curr_year_span = pd.date_range(start=begin_str, end=last_day_str,
                                    freq='D')
 
     ds_list = []
