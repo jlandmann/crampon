@@ -679,7 +679,7 @@ def plot_animated_swe(mb_model):
 
     Returns
     -------
-    ani: animation.FuncAnimation
+    ani: matplotlib.animation.FuncAnimation
         The produced animation.
     """
     fig, ax = plt.subplots()
