@@ -24,7 +24,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def get_measured_mb_glamos(gdir, mb_dir=None):
+def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
     """
     Gets measured mass balances from GLAMOS as a pd.DataFrame.
 
@@ -32,6 +32,7 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
     0 : not defined / unknown source
     7 : reconstruction from volume change analysis (dV)
     8 : reconstruction from volume change with help of stake data(dV & b_a/b_w)
+    9 : No measurement, only model results
 
     Columns "id" (indicator on data base), "date0" (annual MB campaign date at
     begin_mbyear), "date_s" (date of spring campaign), "date1" (annual MB
@@ -46,6 +47,9 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
     mb_dir: str, optional
         Path to the directory where the mass balance files are stored. Default:
         None (The path if taken from cfg.PATHS).
+    bw_elev_bands: bool
+        If True, then only the winter mass balance on the elevation bands is
+        read. This is a complete rubbish way to do it. Default: false
 
     Returns
     -------
@@ -66,31 +70,55 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
             d = pd.datetime.strptime(str(d), '%Y%m%d')
         except ValueError:
             raise
-            #pass
         return d
+
+    date_colnames = ['id', 'date0', 'date_f', 'date_s', 'date1']
+    if bw_elev_bands is False:
+        mb_colnames = ['Winter', 'Annual']
+        colnames = date_colnames + mb_colnames
+        usecols = [0, 1, 2, 3, 4, 5, 6]
+    else:
+        # get from the header how many columns with elev bands there are, ARGH!
+        head = pd.read_csv(mb_file, sep=';', skiprows=range(1, 5),
+                                skipinitialspace=True, header=0,
+                                nrows=0).columns
+        elev_bands = np.linspace(int(head[5]), int(head[6]), int(head[4]) + 1)
+        elev_bands_mean = (elev_bands[1:] + elev_bands[:-1]) * 0.5
+        usecols = np.concatenate([np.arange(5), np.arange(12,
+                                                          12 + int(head[4]))])
+        colnames = date_colnames + list(elev_bands_mean)
+        mb_colnames = elev_bands_mean
 
     # No idea why, but header=0 doesn't work
     # date_parser doesn't work, because of corrupt dates....sigh...
-    colnames = ['id', 'date0', 'date_f', 'date_s', 'date1', 'Winter', 'Annual']
     measured = pd.read_csv(mb_file,
                            skiprows=4, sep=' ', skipinitialspace=True,
-                           usecols=[0, 1, 2, 3, 4, 5, 6], header=None,
+                           usecols=usecols, header=None,
                            names=colnames, dtype={'date_s': str,
-                                                  'date_f': str})
+                                                  'date_f': str,
+                                                  'date0': str,
+                                                  'date1': str})
+
+    # 'all' because we want to keep WB
+    measured = measured.dropna(how='all', subset=mb_colnames)
 
     # Skip wrongly constructed MB (and so also some corrupt dates)
-    measured = measured[~measured.id.isin([0, 7, 8])]
+    measured = measured[~measured.id.isin([0, 7, 8, 9])]
 
     # parse dates row by row
     for k, row in measured.iterrows():
-        measured.loc[k, 'date0'] = date_parser(measured.loc[k, 'date0'])
-        measured.loc[k, 'date1'] = date_parser(measured.loc[k, 'date1'])
+        try:
+            measured.loc[k, 'date0'] = date_parser(measured.loc[k, 'date0'])
+            measured.loc[k, 'date1'] = date_parser(measured.loc[k, 'date1'])
+        except (ValueError, KeyError):  # date parsing fails or has "0000"
+            measured = measured[measured.index != k]
         try:
             measured.loc[k, 'date_s'] = date_parser(
                 '{}{}{}'.format(measured.loc[k, 'date1'].year,
                                 str(row.date_s)[:2], str(row.date_s)[2:4]))
         except (ValueError, KeyError):  # date parsing fails or has "0000"
             measured = measured[measured.index != k]
+        # todo: we actually don't need date_f for the case where onl WB is available
         try:
             measured.loc[k, 'date_f'] = date_parser(
                 '{}{}{}'.format(measured.loc[k, 'date0'].year,
@@ -99,8 +127,8 @@ def get_measured_mb_glamos(gdir, mb_dir=None):
             measured = measured[measured.index != k]
 
     # convert mm w.e. to m w.e.
-    measured['Annual'] = measured['Annual'] / 1000.
-    measured['Winter'] = measured['Winter'] / 1000.
+    for c in mb_colnames:
+        measured[c] = measured[c] / 1000.
 
     return measured
 
