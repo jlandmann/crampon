@@ -222,6 +222,7 @@ def initialize(file=None):
     oggmcfg.PARAMS['filter_min_slope'] = cp.as_bool('filter_min_slope')
     oggmcfg.PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
     oggmcfg.PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
+    oggmcfg.PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
 
     # Mass balance
     oggmcfg.PARAMS['ratio_mu_snow_ice'] = cp['ratio_mu_snow_ice']
@@ -244,6 +245,8 @@ def initialize(file=None):
         _factor = cp.as_float('prcp_scaling_factor')
     oggmcfg.PARAMS['prcp_scaling_factor'] = _factor
     oggmcfg.PARAMS['tminmax_available'] = cp.as_int('tminmax_available')
+    oggmcfg.PARAMS['begin_mbyear_month'] = cp.as_int('begin_mbyear_month')
+    oggmcfg.PARAMS['begin_mbyear_day'] = cp.as_int('begin_mbyear_day')
     oggmcfg.PARAMS['albedo_method'] = cp['albedo_method']
 
     # Inversion
