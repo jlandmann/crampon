@@ -2654,6 +2654,7 @@ class SnowFirnCover(object):
         self._liq_content = self._liq_content[remove_n:]
         self._last_update = self._last_update[remove_n:]
         self._status = self._status[remove_n:]
+        self._age_days = self._age_days[remove_n:]
 
     def get_total_height(self):
         """
