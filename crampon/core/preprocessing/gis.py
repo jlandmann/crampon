@@ -17,7 +17,8 @@ import geopandas as gpd
 import shapely
 import salem
 from oggm.core.gis import gaussian_blur, multi_to_poly,\
-    _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks
+    _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks, \
+    simple_glacier_masks
 from oggm.utils import get_topo_file
 from scipy import stats
 
