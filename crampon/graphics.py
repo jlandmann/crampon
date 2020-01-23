@@ -1163,3 +1163,139 @@ def make_annotated_heatmap(df, pval_thresh=0.01):
 
     plt.tight_layout()
     plt.show()
+
+def plot_holfuy_station_availability():
+    from crampon.core.models import assimilation
+    from crampon import utils
+    import matplotlib.dates as mdates
+
+    fontsize = 30
+
+    def add_index(ixlist, g, s):
+        if g == 'RGI50-11.A55F03':
+            ix = 0
+        if g == 'RGI50-11.B4312n-1':
+            if s == 2235.:
+                ix = 1
+            if s == 2241.:
+                ix = 2
+            if s == 2392.:
+                ix = 3
+            if s == 2589.:
+                ix = 4
+        if g == 'RGI50-11.B5616n-1':
+            if s == 2551.:
+                ix = 5
+            if s == 3015.:
+                ix = 6
+        ixlist.append(ix)
+        return ixlist
+
+    label_list = ['PLM 2689m', 'RHO 2235m', 'RHO 2241m', 'RHO 2392m',
+                  'RHO 2589m', 'FIN 2551m', 'FIN 3015m']
+
+    ice_beg = []
+    ice_end = []
+    snow_beg = []
+    snow_end = []
+    other_beg = []
+    other_end = []
+    ice_ixs = []
+    snow_ixs = []
+    other_ixs = []
+    for id in ['RGI50-11.A55F03', 'RGI50-11.B4312n-1', 'RGI50-11.B5616n-1']:
+        gdir = utils.GlacierDirectory(id, base_dir=cfg.PATHS[
+                                                       'working_dir'] + '\\per_glacier\\')
+        obs_merge = assimilation.prepare_holfuy_camera_readings(gdir,
+                                                                ice_only=False, exclude_keywords=False)
+        for h in obs_merge.height.values:
+            station_phase = obs_merge.sel(height=h).phase
+            station_swe = obs_merge.sel(height=h).swe
+            station_phase_i = station_phase.where((station_phase == 'i') & (~pd.isnull(station_swe)),
+                                                  drop=True)
+            station_phase_s = station_phase.where((station_phase == 's') & (~pd.isnull(station_swe)),
+                                                  drop=True)
+            station_phase_nan = station_phase[pd.isnull(station_swe)]
+            print(h)
+            ice_beg.append(station_phase_i.date.values[0])
+            ice_ixs = add_index(ice_ixs, id, h)
+            print('ICE DAYS: ', str(station_phase_i.date.values.size))
+            for i in range(1, len(station_phase_i.date.values)):
+                if station_phase_i.date.values[i - 1] + pd.Timedelta(days=1) == \
+                        station_phase_i.date.values[i]:
+                    pass
+                else:
+                    ice_end.append(station_phase_i.date.values[i - 1])
+                    ice_beg.append(station_phase_i.date.values[i])
+                    ice_ixs = add_index(ice_ixs, id, h)
+            ice_end.append(station_phase_i.date.values[-1])
+            # ice_ixs = add_index(ice_ixs, id, h)
+
+            snow_beg.append(station_phase_s.date.values[0])
+            snow_ixs = add_index(snow_ixs, id, h)
+            print('SNOW DAYS: ', str(station_phase_s.date.values.size))
+            for i in range(1, len(station_phase_s.date.values)):
+                if station_phase_s.date.values[i - 1] + pd.Timedelta(days=1) == \
+                        station_phase_s.date.values[i]:
+                    pass
+                else:
+                    snow_end.append(station_phase_s.date.values[i - 1])
+                    snow_beg.append(station_phase_s.date.values[i])
+                    snow_ixs = add_index(snow_ixs, id, h)
+            snow_end.append(station_phase_s.date.values[-1])
+            # snow_ixs = add_index(snow_ixs, id, h)
+
+            if len(station_phase_nan) > 0:
+                # If Nan is at beginning, the TS has been expanded to go in one xr.Dataset
+                beg_ix = 0
+                if station_phase_nan.date.values[beg_ix] == obs_merge.date.values[0]:
+                    while station_phase_nan.date.values[beg_ix] + pd.Timedelta(days=1) == station_phase_nan.date.values[beg_ix+1]:
+                        beg_ix += 1
+                other_beg.append(station_phase_nan.date.values[beg_ix])
+                other_ixs = add_index(other_ixs, id, h)
+                for i in range(beg_ix+1, len(station_phase_nan.date.values)):
+                    if station_phase_nan.date.values[i - 1] + pd.Timedelta(
+                            days=1) == \
+                            station_phase_nan.date.values[i]:
+                        pass
+                    else:
+                        other_end.append(station_phase_nan.date.values[i - 1])
+                        other_beg.append(station_phase_nan.date.values[i])
+                        other_ixs = add_index(other_ixs, id, h)
+                other_end.append(station_phase_nan.date.values[-1])
+                # other_ixs = add_index(other_ixs, id, h)
+
+    ice_beg = np.array(ice_beg)
+    ice_end = np.array(ice_end) + pd.Timedelta(days=1)
+    snow_beg = np.array(snow_beg)
+    snow_end = np.array(snow_end) + pd.Timedelta(days=1)
+    other_beg = np.array(other_beg)
+    other_end = np.array(other_end) + pd.Timedelta(days=1)
+    ice_ixs = np.array(ice_ixs)
+    snow_ixs = np.array(snow_ixs)
+    other_ixs = np.array(other_ixs)
+
+    fig, ax = plt.subplots(figsize=(12,8))
+    # Plot the data
+    ax.barh(snow_ixs + 1, snow_end - snow_beg, left=snow_beg, height=0.7,
+            align='center', facecolor='w', edgecolor='k', label='snow')
+    ax.barh(ice_ixs + 1, ice_end - ice_beg, left=ice_beg, height=0.7,
+            align='center', facecolor='b', edgecolor='k', label='ice')
+    ax.barh(other_ixs + 1, other_end - other_beg, left=other_beg, height=0.7,
+            align='center', alpha=0.2, facecolor='r', edgecolor='k',
+            label='fail/f-snow')
+
+    # make separating lines between the glaciers
+    ax.axhline(1.5, c='k')
+    ax.axhline(5.5, c='k')
+
+    ax.xaxis_date()
+    plt.setp(ax.get_xticklabels(), fontsize=fontsize)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b-%d'))
+    ax.yaxis.set_ticklabels([''] + label_list, fontsize=fontsize)
+    ax.set_xlim(mdates.date2num(pd.Timestamp('2019-06-15')),
+                mdates.date2num(pd.Timestamp('2019-10-15')))
+    ax.set_title('Station availability 2019', fontsize=fontsize)
+
+    plt.legend(fontsize=fontsize, loc='upper right')
+    plt.show()
