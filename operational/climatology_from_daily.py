@@ -81,7 +81,8 @@ def make_mb_clim(gdir, mb_model=None, bgyear=1961, endyear=None, write=True,
     today = dt.datetime.now()
     if endyear is None:
         t_month, t_day = today.month, today.day
-        if (t_month >= 10) and (t_day >= 1):
+        if (t_month >= cfg.PARAMS['begin_mbyear_month']) and \
+                (t_day >= cfg.PARAMS['begin_mbyear_days']):
             endyear = today.year
         else:
             endyear = today.year - 1
