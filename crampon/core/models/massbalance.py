@@ -3871,7 +3871,29 @@ class MassBalance(object, metaclass=SuperclassMeta):
             raise ValueError('Check the unit attribute, it should be "m w.e." '
                              'to ice flux.')
 
-    def make_hydro_years(self, bg_month=10, bg_day=1):
+    def make_hydro_years(self, bg_month=None, bg_day=None):
+        """
+        Make an xarray.DataArray containing the hydrological year as variable.
+
+        Parameters
+        ----------
+        bg_month: int or None
+            Begin month of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+        bg_day: int or None
+            Begin day of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+
+        Returns
+        -------
+        hydro_years: xr.DataArray
+            DataArray with hydrological years as variable.
+        """
+        if bg_month is None:
+            bg_month = cfg.PARAMS['bgmon_hydro']
+        if bg_day is None:
+            bg_day = cfg.PARAMS['bgday_hydro']
+
         hydro_years = xr.DataArray(
             [t.year if ((t.month < bg_month) or
                         ((t.month == bg_month) &
@@ -3882,7 +3904,33 @@ class MassBalance(object, metaclass=SuperclassMeta):
             coords={'time': self._obj.time})
         return hydro_years
 
-    def make_hydro_doys(self, hydro_years=None, bg_month=10, bg_day=1):
+    def make_hydro_doys(self, hydro_years=None, bg_month=None, bg_day=None):
+        """
+        Make an xarray.DataArray containing the hydrological DOYs as variable.
+
+        Parameters
+        ----------
+        hydro_years: xr.DataArray or None
+            A DataArray with the hydrological year names as variables. If None,
+            it will be generated using the method `make_hydro_years`. Default:
+            None.
+        bg_month: int or None
+            Begin month of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+        bg_day: int or None
+            Begin day of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+
+        Returns
+        -------
+        hydro_doys: xr.DataArray
+            DataArray with days of the hydrological year (DOYs) as variable.
+        """
+
+        if bg_month is None:
+            bg_month = cfg.PARAMS['bgmon_hydro']
+        if bg_day is None:
+            bg_day = cfg.PARAMS['bgday_hydro']
         if hydro_years is None:
             hydro_years = self.make_hydro_years(bg_month=bg_month,
                                                 bg_day=bg_day)
