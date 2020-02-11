@@ -177,6 +177,50 @@ def prcp_fac_annual_cycle(doy):
     # 0.08 = 1.35/1.25 (max/mean)
     return 0.08 * - np.sin((doy - 90.) * (2 * np.pi / 365.)) + 1.
 
+
+def bias_correct_and_add_geosatclim(gdir: utils.GlacierDirectory,
+                                    gsc: xr.DataArray,
+                                    diff: xr.DataArray) -> None:
+    """
+    Bias-correct the radiation processed with Geosatclim to match Heliomont.
+
+    Note: this is only a temporal solution until there is a new version of
+    Geosatclim.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory for which to bias-correct Geosatclim.
+    gsc: xr.DataArray
+        DataArray containing the shortwave incoming solar radiation over
+        Switzerland.
+    diff: xr.DataArray
+        Mean difference between Heliomont and Geosatclim during the common time
+        period.
+    """
+    gsc_glacier = gsc.sel(lat=gdir.cenlat, lon=gdir.cenlon, method='nearest')
+
+    # fit a polynom of 7th degree (seems to work better than trigonometric)
+    p7 = np.poly1d(np.polyfit(np.arange(366), diff, 7))
+
+    # correct the values grouped by DOY
+    result_list = []
+    for i, g in list(gsc_glacier.groupby('time.dayofyear')):
+        result_list.append(g - (p7(i - 1)))
+    result_ds = xr.concat(result_list, dim='time').sortby('time')
+
+    # overwrite SIS in climate file
+    climate_file = gdir.get_filepath('climate_daily')
+    with xr.open_dataset(climate_file) as clim:
+        clim_copy = clim.copy(deep=True)
+    clim_copy.load()
+    # trust Heliomont more
+    # todo: this processing takes ages. Any better solution? Rechunking?
+    combo_clim = clim_copy.combine_first(result_ds.to_dataset(name='sis'))
+    combo_clim.load()
+    combo_clim.to_netcdf(climate_file)
+
+
 # This writes 'climate_monthly' in the original version (doesn't fit anymore)
 @entity_task(log)
 def process_custom_climate_data_crampon(gdir):
