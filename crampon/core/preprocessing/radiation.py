@@ -514,7 +514,8 @@ def correct_radiation_for_terrain(r_beam, r_diff, slope, terrain_a, sun_z,
     return r_s
 
 
-def scale_irradiation_with_potential_irradiation(sis, ipot):
+def scale_irradiation_with_potential_irradiation(gdir, sis, ipot,
+                                                 diff_rad_ratio=0.2):
     """
     Scale the actual measured incoming solar radiation with potential irradiation.
 
@@ -788,3 +789,438 @@ def irradiation_top_of_atmosphere(doy, latitude_deg, solar_constant=None):
         latitude_rad) * np.cos(delta) * np.sin(omega))
 
     return s_toa
+
+
+def get_declination(doy):
+    """
+    Get the solar declination.
+
+    Parameters
+    ----------
+    doy : int
+        Day of year.
+
+    Returns
+    -------
+    decl: int
+        Declination for the given day of year.
+    """
+    TT = 2 * math.pi * doy / 366
+    decl = (0.322003 -
+            22.971 * math.cos(TT) -
+            0.357898 * math.cos(2 * TT) -
+            0.14398 * math.cos(3 * TT) +
+            3.94638 * math.sin(TT) +
+            0.019334 * math.sin(2 * TT) +
+            0.05928 * math.sin(3 * TT))  # solar declination in degrees
+    return decl
+
+
+def get_declination_corripio(jd):
+    """
+    Get the solar declination according to Corripio (2003).
+
+    Parameters
+    ----------
+    jd : int or np.array
+        Julian day.
+
+    Returns
+    -------
+    same as jd:
+        Declination angle in degrees.
+    """
+    jdc = (jd - 2451545.0) / 36525.0
+    sec = 21.448 - jdc * (46.8150 + jdc * (0.00059 - jdc * (0.001813)))
+    e0 = 23.0 + (26.0 + (sec / 60.0)) / 60.0
+    oblcorr = e0 + 0.00256 * np.cos(np.deg2rad(125.04 - 1934.136 * jdc))
+    l0 = 280.46646 + jdc * (36000.76983 + jdc * (0.0003032))
+    l0 = (l0 - 360 * (int(l0 / 360))) % 360
+    gmas = 357.52911 + jdc * (35999.05029 - 0.0001537 * jdc)
+    gmas = np.deg2rad(gmas)
+    seqcent = np.sin(gmas) * (1.914602 - jdc * (0.004817 + 0.000014 * jdc)) + \
+              np.sin(2 * gmas) * (0.019993 - 0.000101 * jdc) + \
+              np.sin(3 * gmas) * 0.000289
+
+    suntl = l0 + seqcent
+    sal = suntl - 0.00569 - 0.00478 * np.sin(np.deg2rad(125.04 - 1934.136 *
+                                                        jdc))
+    delta = np.arcsin(np.sin(np.deg2rad(oblcorr)) * np.sin(np.deg2rad(sal)))
+    return np.rad2deg(delta)
+
+
+def sunvector_corripio(latitude, longitude, time):
+    """
+    Get the unit vector (x, y, z) in direction of the sun.
+
+    This is modified after [1]_.
+
+    Parameters
+    ----------
+    latitude: float
+        Latitude in degrees.
+    longitude: float
+        Longitude in degrees.
+    time: pd.Timestamp, time zone aware
+        A time zone aware time stamp.
+
+    Returns
+    -------
+    (3,) np.array
+        Unit vector pointing towards the sun.
+
+    References
+    ----------
+    [1].. Corripio, J. G.: Vectorial algebra algorithms for calculating terrain
+          parameters from DEMs and solar radiation modelling in mountainous
+          terrain. International Journal of Geographical Information Science,
+          Taylor & Francis, 2003, 17, 1-23.
+    """
+    omegar = np.deg2rad(get_hour_angle(time, longitude))
+    deltar = np.deg2rad(get_declination(time.dayofyear))
+    lambdar = np.deg2rad(latitude)
+
+    svx = -np.sin(omegar) * np.cos(deltar)
+    svy = np.sin(lambdar) * np.cos(omegar) * np.cos(deltar) - np.cos(
+        lambdar) * np.sin(deltar)
+    svz = np.cos(lambdar) * np.cos(omegar) * np.cos(deltar) + np.sin(
+        lambdar) * np.sin(deltar)
+    return np.array([svx, svy, svz])
+
+
+@jit(nopython=True)
+def get_shade_corripio(dem, sunvector, cols, rows, dl):
+    """
+    Get the terrain affected by show after Corripio (2003).
+
+    This is a reimplementation of the Fortran script used in Javier Corripio's
+    R package 'insol' [1]_ and [2]_.
+    # todo: check License
+    # todo: eliminate some fortran leftovers (double code etc.)
+    # todo: check stripes in images: artefact of plotting or bug?
+
+    Parameters
+    ----------
+    dem: (N, M) np.ndarray
+        DEM with corresponding grid cell elevations as a numpy array.
+    sunvector: (3,) np.array
+        Unit vector (x, y, z) in direction of the sun.
+    cols: int
+        Number of columns (element 0 of "shape") of DEM.
+    rows: int
+        Number of rows (element 1 of "shape") of DEM.
+    dl: float
+        DEM resolution (m).
+
+    Returns
+    -------
+    sombra: (N, M) np.ndarray
+        Array with 1s (direct beam sunlight) and 0s (cast shadow) for the given
+        DEM and sun vector.
+
+    References
+    ----------
+    [1].. https://cran.r-project.org/web/packages/insol/index.html
+    [2].. Corripio, J. G.: Vectorial algebra algorithms for calculating terrain
+          parameters from DEMs and solar radiation modelling in mountainous
+          terrain. International Journal of Geographical Information Science,
+          Taylor & Francis, 2003, 17, 1-23.
+    """
+
+    inversesunvector = - sunvector / np.max(np.abs(sunvector[:2]))
+
+    normalsunvector = np.full_like(sunvector, np.nan)
+    vectortoorigin = np.full_like(sunvector, np.nan)  # needed later
+    normalsunvector[2] = np.sqrt(sunvector[0] ** 2 + sunvector[1] ** 2)
+    normalsunvector[0] = - sunvector[0] * sunvector[2] / normalsunvector[2]
+    normalsunvector[1] = - sunvector[1] * sunvector[2] / normalsunvector[2]
+
+    newshape = (cols, rows)
+    z = np.reshape(dem, newshape)
+
+    # casx is int, this makes the value large enough to compare effectively
+    casx = np.rint(1e6 * sunvector[0])
+    casy = np.rint(1e6 * sunvector[1])
+
+    # "x" entry sunvector negative -> sun is on the West: begin with grid cols
+    if casx < 0.:
+        f_i = 0  # fixed i
+    else:
+        f_i = cols - 1
+
+    if casy < 0.:
+        f_j = 0
+    else:
+        f_j = rows - 1
+
+    # set shading to 1 as default (no shade)
+    sombra = np.copy(dem)
+    sombra[:] = 1.
+
+    j = f_j
+    for i in range(cols):
+        n = 0
+
+        # todo: this is probably stupid
+        zcompare = - np.inf  # init value lower than any possible zprojection
+
+        while True:
+            dx = inversesunvector[0] * n
+            dy = inversesunvector[1] * n
+
+            idx = int(np.rint(i + dx))
+            jdy = int(np.rint(j + dy))
+            if (idx < 0) or (idx > cols-1) or (jdy < 0) or (jdy > rows-1):
+                break
+            vectortoorigin[0] = dx * dl
+            vectortoorigin[1] = dy * dl
+            vectortoorigin[2] = z[idx, jdy]
+
+            zprojection = np.dot(vectortoorigin, normalsunvector)
+            if zprojection < zcompare:
+                sombra[idx, jdy] = 0
+            else:
+                zcompare = zprojection
+
+            n += 1
+
+    i = f_i
+    for j in range(rows):
+        n = 0
+
+        # todo: this is probably stupid
+        zcompare = - np.inf  # init value lower than any possible zprojection
+
+        while True:
+            dx = inversesunvector[0] * n
+            dy = inversesunvector[1] * n
+            idx = int(np.rint(i + dx))
+            jdy = int(np.rint(j + dy))
+            if (idx < 0) or (idx > cols-1) or (jdy < 0) or (jdy > rows-1):
+                break
+            vectortoorigin[0] = dx * dl
+            vectortoorigin[1] = dy * dl
+            vectortoorigin[2] = z[idx, jdy]
+            zprojection = np.dot(vectortoorigin, normalsunvector)
+
+            if zprojection < zcompare:
+                sombra[idx, jdy] = 0
+            else:
+                zcompare = zprojection
+            n += 1
+
+    return sombra
+
+
+def _fallback_ipot(gdir):
+    print('Ipot could not be calculated for {} ({}).'.format(gdir.rgi_id,
+                                                             gdir.name))
+
+
+@entity_task(log, fallback=_fallback_ipot)
+def get_potential_irradiation_corripio(gdir):
+    """
+    Get the potential solar irradiation including topographic shading.
+
+    Parameters
+    ----------
+    gdir: `py_class:crampon.GlacierDirectory`
+        The GlacierDirectory to process the potential solar irradiation for.
+    dem_source: str or None
+        The source of the DEM that is use for raytracing. Can be any source
+        that is accepted by util.get_topo_file. If None and a "dem_file" is
+        provided in the params file, then this DEM will be taken. This can,
+        however, cause problem  e.g. at Swiss borders as the domain is extended
+        by 10km.
+        # todo: merge SRTM and own source to get the best estimate or make a
+        query if whole domain os covered by dem_file -> else, take SRTM
+    grid_reduce_fac: float
+        Factor that determines how coarsely the grid will be resampled (avoid
+        MemoryError). Default: None (values form cfg.PARAMS is taken).
+
+    Returns
+    -------
+    None
+    """
+    dem = xr.open_rasterio(gdir.get_filepath('dem'))
+
+    ds = dem.to_dataset(name='data')
+    ds.attrs['pyproj_srs'] = dem.crs
+    grid = salem.grid_from_dataset(ds)
+
+    # extended grid to search for sun-blocking terrain
+    extend_border = cfg.PARAMS['shading_border']  # meters
+    ext_grid = salem.Grid(proj=grid.proj, dxdy=(grid.dx, grid.dy),
+                          x0y0=(grid.x0 - extend_border, grid.y0 +
+                                extend_border),
+                          nxny=(int(grid.nx + 2 * extend_border / grid.dx),
+                                int(grid.ny + 2 * extend_border / abs(grid.dy))
+                                ))
+
+    # todo: get rid of double code from init_glacier_regions
+    lon_ex = (ext_grid.extent_in_crs()[0], ext_grid.extent_in_crs()[1])
+    lat_ex = (ext_grid.extent_in_crs()[2], ext_grid.extent_in_crs()[3])
+
+    # try and get and combination of SwissALTI3D and SRTM (for borders)
+    # take the SWISSAlti3D
+    src_list = ['USER', 'SRTM']
+    dems_ext_list_sa, _ = utils.get_topo_file(lon_ex=lon_ex, lat_ex=lat_ex,
+                                              source=src_list[0])
+    dems_ext_list_sr, _ = utils.get_topo_file(lon_ex=lon_ex, lat_ex=lat_ex,
+                                              source=src_list[1])
+
+    potential_dem_dict = {}
+    for src_name, potential_dem in zip(src_list,
+                                       [dems_ext_list_sa, dems_ext_list_sr]):
+        if len(potential_dem) == 1:
+            dem_dss = [rasterio.open(potential_dem[0])]  # one tile, just open
+            dem_data = rasterio.band(dem_dss[0], 1)
+            src_transform = dem_dss[0].transform
+        else:
+            dem_dss = [rasterio.open(s) for s in
+                       potential_dem]  # list of rasters
+            dem_data, src_transform = merge_tool(dem_dss)  # merged rasters
+
+        dst_transform = rasterio.transform.from_origin(
+            ext_grid.x0, ext_grid.y0, ext_grid.dx, ext_grid.dx
+        )
+
+        # Set up profile for writing output
+        profile = dem_dss[0].profile
+        profile.update({
+            'crs': ext_grid.proj.srs,
+            'transform': dst_transform,
+            'dtype': rasterio.float32,
+            'width': ext_grid.nx,
+            'height': ext_grid.ny
+        })
+
+        resampling = Resampling[cfg.PARAMS['topo_interp'].lower()]
+        #resampling = Resampling['cubic_spline']
+        dst_array = np.empty((ext_grid.ny, ext_grid.nx),
+                             dtype=rasterio.float32)
+        reproject(
+            source=dem_data,
+            src_crs=dem_dss[0].crs,
+            src_transform=src_transform,
+            destination=dst_array,
+            dst_transform=dst_transform,
+            dst_nodata=np.nan,
+            dst_crs=ext_grid.proj.srs,
+            resampling=resampling)
+        for dem_ds in dem_dss:
+            dem_ds.close()
+
+        # make a dataset and save in dict
+        candidate = ext_grid.to_dataset()
+        candidate['height'] = (['y', 'x'], dst_array)
+        potential_dem_dict[src_name] = candidate
+
+    # debias cheaply and combine
+    srtm = potential_dem_dict['USER']
+    alti = potential_dem_dict['SRTM']
+    bias = np.nanmean(srtm.height.values - alti.height.values)
+    print('BIAS (SRTM-SwissAlti3D): {} m'.format(bias))
+    srtm += bias
+    # combine with preference for SwissALTI3D
+    regrid_ds = alti.combine_first(srtm)
+
+    #  mask for assembling Ipot
+    buf_pix = 5
+    sub_mask = regrid_ds.salem.subset(shape=gdir.get_filepath('outlines'),
+                                      margin=buf_pix)
+
+    # get (i,j) coords of subgrid => slice arrays instead of datasets (faster)
+    coords = ext_grid.transform(sub_mask.x.values, sub_mask.y.values,
+                                crs=sub_mask.pyproj_srs, nearest=True)
+    ax0_min_ix = min(coords[0])
+    ax0_max_ix = max(coords[0])
+    ax1_min_ix = min(coords[1])
+    ax1_max_ix = max(coords[1])
+
+    # ".T" important: let the sun come "from the right side" (defined by axis)
+    dem_arr = dst_array.T
+
+    tsteps = 52560
+    tstep_minutes = 10
+    freq = '{}min'.format(tstep_minutes)
+    steps_per_day = ((24 * 60) / tstep_minutes)
+    testsom_arr = np.empty((int(np.ceil(tsteps / steps_per_day)),
+                            sub_mask.height.shape[1],
+                            sub_mask.height.shape[0]))
+
+    timezone = 'Europe/Berlin'
+    trange = pd.date_range(pd.Timestamp('2019-01-01 00:00:00', tz=timezone),
+                           periods=tsteps, freq=freq)
+
+    dem_res = (sub_mask.x[1] - sub_mask.x[0]).item()
+    sub_mask_heights = sub_mask.height.values
+    slope = get_terrain_slope_from_array(sub_mask_heights, dem_res)
+    aspect = get_terrain_azimuth_from_array(sub_mask_heights, dem_res)
+
+    temp_init = np.zeros((int(steps_per_day), *sub_mask.height.values.T.shape))
+    temp = temp_init.copy()
+    day = trange[0].day
+    time_ix = 0
+    day_ix = 0
+    trange_used = []
+    trange_used.append(trange[0])
+    for tnum, t in enumerate(trange):
+
+        sun_z_deg = get_altitude(gdir.cenlat, gdir.cenlon, t)
+        if sun_z_deg < 0.:  # sun is set
+            continue
+
+        sun_z = np.pi / 2. - np.deg2rad(
+            np.clip(sun_z_deg, 0., 90.))
+        sun_a = np.deg2rad(get_azimuth(gdir.cenlat, gdir.cenlon, t))
+
+        sunvec = sunvector_corripio(gdir.cenlat, gdir.cenlon, t)
+        rows = dem_arr.shape[1]
+        cols = dem_arr.shape[0]
+        shade = get_shade_corripio(dem_arr, sunvec, cols, rows, dem_res)
+
+        # clip to the actual desired shape
+        shade = shade[ax0_min_ix: ax0_max_ix + 1, ax1_min_ix: ax1_max_ix + 1]
+
+        ipot_hock = get_ipot_hock(t.dayofyear, sub_mask_heights, slope,
+                                  aspect, sun_z, sun_a)
+
+        ipot_corr = shade * ipot_hock.T
+
+        if (t.day == day) or (freq == '1440min'):
+            temp[time_ix, :, :] = ipot_corr
+            time_ix += 1
+
+        if (t.day != day) or (freq == '1440min'):
+            print('day_ix: ', day_ix)
+            testsom_arr[day_ix, :, :] = (
+                        np.nansum(temp, axis=0) / steps_per_day)
+            temp = temp_init.copy()
+            day_ix += 1
+            time_ix = 0
+            day = t.day
+            trange_used.append(t)
+
+    # important: attach the last ones
+    if freq != '1440min':
+        testsom_arr[day_ix, :, :] = (np.nansum(temp, axis=0) / steps_per_day)
+    trange_used.append(t)
+
+    ipot_dates = np.unique([d.date() for d in trange_used])
+    ipot_dates_np64 = [np.datetime64(d) for d in ipot_dates]
+    ipot_ds = sub_mask.salem.grid.to_dataset().assign_coords(
+        time=ipot_dates_np64)
+    # order of x, y, time must be exactly like this for salem transform to work
+    ipot_ds['ipot'] = (['x', 'y', 'time'], np.moveaxis(testsom_arr, 0, 2))
+    ipot_ds.ipot.attrs['pyproj_srs'] = sub_mask.pyproj_srs
+    #ipot_ds.ipot.attrs['pyproj_srs'] = ext_grid.to_dataset().attrs[
+    #    'pyproj_srs']
+    ipot_ds = ipot_ds.transpose()
+    # distribute back to original grid and write
+    ipot_reproj = ds.salem.transform(ipot_ds)
+    # apply tricks to not consume endless disk space when writing
+    ipot_reproj.to_netcdf(gdir.get_filepath('ipot'),
+                          encoding={'ipot': {'dtype': 'int16',
+                                             'scale_factor': 0.1,
+                                             '_FillValue': -9999}})
