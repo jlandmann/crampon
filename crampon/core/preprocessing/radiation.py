@@ -311,7 +311,8 @@ def get_ipot_hock(doy, z, terrain_slope, terrain_azi, sun_zen, sun_azi,
 
 
 def get_potential_irradiation_without_toposhade(lat_deg, lon_deg, tz='UTC',
-                                                freq='10min'):
+                                                freq='10min', t1=None,
+                                                t2=None):
     """
     Calculate potential irradiation without considering topography.
 
@@ -328,6 +329,12 @@ def get_potential_irradiation_without_toposhade(lat_deg, lon_deg, tz='UTC',
         Time zone.
     freq: str
         Frequency at which potential irradiation shall be calculated
+    t1: pd.Timestamp or None
+        Begin date/time, if Ipot shall not be calculated for a whole year.
+        Default: None (whole year).
+    t2: pd.Timestamp or None
+        End date/time, if Ipot shall not be calculated for a whole year.
+        Default: None (whole year).
 
     Returns
     -------
@@ -338,12 +345,13 @@ def get_potential_irradiation_without_toposhade(lat_deg, lon_deg, tz='UTC',
 
     # time zone doesn't matter as we only take daily means
     # take a dummie year
-    rbegin = pd.Timestamp('2018-01-01 00:00:00') + \
+    if t1 is None:
+        t1 = pd.Timestamp('2018-01-01 00:00:00')
+    if t2 is None:
+        t2 = pd.Timestamp('2019-01-01 00:00:00') - \
              pd.tseries.frequencies.to_offset(freq)
-    rend =  pd.Timestamp('2019-01-01 00:00:00') - \
-            pd.tseries.frequencies.to_offset(freq)
-    timespan = pd.date_range(rbegin, rend,
-                             tz=tz, freq=freq)
+
+    timespan = pd.date_range(t1, t2, tz=tz, freq=freq)
     alt_azi = pd.DataFrame(index=timespan,
                            columns=['altitude_deg', 'azimuth_deg'])
 
