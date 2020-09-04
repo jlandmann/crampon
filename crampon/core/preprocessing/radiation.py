@@ -480,6 +480,7 @@ def ipot_loop(mask, resolution, dem_array, alt_azi):
     return time_array_corrected
 
 
+@jit(nopython=True)
 def correct_radiation_for_terrain(r_beam, r_diff, slope, terrain_a, sun_z,
                                   sun_a):
     """
