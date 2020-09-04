@@ -118,6 +118,198 @@ def make_elevation_angle_grid(x, y, xx, yy, dx, dem_array):
     return angle_grid, angle_grid_deg
 
 
+def barometric_pressure(z):
+    """
+     Get the barometric pressure as a function of height.
+
+    Parameters
+    ----------
+    z : float or array_like
+        Height(s) for which to get the barometric pressure.
+
+    Returns
+    -------
+    p_z: same as input
+        Pressure at height(s) z, given in Pascal!
+    """
+    # todo: check: if we take the humid temperature lapse rate, should we
+    #  also take the molar mass of humid air?
+
+    t_lapse_rate = cfg.PARAMS['temp_default_gradient']
+    t_standard = cfg.ZERO_DEG_KELVIN + 15.
+    p_z = cfg.SEALEVEL_PRESSURE * (1 - ((t_lapse_rate * z) / t_standard)) ** (
+                (cfg.G * cfg.MOLAR_MASS_DRY_AIR) / (cfg.R * t_lapse_rate))
+    return p_z
+
+
+@jit(nopython=True)
+def ratio_mean_to_current_sun_earth_distance(doy):
+    """
+    Give an approximated ratio of the mean to the current sun-earth distance.
+
+    Approximated from ([1]_ in [2]_.
+
+    Parameters
+    ----------
+    doy : int or array_like
+        Days of year for which to get
+
+    Returns
+    -------
+    d0_d: same as input
+         Ratio(s) of the mean to the current sun-earth distance.
+
+    References
+    ----------
+    .. [1] : Iqbal, M.: An introduction to solar radiation, Academic Press, New
+             York, 1983.
+    .. [2] : https://bit.ly/2sxT3hE
+    """
+    # ratio of mean & current sun-earth distance
+    d0_d = (1 + 0.033 * np.cos(((2. * np.pi * doy) / 365.)))
+    return d0_d
+
+
+def get_terrain_slope_from_array(z, resolution):
+    """
+    Get the grid slope (radian) from an array of grid cell elevations.
+
+    Parameters
+    ----------
+    z: array_like
+        Array with grid elevations (m).
+    resolution: float
+        Grid resolution (m)
+
+    Returns
+    -------
+    slope: same as z
+        Array with slope entries (radian).
+    """
+    sx, sy = np.gradient(z, resolution)
+    slope = np.arctan(np.sqrt(sx ** 2 + sy ** 2))
+    return slope
+
+
+def get_terrain_azimuth_from_array(z, resolution):
+    """
+    Get the grid slope (radian) from an array of grid cell elevations.
+
+    Parameters
+    ----------
+    z: array_like
+        Array with grid elevations (m).
+    resolution: float
+        Grid resolution (m)
+
+    Returns
+    -------
+    slope: same as z
+        Array with slope entries (radian).
+    """
+    sx, sy = np.gradient(z, resolution)
+    aspect = np.arctan2(-sy, sx)
+
+    # make it full circle, going counter-clockwise from north
+    aspect[aspect < 0.] += 2 * np.pi
+
+    return aspect
+
+
+def get_incidence_angle_garnier(terrain_slope, terrain_azi, sun_zen, sun_azi):
+    """
+    Get angle of incidence between the normal to the grid slope & solar beam.
+
+    This implements the equation from [1]_ and used in [2]_. However, we do not
+    get the cosine of the incidence angel, but the angle directly.
+
+    Parameters
+    ----------
+    terrain_slope: float or array_like
+        Terrain slope angle (radian).
+    terrain_azi: float or array_like
+        Terrain azimuth angle (radian).
+    sun_zen: float or array_like
+        Sun zenith angle (radian).
+    sun_azi: float or array_like
+        Sun azimuth angle (radian).
+
+    -------
+    theta: same as input
+        Angle(s) of incidence for the given parameters.
+
+    References
+    ----------
+    [1].. Garnier, B. J., & Ohmura, A. (1968). A method of calculating the
+        direct shortwave radiation income of slopes. Journal of Applied
+        Meteorology, 7(5), 796-800.
+    [2].. Hock, R. (1999). A distributed temperature-index ice-and snowmelt
+        model including potential direct solar radiation. Journal of
+        Glaciology, 45(149), 101-111.
+    """
+    theta = np.arccos(np.cos(terrain_slope) * np.cos(sun_zen) +
+                      np.sin(terrain_slope) * np.sin(sun_zen) *
+                      np.cos(sun_azi - terrain_azi))
+    return theta
+
+
+def get_ipot_hock(doy, z, terrain_slope, terrain_azi, sun_zen, sun_azi,
+                  clearsky_transmiss=0.75):
+    """
+    Model the potential irradiation as in  [1]_.
+
+    Parameters
+    ----------
+    doy: int
+        Day of year for which Ipot shall be calculated.
+    z: float or array_like
+        Grid height for which to get potential irradiation (m).
+    terrain_slope: float or array_like
+        Slope angle of terrain for which to get potential irradiation (radian).
+    terrain_azi: float or array_like
+        Azimuth of terrain for which to get potential irradiation (radian).
+    sun_zen: float or array_like
+        Sun zenith angle (radians). Must have the same shape as
+        `terrain_slope`/`terrain_azi`.
+    sun_azi : float or array_like
+        Sun azimuth angle (radians). Must have the same shape as
+        `terrain_slope`/`terrain_azi`.
+    clearsky_transmiss: float or array_like
+        Clear-sky transmissivity. Just as in [1]_, we assume 0.75 as a default
+        ([2]_), which lies within the range 0.6 0.9 reported in other studies
+        [3]_. Clear-sky transmissivity can actually vary in space an time.
+        Default: 0.75 (spatially and temporally constant).
+
+    Returns
+    -------
+    ipot: array_like
+        Array with potential irradiation.
+
+    References
+    ----------
+    [1].. Hock, R. (1999). A distributed temperature-index ice-and snowmelt
+        model including potential direct solar radiation. Journal of
+        Glaciology, 45(149), 101-111.
+    [2].. Hock, R. (1998). Modelling of glacier melt and discharge (Doctoral
+        dissertation, ETH Zurich).
+    [3].. Oke, T. R. (1987). Boundary layer climates. Routledge.
+    """
+
+    p = barometric_pressure(z)
+    d0_d = ratio_mean_to_current_sun_earth_distance(doy)
+    theta = get_incidence_angle_garnier(terrain_slope, terrain_azi, sun_zen,
+                                        sun_azi)
+    ipot = cfg.SOLAR_CONSTANT * (d0_d ** 2.) * clearsky_transmiss ** (
+                p / (cfg.SEALEVEL_PRESSURE * np.cos(sun_zen))) * np.cos(theta)
+
+    # set negative/inf values to zero
+    # todo: rather check if sun is below horizon
+    ipot[ipot < 0.] = 0.
+    ipot[np.isinf(ipot)] = 0.
+
+    return ipot
+
+
 def get_potential_irradiation_without_toposhade(lat_deg, lon_deg, tz='UTC',
                                                 freq='10min'):
     """
