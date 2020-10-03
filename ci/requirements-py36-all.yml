@@ -25,6 +25,7 @@ dependencies:
   - configobj
   - folium
   - mpld3
+  - numba
   - pip
   - pip:
     - schedule
