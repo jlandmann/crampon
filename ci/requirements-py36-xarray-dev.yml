@@ -24,6 +24,7 @@ dependencies:
   - configobj
   - folium
   - mpld3
+  - pip
   - pip:
     - git+https://github.com/pydata/xarray.git
     - schedule

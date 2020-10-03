@@ -27,6 +27,7 @@ dependencies:
   - folium
   - oggm
   - mpld3
+  - pip
   - pip:
     - schedule
     - coveralls
