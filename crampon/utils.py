@@ -1951,7 +1951,9 @@ def dx_from_area(area_km2):
 
 
 def get_possible_parameters_from_past(gdir, mb_model, as_list=False,
-                                      latest_climate=False, only_pairs=True):
+                                      latest_climate=False, only_pairs=True,
+                                      constrain_with_bw_prcp_fac=True,
+                                      suffix=''):
     """
     Get all possible calibration parameters from past calibration.
 
@@ -1972,6 +1974,12 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False,
         have already appeared, no random mixing. If False, the all available
         parameters are randomly mixed. Validation has shown that it makes sense
         to use pairs as the parameters are often correlated. #todo: reference
+    constrain_with_bw_prcp_fac: bool
+        If True and in the last row of the calibration dataframe only a prcp
+        factor is given, all possible combinations will be restricted to this
+        factor and the possible melt factors. Default: True.
+    suffix: str
+        Suffix for the calibration file to generate the parameters from.
 
     Returns
     -------
@@ -1980,9 +1988,12 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False,
         set to True, a list.
     """
 
-    cali_df = gdir.get_calibration(mb_model)
+    cali_df = gdir.get_calibration(mb_model, filesuffix=suffix)
 
     cali_filtered = cali_df.filter(regex=mb_model.__name__)
+    # important: be sure columns match the "order" of the params
+    cali_filtered = cali_filtered[[mb_model.__name__ + '_' + i for i in
+                         mb_model.cali_params_list]]
     cali_sel = cali_filtered.drop_duplicates().dropna().values
 
     # TODO: check from theory if this is a clever idea
@@ -1996,6 +2007,18 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False,
         param_prod = cali_sel.copy()
     else:
         param_prod = product(*cali_sel.T)
+
+    # todo: the output format is a mess now: list, array or product
+
+    if constrain_with_bw_prcp_fac:
+        log.info('PRCP_FAC is constrained with BW prcp_fac.')
+        param_prod = np.array(list(param_prod))
+        if ~pd.isnull(cali_df.tail(1)[mb_model.__name__ + '_' +
+                                      'prcp_fac']).item() and \
+                pd.isnull(cali_df.tail(1)[mb_model.__name__ + '_' +
+                                          mb_model.cali_params_list[0]]).item():
+            param_prod[:, mb_model.cali_params_list.index('prcp_fac')] = \
+                cali_df.tail(1)[mb_model.__name__ + '_prcp_fac']
 
     if as_list is True:
         return list(param_prod)
