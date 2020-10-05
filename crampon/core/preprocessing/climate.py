@@ -142,6 +142,44 @@ class MeteoSuisseGrid(object):
         """
 
 
+def interpolate_mean_temperature_uncertainty(month_number):
+    """
+    Interpolate the annual temperature uncertainty for temperature grids.
+
+    Values are from [1]_ for the region "Alps". Actually, only numbers for DJF
+    and JJA are given. Here, we suppose linear changes inbetween. The output is
+    the mean absolute error in Kelvin. It's absolutely rough, but better than
+    nothing.
+    This is a table from an e-mail from Christoph Frei (09.04.2020),
+    from which we take the errors. He writes that these values (Q84-Q61)/2.
+    are somewhat smaller than the RMSE due to the "longtailedness" of the
+    distribution. However, we still take them.
+
+             YYY  DJF  MAM  JJA  SON
+    Alps    1.08 1.67 0.94 0.85 1.09 K
+
+    Parameters
+    ----------
+    month_number: np.array
+        Month for which to give an estimate of interpolated temperature
+        uncertainty.
+
+    Returns
+    -------
+    np.array
+        Temperature mean absolute error for the respective month(s) (K).
+
+    References
+    ----------
+    .. [1] Frei, C. (2014), Interpolation of temperature in a mountainous
+           region using nonlinear profiles and non‐Euclidean distances. Int. J.
+           Climatol., 34: 1585-1605. doi:10.1002/joc.3786
+    """
+
+    mae = np.array([1.67, 1.67, 1.67, 0.94, 0.94, 0.94, 0.85, 0.85, 0.85,
+                    1.09, 1.09, 1.09])
+    return mae[month_number.astype(int) - 1]
+
 
 def prcp_fac_annual_cycle(doy):
     """
