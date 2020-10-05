@@ -335,6 +335,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         Units: [m s-1], or meters of ice per second
         Note: `year` is optional because some simpler models have no time
         component.
+
         Parameters
         ----------
         heights: ndarray
@@ -505,7 +506,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
                  filename='climate_daily',
-                 filesuffix='', cali_suffix=''):
+                 filesuffix='', cali_suffix='', snow_redist=True):
         """
         Implementing the temperature index melt model by Braithwaite.
 
@@ -553,7 +554,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
                          filename=filename, heights_widths=heights_widths,
                          filesuffix=filesuffix, snowcover=snowcover,
-                         snow_init=snow_init, cali_suffix=cali_suffix)
+                         snow_init=snow_init, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         self.ratio_s_i = cfg.PARAMS['ratio_mu_snow_ice']
 
@@ -628,6 +630,19 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
         # Public attrs
         self.temp_bias = 0.
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
 
     # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
     @property
@@ -706,7 +721,29 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
+
+        # todo: does this make sense now?
+        prcpsol *= iprcp_fac
+
+        #tmean = self.meteo.get_tmean_at_heights(date, heights)
+        #prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
+                                                                   #heights)
+
+        # redistribute if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(self.snowdistfac.sel(time=date).D.values,
+                                      (0, npix - self.snowdistfac.sel(
+                                          time=date).D.values.size),
+                                      'constant', constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[:npix]
 
         prcpsol *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
@@ -831,12 +868,14 @@ class HockModel(DailyMassBalanceModelWithSnow):
     def __init__(self, gdir, mu_hock=None, a_ice=None,
                  prcp_fac=None, bias=None, snow_init=None, snowcover=None,
                  filename='climate_daily', heights_widths=(None, None),
-                 albedo_method=None, filesuffix='', cali_suffix=''):
+                 albedo_method=None, filesuffix='', cali_suffix='',
+                 snow_redist=True):
         # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=mu_hock, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover, cali_suffix=cali_suffix)
+                         snowcover=snowcover, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         if mu_hock is None:
             cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
@@ -855,6 +894,21 @@ class HockModel(DailyMassBalanceModelWithSnow):
         ipf = gdir.read_pickle('ipot_per_flowline')
         # flatten as we also concatenate flowline heights
         self.ipot = np.array([i for sub in ipf for i in sub])
+
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                print('not found')
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -922,7 +976,25 @@ class HockModel(DailyMassBalanceModelWithSnow):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
+
+        # todo: does this make sense now?
+        prcpsol *= iprcp_fac
+
+        # redistribute prcpsol if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(self.snowdistfac.sel(time=date).D.values,
+                                      (0, npix - self.snowdistfac.sel(
+                                          time=date).D.values.size),
+                                      'constant', constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[:npix]
 
         prcpsol *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
@@ -1043,7 +1115,8 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     def __init__(self, gdir, tf=None, srf=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  filename='climate_daily', heights_widths=(None, None),
-                 albedo_method=None, filesuffix='', cali_suffix=''):
+                 albedo_method=None, filesuffix='', cali_suffix='',
+                 snow_redist=True):
         # todo: Documentation
         """
 
@@ -1113,6 +1186,33 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         # get positive temperature sum since snowfall
         self.tpos_since_snowfall = np.zeros_like(self.heights)
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                print('not found')
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
+
+        self._sis_bias = 0.
+
+
+    @property
+    def sis_bias(self):
+        """Shortwave incoming radiation bias to add to the original series."""
+        return self._sis_bias
+
+    @sis_bias.setter
+    def sis_bias(self, value):
+        """Set a bias for the shortwave incoming radiation."""
+        self._sis_bias = value
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -1167,8 +1267,26 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         # Todo: what to do with the bias? We don't calculate temp this way anymore
         isis = self.meteo.sis[ix]
 
-        tmean = self.meteo.get_tmean_at_heights(date, heights)
-        prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date, heights)
+        prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
+                                                                   heights)
+        prcpsol_unc *= self.prcp_bias
+
+        # redistribute if snowdistfac is given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol_unc *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol_unc *= np.pad(
+                        self.snowdistfac.sel(time=date).D.values, (0, len(
+                            heights) - self.snowdistfac.sel(
+                            time=date).D.values.size), 'constant',
+                        constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol_unc *= self.snowdistfac.sel(time=date).D.values[
+                                   :len(heights)]
 
         prcpsol_unc *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
@@ -1298,12 +1416,13 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
     def __init__(self, gdir, c0=None, c1=None, prcp_fac=None, bias=None,
                  snow_init=None, snowcover=None, filename='climate_daily',
                  heights_widths=(None, None), albedo_method=None,
-                 filesuffix='', cali_suffix=''):
+                 filesuffix='', cali_suffix='', snow_redist=True):
         # todo: here we hand over c0 to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=c0, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover, cali_suffix=cali_suffix)
+                         snowcover=snowcover, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         self.albedo = GlacierAlbedo(self.heights)  # TODO: finish Albedo object
 
@@ -1334,6 +1453,21 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         # get positive temperature sum since snowfall
         self.tpos_since_snowfall = np.zeros_like(self.heights)
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                print('not found')
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
+
 
     def get_daily_mb(self, heights, date=None, **kwargs):
         """
@@ -1389,8 +1523,26 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         tmean = self.meteo.get_tmean_at_heights(date, heights)
 
         # Todo: make precip calculation method a member of cfg.PARAMS
-        prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date,
+        prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
                                                                    heights)
+        prcpsol_unc *= self.prcp_bias
+
+        # redistribute prcpsol if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol_unc *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol_unc *= np.pad(
+                        self.snowdistfac.sel(time=date).D.values, (0, len(
+                            heights) - self.snowdistfac.sel(
+                            time=date).D.values.size), 'constant',
+                        constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol_unc *= self.snowdistfac.sel(time=date).D.values[
+                                   :len(heights)]
 
         prcpsol_unc *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
