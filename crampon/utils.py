@@ -2356,6 +2356,39 @@ class GlacierDirectory(object):
                 v.long_name = 'daily mean surface incoming shortwave radiation'
                 v[:] = sis
 
+            if prcp_sigma is not None:
+                v = nc.createVariable('prcp_sigma', 'f4', ('time',), zlib=True)
+                v.units = 'kg m-2'
+                v.long_name = 'Precipitation uncertainty as standard deviation'
+                v[:] = prcp_sigma
+
+            if temp_sigma is not None:
+                v = nc.createVariable('temp_sigma', 'f4', ('time',), zlib=True)
+                v.units = 'deg C'
+                v.long_name = 'Temperature uncertainty as standard deviation'
+                v[:] = temp_sigma
+
+            if tmin_sigma is not None:
+                v = nc.createVariable('tmin_sigma', 'f4', ('time',), zlib=True)
+                v.units = 'deg C'
+                v.long_name = 'minimum temperature uncertainty as standard ' \
+                              'deviation'
+                v[:] = tmin_sigma
+
+            if tmax_sigma is not None:
+                v = nc.createVariable('tmax_sigma', 'f4', ('time',), zlib=True)
+                v.units = 'deg C'
+                v.long_name = 'maximum temperature uncertainty as standard ' \
+                              'deviation'
+                v[:] = tmax_sigma
+
+            if sis_sigma is not None:
+                v = nc.createVariable('sis_sigma', 'f4', ('time',), zlib=True)
+                v.units = 'W m-2'
+                v.long_name = 'daily mean surface incoming shortwave ' \
+                              'radiation as standard deviation'
+                v[:] = sis_sigma
+
             v = nc.createVariable('tgrad', 'f4', ('time',), zlib=True)
             v.units = 'K m-1'
             v.long_name = 'temperature gradient'
