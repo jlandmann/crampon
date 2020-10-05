@@ -74,6 +74,7 @@ ZERO_DEG_KELVIN = 273.15
 SOLAR_CONSTANT = 1367.  # W m-2
 SEALEVEL_PRESSURE = 101325  # Pa
 MOLAR_MASS_DRY_AIR = 0.02896968  # kg/mol
+FLUX_TO_DAILY_FACTOR = (86400 * RHO) / RHO_W  # m ice s-1 to m w.e. d-1
 
 G = 9.81  # gravity
 N = 3.  # Glen's law's exponent
