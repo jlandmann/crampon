@@ -72,6 +72,8 @@ R = 8.314  # gas constant (J K-1 mol-1)
 E_FIRN = 21400.  # activation energy for firn (see Reeh et al., 2008) (J mol-1)
 ZERO_DEG_KELVIN = 273.15
 SOLAR_CONSTANT = 1367.  # W m-2
+SEALEVEL_PRESSURE = 101325  # Pa
+MOLAR_MASS_DRY_AIR = 0.02896968  # kg/mol
 
 G = 9.81  # gravity
 N = 3.  # Glen's law's exponent
