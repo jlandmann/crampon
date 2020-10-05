@@ -10,6 +10,7 @@ from crampon.utils import lazy_property
 import itertools
 import scipy.optimize as optimize
 import matplotlib.pyplot as plt
+from scipy.stats import percentileofscore
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -392,6 +393,17 @@ def process_custom_climate_data_crampon(gdir):
     yrs = nc_ts.time.year
     y0, y1 = yrs[0], yrs[-1]
     time = nc_ts.time
+
+    # get the uncertainties according to the functions describing them
+    month_numbers = np.array([i.month for i in time])
+    prcp_qtls = np.array([percentileofscore(iprcp, p)/100. for p in
+                          iprcp.values])
+    temp_sigma = interpolate_mean_temperature_uncertainty(month_numbers)
+    prcp_sigma = interpolate_mean_precipitation_uncertainty(iprcp.values,
+                                                            prcp_qtls)
+    sis_sigma = interpolate_shortwave_rad_uncertainty(month_numbers)
+    # todo: what to do with tmin, tmax and the gradients?
+
     if pd.infer_freq(nc_ts.time) == 'MS':  # month start frequency
         nc_ts.set_period(t0='{}-10-01'.format(y0), t1='{}-09-01'.format(y1))
         ny, r = divmod(len(time), 12)
@@ -400,6 +412,9 @@ def process_custom_climate_data_crampon(gdir):
         gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
                                         ihgt, ref_pix_lon, ref_pix_lat,
                                         tmin=itmin, tmax=itmax, sis=isis)
+                                        temp_sigma=temp_sigma,
+                                        prcp_sigma=prcp_sigma,
+                                        sis_sigma=sis_sigma)
     elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
         nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
         ny, r = divmod(len(time), 12)
@@ -408,6 +423,9 @@ def process_custom_climate_data_crampon(gdir):
         gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
                                         ihgt, ref_pix_lon, ref_pix_lat,
                                         tmin=itmin, tmax=itmax, sis=isis)
+                                        temp_sigma=temp_sigma,
+                                        prcp_sigma=prcp_sigma,
+                                        sis_sigma=sis_sigma)
     elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
         # Doesn't matter if entire years or not, BUT a correction for y1 to be
         # the last hydro/glacio year is needed
@@ -1085,6 +1103,25 @@ class GlacierMeteo(object):
             self.tmin = self.meteo.tmin.values
             self.tmax = self.meteo.tmax.values
             self.sis = self.meteo.sis.values
+
+        # get the uncertainties - passively at the moment
+        try:
+            # todo: check if it is a good assumption to assign the
+            #  uncertainty of tmean of to tmax/tmin
+            self.temp_sigma = self.meteo.temp_sigma.values
+            self.tmin_sigma = self.meteo.temp_sigma.values
+            self.tmax_sigma = self.meteo.temp_sigma.values
+        except AttributeError:
+            self.temp_sigma = None
+        try:
+            self.prcp_sigma = self.meteo.prcp_sigma.values
+        except AttributeError:
+            self.prcp_sigma = None
+        try:
+            self.sis_sigma = self.meteo.sis_sigma.values
+        except AttributeError:
+            self.sis_sigma = None
+
     @property
     def heights(self):
         return self._heights
