@@ -384,7 +384,7 @@ def process_custom_climate_data_crampon(gdir):
     ref_pix_lat = lat[ilat]
 
     # Some special things added in the crampon function
-    iprcp, itemp, itmin, itmax, isis, itgrad, ipgrad, ihgt = \
+    iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ihgt = \
         utils.joblib_read_climate(fpath, ilon, ilat, def_tgrad, tg_minmax,
                                   use_tgrad, def_pgrad, pg_minmax, use_pgrad)
 
@@ -411,7 +411,8 @@ def process_custom_climate_data_crampon(gdir):
             raise ValueError('Climate data should be N full years exclusively')
         gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
                                         ihgt, ref_pix_lon, ref_pix_lat,
-                                        tmin=itmin, tmax=itmax, sis=isis)
+                                        tmin=itmin, tmax=itmax,
+                                        tgrad_sigma=itgrad_unc, sis=isis,
                                         temp_sigma=temp_sigma,
                                         prcp_sigma=prcp_sigma,
                                         sis_sigma=sis_sigma)
@@ -422,7 +423,8 @@ def process_custom_climate_data_crampon(gdir):
             raise ValueError('Climate data should be N full years exclusively')
         gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
                                         ihgt, ref_pix_lon, ref_pix_lat,
-                                        tmin=itmin, tmax=itmax, sis=isis)
+                                        tmin=itmin, tmax=itmax,
+                                        tgrad_sigma=itgrad_unc, sis=isis,
                                         temp_sigma=temp_sigma,
                                         prcp_sigma=prcp_sigma,
                                         sis_sigma=sis_sigma)

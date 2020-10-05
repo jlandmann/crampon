@@ -1301,10 +1301,13 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
 
     # temperature gradient
     if use_tgrad != 0:
-        itgrad = get_tgrad_from_window(climate, ilat, ilon, use_tgrad,
-                                       default_tgrad, minmax_tgrad)
+        itgrad, itgrad_unc = get_tgrad_from_window(climate, ilat, ilon,
+                                                   use_tgrad, default_tgrad,
+                                                   minmax_tgrad)
     else:
+        # todo: come up with estimate for uncertainty in this case
         itgrad = np.zeros(len(climate.time)) + default_tgrad
+        itgrad_unc = np.zeros(len(climate.time))
 
     # precipitation gradient
     if use_pgrad != 0:
@@ -1313,7 +1316,7 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
     else:
         ipgrad = np.zeros(len(climate.time)) + default_pgrad
 
-    return iprcp, itemp, itmin, itmax, isis, itgrad, ipgrad, ihgt
+    return iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ihgt
 
 
 # IMPORTANT: overwrite OGGM functions with same name
@@ -1350,7 +1353,8 @@ def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
         Temperature gradient over time for the given ilat/ilon.
     """
 
-    itgrad = np.zeros(len(climate.time)) + default_tgrad
+    itgrad = np.full(len(climate.time), np.nan)
+    itgrad_unc = np.full(len(climate.time), np.nan)
     # some min/max constants for the window
     tminw = divmod(win_size, 2)[0]
     tmaxw = divmod(win_size, 2)[0] + 1
@@ -1365,15 +1369,36 @@ def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
     for t, loct in enumerate(ttemp.values):
         # NaNs happen a the grid edges:
         mask = ~np.isnan(loct)
-        slope, _, _, p_val, _ = stats.linregress(
+        slope, _, _, p_val, stderr = stats.linregress(
             np.ma.masked_array(thgt, ~mask).compressed(),
             loct[mask].flatten())
-        itgrad[t] = slope if (p_val < 0.01) else default_tgrad
+        itgrad[t] = slope if (p_val < 0.01) else np.nan
+        itgrad_unc[t] = stderr if (p_val < 0.01) else np.nan
+
+    # fill not significant gradients with DOY rolling window mean
+    # todo: this could also be not on DOYs
+    grad_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad,
+                           coords={'time': ('time', climate.time)})
+    grad_unc_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad_unc,
+                           coords={'time': ('time', climate.time)})
+    grad_rmean = grad_ds.rolling(time=30, center=True).mean(
+        skipna=True).groupby('time.dayofyear').mean(skipna=True)
+    grad_unc_rmean = grad_unc_ds.rolling(time=30, center=True).mean(
+        skipna=True).groupby('time.dayofyear').mean(skipna=True)
+
+    # days with nan should be the same in both itgrad and itgrad_unc
+    nan_doys = [pd.Timestamp(x).dayofyear - 1 for x in
+                climate.time[np.isnan(itgrad)].values]
+
+    # fill finally
+    itgrad[np.isnan(itgrad)] = grad_rmean.isel(dayofyear=nan_doys).values
+    itgrad_unc[np.isnan(itgrad_unc)] = \
+        grad_unc_rmean.isel(dayofyear=nan_doys).values
 
     # apply the boundaries, in case the gradient goes wild
     itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
 
-    return itgrad
+    return itgrad, itgrad_unc
 
 
 def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
@@ -2269,7 +2294,10 @@ class GlacierDirectory(object):
 
     def write_monthly_climate_file(self, time, prcp, temp, tgrad, pgrad,
                                    ref_pix_hgt, ref_pix_lon, ref_pix_lat, *,
-                                   tmin=None, tmax=None, sis=None,
+                                   tmin=None, tmax=None, tgrad_sigma=None,
+                                   sis=None, prcp_sigma=None, temp_sigma=None,
+                                   tmin_sigma=None, tmax_sigma=None,
+                                   sis_sigma=None,
                                    time_unit='days since 1801-01-01 00:00:00',
                                    file_name='climate_monthly', filesuffix=''):
         """Creates a netCDF4 file with climate data.
@@ -2332,6 +2360,13 @@ class GlacierDirectory(object):
             v.units = 'K m-1'
             v.long_name = 'temperature gradient'
             v[:] = tgrad
+
+            if tgrad_sigma is not None:
+                v = nc.createVariable('tgrad_sigma', 'f4', ('time',),
+                                      zlib=True)
+                v.units = 'K m-1'
+                v.long_name = 'temperature gradient uncertainty'
+                v[:] = tgrad_sigma
 
             v = nc.createVariable('pgrad', 'f4', ('time',), zlib=True)
             v.units = 'm-1'
