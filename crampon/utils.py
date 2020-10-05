@@ -394,16 +394,58 @@ def get_nash_sutcliffe_efficiency(simulated, observed):
     return nse
 
 
-def reclassify_heights_widths(gdir, elevation_bin=10.):
+def reclassify_heights_widths(gdir, elevation_bin=10., horizontal_dx=None):
+    """
+    Reclassify the flowline heights and widths of a glacier.
+
+    Parameters
+    ----------
+    gdir : `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory to reclassify the height and widths for.
+    elevation_bin : float, optional
+        Size of the elevation bins in meters to use for reclassification.
+        Mutually exclusive with `horizontal_dx`. Default: 10.
+    horizontal_dx : float, optional
+        Horizontal distance in meters to use for reclassification.
+        Mutually exclusive with `elevation_bin`. Default: None.
+
+    Returns
+    -------
+    new_heights, new_widths: tuple of np.array
+        Reclassified heights and widths.
+    """
+
     heights, widths = gdir.get_inversion_flowline_hw()
 
     height_classes = np.arange(nicenumber(min(heights), 10, lower=True),
                                nicenumber(max(heights), 10, lower=True),
                                elevation_bin)
-    height_bins = np.digitize(heights, height_classes)
-    new_widths = [sum(widths[np.where(height_bins == i)]) for i in
-                  range(1, max(height_bins + 1))]
-    return height_classes, new_widths
+    if (elevation_bin is not None) and (horizontal_dx is None):
+        height_bins = np.digitize(heights, height_classes)
+        new_widths = [sum(widths[np.where(height_bins == i)]) for i in
+                      range(1, max(height_bins + 1))]
+        return height_classes, new_widths
+    elif (elevation_bin is None) and (horizontal_dx is not None):
+        fls = g.read_pickle('inversion_flowlines')
+        new_heights = []
+        new_widths = []
+        for fl in fls:
+            real_distances = fl.dis_on_line * g.grid.dx
+            dx_classes = np.arange(0., nicenumber(np.max(real_distances),
+                                                  horizontal_dx),
+                                   horizontal_dx)
+            dx_bins = np.digitize(real_distances, dx_classes)
+            new_heights.extend(
+                [np.mean(heights[np.where(dx_bins == i)]) for i in
+                 range(1, max(dx_bins + 1))])
+            new_widths.extend([np.sum(widths[np.where(dx_bins == i)]) for i in
+                               range(1, max(dx_bins + 1))])
+
+        return new_heights, new_widths
+    else:
+        raise NotImplementedError('A common usage of the elevation_bin and '
+                                  'map_dx keywords together is not yet '
+                                  'implemented.')
 
 
 def parse_credentials_file(credfile=None):
