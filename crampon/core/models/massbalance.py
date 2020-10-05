@@ -273,7 +273,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
@@ -742,11 +742,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         # todo: does this make sense now?
         prcpsol *= iprcp_fac
 
-        #tmean = self.meteo.get_tmean_at_heights(date, heights)
-        #prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
-                                                                   #heights)
-
-        # redistribute if given
+        # redistribute prcpsol if given
         if self.snowdistfac is not None:
             try:
                 prcpsol *= self.snowdistfac.sel(time=date).D.values
@@ -997,7 +993,11 @@ class HockModel(DailyMassBalanceModelWithSnow):
         # todo: does this make sense now?
         prcpsol *= iprcp_fac
 
-        # redistribute prcpsol if given
+        #tmean = self.meteo.get_tmean_at_heights(date, heights)
+        #prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
+                                                                   #heights)
+
+        # redistribute if given
         if self.snowdistfac is not None:
             try:
                 prcpsol *= self.snowdistfac.sel(time=date).D.values
