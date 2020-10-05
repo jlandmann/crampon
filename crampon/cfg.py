@@ -40,6 +40,9 @@ if not os.path.exists(CACHE_DIR):
 # Path to the config file
 CONFIG_FILE = os.path.join(os.path.expanduser('~'), '.oggm_config')
 
+# config was changed, indicates that multiprocessing needs a reset
+CONFIG_MODIFIED = False
+
 # Globals
 IS_INITIALIZED = False
 CONTINUE_ON_ERROR = False
@@ -92,20 +95,78 @@ MASSBALANCE_MODELS = ['BraithwaiteModel', 'HockModel',
 _doc = 'CSV output from the calibration for the different models, including' \
        'uncertainties.'
 CBASENAMES['calibration'] = ('calibration.csv', _doc)
+_doc = 'CSV output from the calibration on the geodetic mass changes from ' \
+       'Fischer et al, 2015.'
+CBASENAMES['calibration_fischer_unique'] = \
+    ('calibration_fischer_unique.csv', _doc)
+_doc = 'CSV output from the calibration on the geodetic mass changes from ' \
+       'Fischer et al, 2015.'
+CBASENAMES['calibration_fischer_unique_variability'] = \
+    ('calibration_fischer_unique_variability.csv', _doc)
+_doc = 'CSV output from the calibration on the geodetic mass changes from ' \
+       'Fischer et al, 2015.'
+CBASENAMES['calibration_fischer'] = ('calibration_fischer.csv', _doc)
 _doc = 'The daily climate timeseries for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
 _doc = 'The daily spinup climate timeseries for this glacier, stored in a ' \
        'netCDF file.'
-CBASENAMES['spinup_climate_daily'] = ('spinup_climate_daily.nc', _doc)
+CBASENAMES['mb_spinup'] = ('mb_spinup.pkl', _doc)
 _doc = 'The daily mass balance timeseries for this glacier, stored in a ' \
        'pickle file.'
 CBASENAMES['mb_daily'] = ('mb_daily.pkl', _doc)
-_doc = 'The daily mass balance timeseries for this glacier in the current ' \
-       'budget year, stored in a pickle file.'
+_doc = 'The daily mass balance timeseries for this glacier from calibration ' \
+       'on the Fischer et al., 2015 geodetic mass changes, stored in a ' \
+       'pickle file.'
+CBASENAMES['mb_daily_fischer'] = ('mb_daily_fischer.pkl', _doc)
+_doc = 'The daily mass balance timeseries for this glacier from calibration ' \
+       'on the Fischer et al., 2015 geodetic mass changes with one unique ' \
+       'parameter set for the whole time period, stored in a pickle file.'
+CBASENAMES['mb_daily_fischer_unique'] = ('mb_daily_fischer_unique.pkl', _doc)
+_doc = 'The daily mass balance timeseries for this glacier from calibration ' \
+       'on the Fischer et al., 2015 geodetic mass changes with one unique ' \
+       'parameter set for the whole time period, but imposed parameter ' \
+       'variability, stored in a pickle file.'
+CBASENAMES['mb_daily_fischer_unique_variability'] = \
+    ('mb_daily_fischer_unique_variability.pkl', _doc)
+_doc = 'The snow condition at the end of the spinup phase, stored in a ' \
+       'pickle file.'
+CBASENAMES['snow_spinup'] = ('snow_spinup.pkl', _doc)
+_doc = 'The daily snow condition time series for this glacier in the past, ' \
+       'stored in a pickle file.'
+CBASENAMES['snow_daily'] = ('snow_daily.pkl', _doc)
+_doc = 'The daily snow condition time series for this glacier in the past, ' \
+       'stored in a pickle file.'
+CBASENAMES['snow_daily_fischer_unique'] = \
+    ('snow_daily_fischer_unique.pkl', _doc)
+_doc = 'The daily snow condition time series for this glacier in the past, ' \
+       'stored in a pickle file.'
+CBASENAMES['snow_daily_fischer_unique_variability'] = \
+    ('snow_daily_fischer_unique_variability.pkl', _doc)
+_doc = 'The daily snow condition time series for this glacier in the past, ' \
+       'stored in a pickle file.'
+CBASENAMES['snow_daily_fischer'] = ('snow_daily_fischer.pkl', _doc)
+_doc = 'The snow redistribution factor over time.'
+CBASENAMES['snow_redist'] = ('snow_redist.nc', _doc)
+_doc = 'The assimilated mass balance of the current budget year for this ' \
+       'glacier, stored in a pickle file.'
+CBASENAMES['mb_assim'] = ('mb_assim.pkl', _doc)
+_doc = 'The mass balance of the current budget year for this glacier, from ' \
+       'the Fischer calibration stored in a pickle file.'
+CBASENAMES['mb_current_fischer_unique'] = \
+    ('mb_current_fischer_unique.pkl', _doc)
+_doc = 'The mass balance of the current budget year for this glacier, from ' \
+       'the Fischer calibration stored in a pickle file.'
+CBASENAMES['mb_current_fischer_unique_variability'] = \
+    ('mb_current_fischer_unique_variability.pkl', _doc)
+_doc = 'The mass balance of the current budget year for this glacier, ' \
+       'stored in a pickle file.'
 CBASENAMES['mb_current'] = ('mb_current.pkl', _doc)
 _doc = 'A time series of all available DEMs for the glacier. Contains groups' \
        ' for different resolutions.'
+CBASENAMES['mb_current_heights'] = ('mb_current_heights.pkl', _doc)
+_doc = 'The current mass balance time series on all heights for this glacier' \
+       ' stored in a pickle file.'
 CBASENAMES['homo_dem_ts'] = ('homo_dem_ts.nc', _doc)
 _doc = 'A time series of all available DEMs for the glacier, brought to the ' \
        'minimum common resolution.'
@@ -130,6 +191,14 @@ CBASENAMES['ipot'] = ('ipot.nc', _doc)
 _doc = 'Daily mean potential clear-sky solar irradiation on the flowline ' \
        'heights.'
 CBASENAMES['ipot_per_flowline'] = ('ipot_per_flowline.pkl', _doc)
+_doc = 'All assimilation data of the glacier, assembled into a netCDF file.'
+CBASENAMES['assim_data'] = ('assim_data.nc', _doc)
+_doc = 'Shortwave incoming solar radiation scaling factor (calculated from ' \
+       'Ipot).'
+CBASENAMES['sis_scale_factor'] = ('sis_scale_factor.nc', _doc)
+_doc = 'Satellite images and derived variables like binary snow maps or snow' \
+       ' line altitude.'
+CBASENAMES['sat_images'] = ('sat_images.nc', _doc)
 
 # some more standard names, for less hardcoding
 NAMES['DHM25'] = 'dhm25'
