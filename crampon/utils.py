@@ -64,12 +64,12 @@ dpm = {'noleap': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
        '360_day': [0, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]}
 
 
-def get_oggm_demo_file(fname):
+def get_oggm_demo_file(fname: str):
     """ Wraps the oggm.utils.get_demo_file function"""
     get_demo_file(fname)  # Calls the func imported from oggm.utils
 
 
-def get_crampon_demo_file():
+def get_crampon_demo_file(fname: str):
     """This should be done once some test data are allowed to be moved to an 
     external repo"""
     raise NotImplementedError
@@ -127,61 +127,61 @@ def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
 
 def weighted_quantiles(values, quantiles, sample_weight=None,
                           values_sorted=False, old_style=False):
-        """
-        A function to approximate quantiles of data with corresponding weights.
+    """
+    A function to approximate quantiles of data with corresponding weights.
 
-        Very close to numpy.percentile, but supports weights. Quantiles should
-        be in the range [0, 1].
-        Slightly modified and documentation extended from [1]_.
+    Very close to numpy.percentile, but supports weights. Quantiles should
+    be in the range [0, 1].
+    Slightly modified and documentation extended from [1]_.
 
-        Parameters
-        ----------
-        values: numpy.array
-            Data array with the values to be weighted.
-        quantiles: array-like
-            The quantiles to be calculated. Have to be in range [0, 1].
-        sample_weight: array-like, same shape as `values`
-            Weights for the individual data. If not given, they will be the
-            same (one) for each value.
-        values_sorted: bool
-            If True, will avoid sorting of initial array. Default: False.
-        old_style: bool
-            If True, will correct output to be consistent with
-            numpy.percentile. Default: False
+    Parameters
+    ----------
+    values: numpy.array
+        Data array with the values to be weighted.
+    quantiles: array-like
+        The quantiles to be calculated. Have to be in range [0, 1].
+    sample_weight: array-like, same shape as `values`
+        Weights for the individual data. If not given, they will be the
+        same (one) for each value.
+    values_sorted: bool
+        If True, will avoid sorting of initial array. Default: False.
+    old_style: bool
+        If True, will correct output to be consistent with
+        numpy.percentile. Default: False
 
-        Returns
-        -------
-        numpy.array with computed quantiles.
+    Returns
+    -------
+    numpy.array with computed quantiles.
 
-        References
-        ----------
-        .. [1] https://stackoverflow.com/questions/21844024/weighted-percentile-using-numpy
-        """
+    References
+    ----------
+    .. [1] https://stackoverflow.com/questions/21844024/weighted-percentile-using-numpy
+    """
 
-        values = np.array(values)
-        quantiles = np.array(quantiles)
-        if sample_weight is None:
-            sample_weight = np.ones(len(values))
-        sample_weight = np.array(sample_weight)
-        assert np.all(quantiles >= 0) and np.all(
-            quantiles <= 1), 'quantiles should be in [0, 1]'
+    values = np.array(values)
+    quantiles = np.array(quantiles)
+    if sample_weight is None:
+        sample_weight = np.ones(len(values))
+    sample_weight = np.array(sample_weight)
+    assert np.all(quantiles >= 0) and np.all(
+        quantiles <= 1), 'quantiles should be in [0, 1]'
 
-        if not values_sorted:
-            sorter = np.argsort(values)
-            values = values[sorter]
-            sample_weight = sample_weight[sorter]
+    if not values_sorted:
+        sorter = np.argsort(values)
+        values = values[sorter]
+        sample_weight = sample_weight[sorter]
 
-        weighted_quantiles = np.cumsum(sample_weight) - 0.5 * sample_weight
-        if old_style:
-            # To be convenient with numpy.percentile
-            weighted_quantiles -= weighted_quantiles[0]
-            weighted_quantiles /= weighted_quantiles[-1]
-        else:
-            weighted_quantiles /= np.sum(sample_weight)
-        return np.interp(quantiles, weighted_quantiles, values)
+    weighted_quantiles = np.cumsum(sample_weight) - 0.5 * sample_weight
+    if old_style:
+        # To be convenient with numpy.percentile
+        weighted_quantiles -= weighted_quantiles[0]
+        weighted_quantiles /= weighted_quantiles[-1]
+    else:
+        weighted_quantiles /= np.sum(sample_weight)
+    return np.interp(quantiles, weighted_quantiles, values)
 
 
-def leap_year(year, calendar='standard'):
+def leap_year(year: int, calendar: str = 'standard') -> bool:
     """
     Determine if year is a leap year.
     Amended from http://xarray.pydata.org/en/stable/examples/monthly-means.html
@@ -214,7 +214,8 @@ def leap_year(year, calendar='standard'):
     return leap
 
 
-def get_dpm(time, calendar='standard'):
+def get_dpm(time: pd.DatetimeIndex or xr.CFTimeIndex,
+            calendar: str = 'standard') -> np.array:
     """
     Return array of days per month corresponding to months provided in `time`.
 
