@@ -209,7 +209,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
         return tempformelt
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -237,10 +237,6 @@ class DailyMassBalanceModel(MassBalanceModel):
             Heights at which mass balance should be calculated.
         date: datetime.datetime or pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -249,7 +245,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         """
 
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
@@ -289,7 +285,7 @@ class DailyMassBalanceModel(MassBalanceModel):
             mu_star = self.mu_star
 
         if isinstance(self.bias, pd.Series):
-            bias = self.bias.iloc[self.bias.index.get_loc(date, **kwargs)]
+            bias = self.bias.iloc[self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -303,7 +299,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
 
-    def get_daily_specific_mb(self, heights, widths, date=None, **kwargs):
+    def get_daily_specific_mb(self, heights, widths, date=None):
         """Specific mass balance for a given date and geometry (m w.e. d-1).
 
         Parameters
@@ -320,12 +316,12 @@ class DailyMassBalanceModel(MassBalanceModel):
         The specific mass-balance of (units: mm w.e. d-1)
         """
         if len(np.atleast_1d(date)) > 1:
-            out = [self.get_daily_specific_mb(heights, widths, date=d, **kwargs)
+            out = [self.get_daily_specific_mb(heights, widths, date=d)
                    for d in date]
             return np.asarray(out)
 
         # m w.e. d-1
-        mbs = self.get_daily_mb(heights, date=date, **kwargs) * \
+        mbs = self.get_daily_mb(heights, date=date) * \
               cfg.SEC_IN_DAY * cfg.RHO / cfg.RHO_W
         mbs_wavg = np.average(mbs, weights=widths)
         return mbs_wavg
@@ -491,7 +487,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
     def snowcover(self, value):
         self._snowcover = value
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         # todo: implement
         raise NotImplementedError
 
@@ -673,7 +669,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
     def snowcover(self, value):
         self._snowcover = value
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -701,10 +697,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
             Heights at which mass balance should be calculated.
         date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -713,7 +705,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         """
 
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
@@ -721,8 +713,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
@@ -764,7 +755,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.mu_ice, pd.Series):
             try:
                 mu_ice = self.mu_ice.iloc[
-                    self.mu_ice.index.get_loc(date, **kwargs)]
+                    self.mu_ice.index.get_loc(date)]
             except KeyError:
                 mu_ice = self.param_ep_func(self.mu_ice)
             if pd.isnull(mu_ice):
@@ -775,7 +766,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.mu_snow, pd.Series):
             try:
                 mu_snow = self.mu_snow.iloc[
-                    self.mu_snow.index.get_loc(date, **kwargs)]
+                    self.mu_snow.index.get_loc(date)]
             except KeyError:
                 mu_snow = self.param_ep_func(self.mu_snow)
             if pd.isnull(mu_snow):
@@ -785,7 +776,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -922,7 +913,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         else:
             self.snowdistfac = None
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -952,10 +943,6 @@ class HockModel(DailyMassBalanceModelWithSnow):
             Heights at which mass balance should be calculated.
         date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -964,7 +951,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         """
 
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
@@ -972,8 +959,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
@@ -1019,7 +1005,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.mu_hock, pd.Series):
             try:
                 mu_hock = self.mu_hock.iloc[
-                    self.mu_hock.index.get_loc(date, **kwargs)]
+                    self.mu_hock.index.get_loc(date)]
             except KeyError:
                 mu_hock = self.param_ep_func(self.mu_hock)
             if pd.isnull(mu_hock):
@@ -1030,7 +1016,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.a_ice, pd.Series):
             try:
                 a_ice = self.a_ice.iloc[
-                    self.a_ice.index.get_loc(date, **kwargs)]
+                    self.a_ice.index.get_loc(date)]
             except KeyError:
                 a_ice = self.param_ep_func(self.a_ice)
             if pd.isnull(a_ice):
@@ -1041,7 +1027,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.a_snow, pd.Series):
             try:
                 a_snow = self.a_snow.iloc[
-                    self.a_snow.index.get_loc(date, **kwargs)]
+                    self.a_snow.index.get_loc(date)]
             except KeyError:
                 a_snow = self.param_ep_func(self.a_snow)
             if pd.isnull(a_snow):
@@ -1051,7 +1037,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -1230,7 +1216,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         """Set a bias for the shortwave incoming radiation."""
         self._sis_bias = value
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -1264,10 +1250,6 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             Heights at which mass balance should be calculated.
         date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -1308,8 +1290,8 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[
+                    self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
@@ -1321,7 +1303,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.tf, pd.Series):
             try:
                 tf_now = self.tf.iloc[
-                    self.tf.index.get_loc(date, **kwargs)]
+                    self.tf.index.get_loc(date)]
             except KeyError:
                 tf_now = self.param_ep_func(self.tf)
             if pd.isnull(tf_now):
@@ -1332,7 +1314,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.srf, pd.Series):
             try:
                 srf_now = self.srf.iloc[
-                    self.srf.index.get_loc(date, **kwargs)]
+                    self.srf.index.get_loc(date)]
             except KeyError:
                 srf_now = self.param_ep_func(self.srf)
             if pd.isnull(srf_now):
@@ -1342,7 +1324,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -1485,7 +1467,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             self.snowdistfac = None
 
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -1519,10 +1501,6 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             Heights at which mass balance should be calculated.
         date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -1531,7 +1509,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         """
 
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         isis = self.meteo.sis[ix]
@@ -1564,8 +1542,8 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[
+                    self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
@@ -1577,7 +1555,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.c0, pd.Series):
             try:
                 c0 = self.c0.iloc[
-                    self.c0.index.get_loc(date, **kwargs)]
+                    self.c0.index.get_loc(date)]
             except KeyError:
                 c0 = self.param_ep_func(self.c0)
             if pd.isnull(c0):
@@ -1588,7 +1566,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.c1, pd.Series):
             try:
                 c1 = self.c1.iloc[
-                    self.c1.index.get_loc(date, **kwargs)]
+                    self.c1.index.get_loc(date)]
             except KeyError:
                 c1 = self.param_ep_func(self.c1)
             if pd.isnull(c1):
@@ -1598,7 +1576,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
