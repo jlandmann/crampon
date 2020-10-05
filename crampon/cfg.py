@@ -331,6 +331,17 @@ def initialize(file=None):
     _k = 'use_optimized_inversion_params'
     oggmcfg.PARAMS[_k] = cp.as_bool(_k)
 
+    # bounds
+    k = 'swe_bounds'
+    oggmcfg.PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
+                         cp.as_list(k)]
+    k = 'alpha_bounds'
+    oggmcfg.PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
+                         cp.as_list(k)]
+    k = 'tacc_bounds'
+    oggmcfg.PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
+                         cp.as_list(k)]
+
     # Make sure we have a proper cache dir
     from oggm.utils import download_oggm_files
     download_oggm_files()
@@ -356,7 +367,8 @@ def initialize(file=None):
            'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
            'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
            'run_mb_calibration', 'albedo_method', 'glamos_ids',
-           'begin_mbyear_month', 'begin_mbyear_day']
+           'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
+           'alpha_bounds', 'tacc_bounds']
     for k in ltr:
         cp.pop(k, None)
 
