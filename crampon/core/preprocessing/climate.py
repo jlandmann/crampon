@@ -181,6 +181,57 @@ def interpolate_mean_temperature_uncertainty(month_number):
     return mae[month_number.astype(int) - 1]
 
 
+def interpolate_mean_precipitation_uncertainty(prcp_quant):
+    """
+    Interpolate the annual temperature uncertainty for precipitation grids.
+
+    Values have been read manually from fig. 4 in _[1] as advised by Christoph
+    Frei (Mail 2020-04-09). We ignore the systematic error, since it is covered
+    by the calibration of the precipitation correction factor, the calibration
+    of the snow redistribution factor and the systematic variation by [2]_.
+    The uncertainty value returned is half the distance between Q25 and Q75 of
+    the distributions and is used later on in the
+    `py:class:crampon.core.preprocessing.climate.GlacierMeteo` to produce a
+    multiplicative factor to correct for the random error of precipitation.
+
+    Parameters
+    ----------
+    prcp_quant: float or array-like
+        Quantile of the precipitation in the total precipitation distribution.
+
+    Returns
+    -------
+    same as input
+        Precipitation standard error as a factor to multiply with the
+        precipitation.
+
+    References
+    ----------
+    .. [1] Isotta, F.A., Frei, C., Weilguni, V., Perčec Tadić, M., Lassègues,
+           P., Rudolf, B., Pavan, V., Cacciamani, C., Antolini, G.,
+           Ratto, S.M., Munari, M., Micheletti, S., Bonati, V., Lussana, C.,
+           Ronchi, C., Panettieri, E., Marigo, G. and Vertačnik, G. (2014),
+           The climate of daily precipitation in the Alps: development and
+           analysis of a high‐resolution grid dataset from pan‐Alpine
+           rain‐gauge data. Int. J. Climatol., 34: 1657-1675.
+           doi:10.1002/joc.3794
+    .. [2] Sevruk, B. (1985): Systematischer Niederschlagsmessfehler in der
+           Schweiz. In: Sevruk, B. (1985): Der Niederschlag in der Schweiz.
+           Geographischer Verlag Kuemmerly und Frey, Bern.
+    """
+
+    # values read from Isotta et al. (2014)
+    q = [0.1, 0.3, 0.5, 0.7, 0.85, 0.925, 0.965, 0.985, 0.995]
+    values_djf = [0.4, 0.35, 0.275, 0.24, 0.19, 0.18, 0.19, 0.15, 0.16]
+    values_jja = [0.6, 0.37, 0.3, 0.17, 0.19, 0.19, 0.17, 0.16, 0.15]
+    # We forget the seasonal dependency for the first
+    values_mean = (np.array(values_djf) + np.array(values_jja)) / 2.
+
+    indices = np.array(
+        [pd.Index(q).get_loc(n, method='nearest') for n in prcp_quant])
+    return values_mean[indices]
+
+
 def prcp_fac_annual_cycle(doy):
     """
     Interpolate the annual cycle of the precipitation correction factor.
