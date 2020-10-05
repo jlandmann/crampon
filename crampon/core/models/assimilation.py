@@ -128,11 +128,13 @@ def resample_weighted_distribution(samples, weights, n_samples=500, axis=-1):
     weights_cs = np.cumsum(weights, axis=-1)
 
     resamp = np.full((weights.shape[0], n_samples), np.nan)
+    resamp_w = np.full((weights.shape[0], n_samples), np.nan)
     for k, a in enumerate(alphas):
         ix = np.where(((weights_cs[:, :-1] < a) & (a <= weights_cs[:, 1:])))
         resamp[:, k] = samples[ix]
+        resamp_w[:, k] = weights[ix]
 
-    return resamp
+    return resamp, resamp_w
 
 
 def get_prior_param_distributions(gdir, model, n_samples, fit='gauss',
@@ -204,15 +206,17 @@ def get_prior_param_distributions(gdir, model, n_samples, fit='gauss',
     return params_prior
 
 
-def get_prior_param_distributions_gabbi(model, n_samples, fit='gauss'):
+def get_prior_param_distributions_gabbi(model, n_samples, fit='gauss',
+                                        seed=None):
     """
     Get param priors according to Gabbi et al. (2014).
 
     Parameters
     ----------
-    gdir :
     model :
     n_samples :
+    fit :
+    seed :
 
     Returns
     -------
@@ -241,11 +245,13 @@ def get_prior_param_distributions_gabbi(model, n_samples, fit='gauss'):
     if fit == 'gauss':
         # th 6 is empirical: we want (roughly) to define sigma such that 99% of
         # values are within the bounds
+        np.random.seed(seed)
         theta_prior = np.array([np.clip(np.random.normal(np.mean(
             param_bounds[p]), np.abs(np.ptp(param_bounds[p]) / 6.), n_samples),
             param_bounds[p][0], param_bounds[p][1])
             for p in model.cali_params_list]).T
     elif fit == 'uniform':
+        np.random.seed(0)
         theta_prior = np.array([np.random.uniform(param_bounds[p][0],
                                                param_bounds[p][1], n_samples)
                             for p in model.cali_params_list]).T
@@ -470,7 +476,8 @@ def simple_resample(particles: np.ndarray, weights: np.ndarray) -> tuple:
     return particles, weights
 
 
-def stratified_resample(weights, n_samples=None, one_random_number=False):
+def stratified_resample(weights, n_samples=None, one_random_number=False,
+                        seed=None):
     """
     Copied form filterpy, but extended by an own choice of N.
 
@@ -490,6 +497,7 @@ def stratified_resample(weights, n_samples=None, one_random_number=False):
     else:
         n_samples = int(n_samples)
     # make N subdivisions, chose a random position within each one
+    np.random.seed(seed)
     if one_random_number is True:
         rn = np.random.random(1)  # version Hansruedi Künsch suggested to
         # keep frequency of particle j less than 1 away from expected value
@@ -1396,7 +1404,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
     Attributes
     ----------
     models: list
-        A list of ParticleFilter instances.
+        A list of mass balance model instances to use.
     n_models: int
         The total numbers of models. Should be low to let the adaptive
         resampling work.
@@ -1405,8 +1413,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
     """
 
     def __init__(self, models: list, n_particles: int, spatial_dims: tuple,
-                 n_phys_vars: int, n_aug_vars: int, model_prob: list or \
-                                                                None = None):
+                 n_phys_vars: int, n_aug_vars: int, model_prob: list or None
+                 = None):
         """
         Instantiate.
 
@@ -1431,6 +1439,9 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         -------
         None
         """
+
+        #super().__init__(n_particles, do_plot=False, do_save=False)
+
         self.models = models
         self.n_models = len(models)
         self.model_range = np.arange(self.n_models)
@@ -1464,12 +1475,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         self.particles = np.zeros((*self.spatial_dims, self.n_tot,
                                    self.n_phys_vars +
                                    self.n_aug_vars))
-        self.particles[..., self.state_indices['m']] = np.repeat(self.model_range,
-                                                    self._n_model_particles)
+        self.particles[..., self.state_indices['m']] = \
+            np.repeat(self.model_range, self._n_model_particles)
+
         # axis where the particles are
         self.particle_ax = len(self.spatial_dims)
 
-        #self.weights = np.ones((*self.spatial_dims, self.n_tot)) / self.n_tot
         self._log_weights = np.log(np.ones((*self.spatial_dims, self.n_tot)) /
                                     self.n_tot)
 
@@ -1497,7 +1508,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
     @property
     def model_prob_log(self):
-        ## todo: latest technique by Hansruedi (22.04.2020)
+        """Model proability in the logarithmic domain."""
         self._model_prob_log = self.M_t_all + np.log(
             [np.sum(np.exp(self.model_weights_log[i] - self.M_t_all[i])) for
              i in self.model_range])
@@ -1533,9 +1544,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
     @property
     def model_weights(self):
-        """
-        Get particle weights per model.
-        """
+        """Get particle weights per model."""
         return [self.weights[self.stats_ix, mix] for mix in
                 self.model_indices_all]
 
@@ -1566,6 +1575,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         self._S_t_all = np.array([np.sum(np.exp(self.model_weights_log[i] -
                                               self.M_t_all[i])) for i in
                                   self.model_range])
+        # this should not happen
         if np.isnan(self._S_t_all).any():
             raise ValueError('S_t_all contains NaN.')
         return self._S_t_all
@@ -1577,17 +1587,9 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
     @property
     def params_per_model(self):
         """Get the parameters distribution per model as a list."""
-        # todo: we select space=0, because we assume perfect parameter
-        #  correlation!!!this should be changed such that MB Model take params per
-        #  height!?
         # particle indices
         p_ix = [0] + list(np.cumsum(self.n_model_particles))
-        # todo:self.n_phys_vars was 3 before
-        #param_dist = self.particles[0, :, self.n_phys_vars:]  # shape (
-        # n_particles, 3)
-        param_dist = self.particles[self.stats_ix, :, self.n_phys_vars:]  #
-        # shape (
-        # n_particles, 3)
+        param_dist = self.particles[self.stats_ix, :, self.n_phys_vars:]
         params_per_model = [param_dist[p_ix[i]:p_ix[i+1]] for i in range(
             len(p_ix)-1)]
         return params_per_model
@@ -1632,10 +1634,11 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         n_eff = [effective_n(w/np.sum(w)) for w in self.model_weights]
         return n_eff
 
-    def get_observation_quantiles_hansruedi(self, obs, obs_std, mb_ix, mb_init_ix,
-                                  eval_ix,
-                                 obs_first_dim=0, generate_n_obs=1000,
-                                 by_model=False):
+    def get_observation_quantiles_hansruedi(self, obs, obs_std, mb_ix,
+                                            mb_init_ix, eval_ix,
+                                            obs_first_dim=0,
+                                            generate_n_obs=1000,
+                                            by_model=False):
         """
         Get the quantile of the observation at the weighted particle
         distribution
@@ -1701,8 +1704,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                                       axis=1))
                     obs_quantiles.append(intermediate_list)
                 else:
-                    w_quantiles = np.sum(self.weights[eix,:] * (obs[
-                                                                    obs_first_dim, i] - actual_mb/obs_std[
+                    w_quantiles = np.sum(self.weights[eix, :] *
+                                         (obs[obs_first_dim, i] - actual_mb/obs_std[
                                                          obs_first_dim, i]))
                     obs_quantiles.append(w_quantiles)
 
@@ -1747,46 +1750,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         # todo: the zeros are hard-coded (the keyword is stupid, but make it
         #  easier afterwards
-        obs_quantiles = []#np.full_like(obs, np.nan)
+        obs_quantiles = []
         quantile_range = np.arange(0.0, 1.01, 0.01)
-        """
-        for i in range(obs.shape[1]):
-            if ~np.isnan(obs[obs_first_dim, i]):
-                # subtract the initial MB
-                actual_mb = self.particles[i, :, mb_ix] -\
-                            self.particles[i, :, mb_init_ix]
-
-                if by_model is True:
-                    model_indices = self.model_indices_all
-                    intermediate_list = []
-                    for mi in model_indices:
-                        w_quantiles = utils.weighted_quantiles(actual_mb[mi],
-                                                               quantile_range,
-                                                               sample_weight=self.weights[
-                                                                             i,
-                                                                             mi])
-                        intermediate_list.append(np.argmin(np.abs(w_quantiles -
-                                         np.atleast_2d(np.random.normal(
-                                             obs[obs_first_dim, i],
-                                             obs_std[obs_first_dim, i],
-                                             generate_n_obs)).T), axis=1))
-                    obs_quantiles.append(intermediate_list)
-                else:
-                    w_quantiles = utils.weighted_quantiles(actual_mb,
-                                                           quantile_range,
-                                                           sample_weight=self.weights[i, :])
-                    # todo: here we take the mean over all our samples: ok?
-                    #obs_quantiles[obs_first_dim, i] = np.mean(np.argmin(np.abs(
-                    #    w_quantiles-
-                    #    np.atleast_2d(np.random.normal(obs[obs_first_dim, i],
-                    #                                   obs_std[obs_first_dim, i],
-                    #                                   generate_n_obs)).T),
-                    #    axis=1))
-                    obs_quantiles.append(np.argmin(np.abs(w_quantiles-
-                        np.atleast_2d(np.random.normal(obs[obs_first_dim, i],
-                                                       obs_std[obs_first_dim, i],
-                                                       generate_n_obs)).T), axis=1))
-        """
         for i, eix in enumerate(eval_ix):
             if ~np.isnan(obs[obs_first_dim, i]):
                 # subtract the initial MB
@@ -1797,23 +1762,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                     model_indices = self.model_indices_all
                     intermediate_list = []
                     for mi in model_indices:
-                        """
-                        w_quantiles = utils.weighted_quantiles(
-                            actual_mb[mi],
-                            quantile_range,
-                            sample_weight=self.weights[
-                                eix,
-                                mi])
-                        intermediate_list.append(
-                            np.argmin(np.abs(w_quantiles -
-                                             np.atleast_2d(
-                                                 np.random.normal(
-                                                     obs[obs_first_dim, i],
-                                                     obs_std[
-                                                         obs_first_dim, i],
-                                                     generate_n_obs)).T),
-                                      axis=1))
-                        """
                         w_quantiles = utils.weighted_quantiles(
                                 np.random.normal(
                                     obs[obs_first_dim, i],
@@ -1826,13 +1774,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                                              actual_mb[mi]), axis=0))
                     obs_quantiles.append(intermediate_list)
                 else:
-                    """
-                    w_quantiles = utils.weighted_quantiles(actual_mb,
-                                                           quantile_range,
-                                                           sample_weight=self.weights[
-                                                                         eix,
-                                                                         :])
-                    """
                     w_quantiles = utils.weighted_quantiles(np.random.normal(
                                                                   obs[
                                                                       obs_first_dim, i],
@@ -1840,24 +1781,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                                                                       obs_first_dim, i],
                                                                   generate_n_obs),
                                                            quantile_range)
-                    # todo: here we take the mean over all our samples: ok?
-                    # obs_quantiles[obs_first_dim, i] = np.mean(np.argmin(np.abs(
-                    #    w_quantiles-
-                    #    np.atleast_2d(np.random.normal(obs[obs_first_dim, i],
-                    #                                   obs_std[obs_first_dim, i],
-                    #                                   generate_n_obs)).T),
-                    #    axis=1))
-                    """
-                    obs_quantiles.append(np.argmin(np.abs(w_quantiles -
-                                                          np.atleast_2d(
-                                                              np.random.normal(
-                                                                  obs[
-                                                                      obs_first_dim, i],
-                                                                  obs_std[
-                                                                      obs_first_dim, i],
-                                                                  generate_n_obs)).T),
-                                                   axis=1))
-                    """
                     obs_quantiles.append(np.argmin(np.abs(np.atleast_2d(w_quantiles).T -actual_mb),
                                                    axis=0))
 
@@ -1926,7 +1849,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         tuple:
             Indices where particles with the respective model index occur.
         """
-        #return np.where(self.particles[:, :, self.state_indices['m']] == j)
         return np.where(self.particles[self.stats_ix, :,
                         self.state_indices['m']] == j)
 
@@ -1936,15 +1858,70 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                 param_random_walk=False, snowredistfac=False,
                 use_psol_multiplier=False, seed=None):
         """
-        Try the impossible....
-        todo: this function has wayyyy... too many params:move them to cfg
+        Calculate a mass balance prediction.
+
+        At the moment, the SWE and albedo are updated with the accumulation of
+        a day first, before the ablation is calculated. Since temperature is
+        from 00-00 am and precipitation is from 06-06 am though, it might even
+        make sense to calculate ablation first and then update SWE and albedo
+        for the next day.
+        # todo: consider calculating ablation first, then update SWE/alpha
+
+        Parameters
+        ----------
+        mb_models_inst : list
+            List of instantiated `py:class:crampon.core.models.massbalance.
+            DailyMassBalanceModelWithSnow`.
+        gmeteo : `crampon.core.preprocessing.climate.GlacierMeteo`
+            Glacier meteorology class containing the necessary meteo input.
+        date : pd.Timestamp
+            Date to claculate the mass balance for.
+        h : np.array
+            Array with heights of the glacier flowline.
+        obs_merge : xr.Dataset
+            Dataset with the merged observations (m w.e.).
+        ssf : np.array
+            SIS scaling factor for the day at heights.
+        ipot : np.array
+            Potential irradiation for the day at height (W m-2).
+        ipot_sigma : float
+            Potential irradiation uncertainty as standard deviation (W m-2).
+        alpha_ix : int
+            Index at which albedo is stored in the particle array.
+        mod_ix : int
+            Index at which model index is stored in the particle array.
+        swe_ix : int
+            Index at which snow water equivalent is stored in the particle
+            array.
+        tacc_ix : int
+            Index at which accumulated temperature since last snowfall is
+            stored in the particle array.
+        mb_ix : int
+            Index at which cumulative mass balance is stored in the particle
+            array.
+        tacc_ice : float
+            Default value for the sum of positive temperatures that an ice
+            surface has experienced (determines the albedo of ice).
+        model_error_mean : float
+            Additive model error mean.
+        model_error_std :
+            Additive model error standard deviation.
+        param_random_walk : bool, optional
+            Whether to let the parameters do a random walk. Default: False.
+        snowredistfac : bool, optional
+            Whether to use a snow redsitribution factor. Default: False.
+        use_psol_multiplier : bool, optional
+            Whether to use the periodic multiplier for solid precipitation.
+            Default: False.
+        seed : int, optional
+            Seed to use to make experiments reproducible. Default: None (do not
+            use seed).
 
         Returns
         -------
-
+        None
         """
 
-        conv_fac = cfg.FLUX_TO_DAILY_FACTOR
         doy = date.dayofyear
 
         # get the prediction from the MB models
@@ -1958,9 +1935,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         # todo: change std to weighted std
         print('N model particles:', self.n_model_particles)
-        print('MU_ICE: ', np.average(params_per_model[0][:, 0],
-                                     weights=self.model_weights[0]),
-                          np.std(params_per_model[0][:, 0]))
+        try:
+            print('MU_ICE: ', np.average(params_per_model[0][:, 0],
+                                         weights=self.model_weights[0]),
+                              np.std(params_per_model[0][:, 0]))
+        except ZeroDivisionError:
+            pass
 
         for i, m in enumerate(mb_models_inst):
             # todo: select meteo actually doesn't have to be done per model
@@ -1972,7 +1952,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             temp_rand = gmeteo.get_tmean_at_heights(date, h, random_seed=seed)
             tmax_rand = gmeteo.get_tmax_at_heights(date, h, random_seed=seed)
             psol_rand, _ = gmeteo.get_precipitation_solid_liquid(
-                date, h, tmean=temp_rand)
+                date, h, tmean=temp_rand, random_seed=seed)
 
             # the 'RAIN' indicator means for sure no accumulation.
             try:
@@ -1989,12 +1969,14 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             if snowredistfac is not False:
                 psol_rand *= np.atleast_2d(snowredistfac[:, i]).T
 
-            sis_rand = np.atleast_2d(gmeteo.randomize_variable(date, 'sis'))
-            sis_rand = sis_rand * ssf
+            sis_rand = np.atleast_2d(gmeteo.randomize_variable(date, 'sis',
+                                                               random_seed=seed))
+            sis_rand *= ssf
 
             # todo: is perfect correlation a good assumption?
             ipot_reshape = np.repeat(np.atleast_2d(ipot).T,
                                      self.n_model_particles[i], axis=1)
+            np.random.seed(seed)
             ipot_rand = ipot_reshape + \
                         np.atleast_2d(np.random.normal(
                             0., ipot_sigma, self.n_model_particles[i]))
@@ -2016,22 +1998,26 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                              range(self.spatial_dims[0])])
 
             mb_daily = []
+            # todo: vectorize MB calculation per model!!!
             for pi in range(model_params.shape[0]):
                 # compile a dictionary with the current values (makes it safer)
                 if param_random_walk is True:
+                    np.random.seed(seed)
                     random_pi = np.random.choice(range(model_params.shape[0]))
                     param_dict = dict(zip(m.cali_params_list,
                                           model_params[random_pi, :len(
                                               m.cali_params_list)]))
                 else:
                     param_dict = dict(zip(m.cali_params_list, model_params[pi,
-                                                              :len(
-                                                                  m.cali_params_list)]))
+                                                              :len(m.cali_params_list)]))
 
                 param_dict.update({'psol': psol_rand[:, pi],
                                    'tmean': temp_rand[:, pi],
                                    'tmax': tmax_rand[:, pi],
                                    'sis': sis_rand[:, pi]})
+
+                # todo: first update SWE here?????? we also update alpha at t first and then calculate the MB (ablation)
+                swe[:, pi] += param_dict['psol']
 
                 # update tacc/albedo depending on SWE
                 tacc[param_dict['psol'] >= 1., pi] = 0.
@@ -2042,38 +2028,37 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                 if no_snow_ix.any():
                     tacc[no_snow_ix, pi] = tacc_ice
 
-                # todo: first update SWE here?????? we also update alpha at t first and then calculate the MB (ablation)
-                # todo: MB calculation should be separated into accumulation (calculate first) and ablation (calculate after alpha/swe are updated)
-
                 # todo: the underlying albedo should depend on the SWE
-                alpha[:, pi] = point_albedo_brock(swe[:, pi], tacc[:, pi], swe[:, pi] == 0.,
+                alpha[:, pi] = point_albedo_brock(swe[:, pi], tacc[:, pi],
+                                                  swe[:, pi] == 0.,
                                                   a_u=cfg.PARAMS['ice_albedo_default'])
 
                 # the model decides which MB to produce
                 if m.__name__ == 'BraithwaiteModel':
-                    mb = mb_braithwaite_point(**param_dict, swe=swe[:, pi])
+                    melt = melt_braithwaite(**param_dict, swe=swe[:, pi])
                 elif m.__name__ == 'HockModel':
-                    mb = mb_hock_point(**param_dict, ipot=ipot_rand[:, pi],
-                                       swe=swe[:, pi])
+                    melt = melt_hock(**param_dict, ipot=ipot_rand[:, pi],
+                                   swe=swe[:, pi])
                 elif m.__name__ == 'PellicciottiModel':
-                    mb = mb_pellicciotti_point(**param_dict, alpha=alpha[:,
+                    melt = melt_pellicciotti(**param_dict, alpha=alpha[:,
                                                                    pi])
                 elif m.__name__ == 'OerlemansModel':
-                    mb = mb_oerlemans_point(**param_dict, alpha=alpha[:, pi])
+                    melt = melt_oerlemans(**param_dict, alpha=alpha[:, pi])
                 else:
                     raise ValueError('Mass balance model not implemented for'
                                      ' particle filter.')
 
-                # convert m ice s-1 to m w.e. d-1
-                mb *= conv_fac
+                # m w.e. = mm / 1000. - m w.e.
+                mb = param_dict['psol'] / 1000. - melt
 
                 mb_daily.append(mb)
-                swe[:, pi] += mb
+                swe[:, pi] -= melt
 
             # important: clip SWE (we do it only once per model to save time)
             swe = np.clip(swe, 0., None)
 
             # add some additional model error (if defined) and append to list
+            np.random.seed(seed)
             mb_per_model.append(np.array(mb_daily) +
                                 np.atleast_2d(
                                     np.random.normal(model_error_mean,
@@ -2085,7 +2070,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         # assign all values to filter (would probably be better to merge all
         # first and then insert)
-        # todo: check if the assignments work
         particles = self.particles.copy()
         # 'F' to insert in the correct order
         for im in range(len(mb_models_inst)):
@@ -2130,20 +2114,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         obs_indices = np.where(~np.isnan(obs))
 
-        #mb_particles = self.particles[obs_indices[0], :, obs_ix]
-
-        #w = copy.deepcopy(self.log_weights[obs_indices[0], :])
-
         # todo: implement covariance solution with (a) more than one obs
         #  variable and (b) more than one obs locations
-        #w += np.log(stats.norm(mb_particles, obs_std).pdf(obs))
-
         # todo: not logic a this position, but weights over spatial domain
         #  should be all the same
         w = copy.deepcopy(self.log_weights[obs_indices[-1][0], :])
-        #w = copy.deepcopy(self.log_weights[obs_spatial_ix, :])
 
-        #plt.figure()
         for obs_loc in obs_indices[-1]:
             obs_s_ix = obs_spatial_ix[obs_loc]
             mb_particles = self.particles[obs_s_ix, :, obs_ix]
@@ -2155,34 +2131,10 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             h_obs_std = obs_std[0, obs_loc] / 0.9
             # todo: implement covariance solution > one obs variable
 
-            #if obs[0, obs_loc] > 0.:
-            #    a, b = (0. + (mb_particles - mb_particles_init) - obs[0, obs_loc]) / obs_std[0, obs_loc], (np.inf - obs[0, obs_loc]) / obs_std[0, obs_loc]
-            #elif obs[0, obs_loc] < 0.:
-            #    a, b = (-np.inf - obs[0, obs_loc]) / obs_std[0, obs_loc], (0. - obs[0, obs_loc]) / obs_std[0, obs_loc]
-
             # todo: this is the version that updates in observation space
-            w += -((h_obs - (h_status)) ** 2.) / (2. * h_obs_std ** 2)
-            #w += -((obs[0, obs_loc]-(mb_particles - mb_particles_init))**2.)/(
-            #                   2. * obs_std[0, obs_loc]**2)
+            w += -((h_obs - h_status) ** 2.) / (2. * h_obs_std ** 2)
 
-            #if len(obs_indices[0]) > 1:
-            #    plt.figure()
-            #    for mi in self.model_range:
-            #        plt.scatter((mb_particles - mb_particles_init)[np.where(
-            #            self.particles[obs_loc, :, 0] == mi)],
-            #                    np.log(np.exp(-((obs[0, obs_loc]-(
-            #                    mb_particles[np.where(self.particles[
-            ##                    obs_loc, :,
-            #                                          0] == mi)] -
-            #                                          mb_particles_init[
-            #                                           np.where(
-            #                                               self.particles[
-            ##                                               obs_loc, :,
-            #                                          0] == mi)]))**2)/(
-            #                       2. * obs_std[0, obs_loc]**2))))
-            #    plt.show()
-
-        w = w - np.max(w)
+        w -= np.max(w)
 
         new_wgts = w - np.log(np.sum(np.exp(w)))  # normalize
 
@@ -2191,7 +2143,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                                      self.log_weights.shape[0],
                                      axis=0)
 
-    def resample(self, phi=0.1, gamma=0.05, diversify=False):
+    def resample(self, phi=0.1, gamma=0.05, diversify=False, seed=None):
         """
         Resample adaptively.
 
@@ -2210,13 +2162,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         # get number of excess frequencies
         excess_particles = int(self.n_tot * (1 - self.n_models * phi))
-        #excess_shares = [np.clip(pi_t_j - phi, 0, None) for pi_t_j in
-        #                  self.model_prob]
         excess_shares = [np.clip(pi_t_j - np.log(phi), 0, None) for pi_t_j in
                          self.model_prob_log]
 
         excess_shares /= np.sum(excess_shares)
 
+        np.random.seed(seed)
         L_t_j = np.random.choice(self.n_models, excess_particles,
                                  p=excess_shares)
 
@@ -2227,13 +2178,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         # apply resampling procedure per model with arbitrary resampling method
         # divide first by model prob., to get the weights right for resampling
         # must be a list, since particles sizes can differ
-        # todo: neuer Ansatz Hansruedi
-        #weights_for_resamp = [self.model_weights[i] / self.model_prob[i] for
-        #                      i in self.model_range]
-        #weights_for_resamp = [np.exp(self.model_weights_log[i] -
-        #                            self.M_t_all[i]) / self.S_t_all[i] for \
-        #        i in self.model_range]
-        # todo: neuester Ansatz Hansruedi (22.04.2020)
         weights_for_resamp = [np.exp(self.model_weights_log[i] -
                                      self.model_prob_log[i]) for i in self.model_range]
         resample_indices = [stratified_resample(weights_for_resamp[i],
@@ -2253,23 +2197,15 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             new_p.append(npm)
 
         # compensate for over-/underrepresentation
-        # todo: changed for log
-        #new_weights_per_model = np.log(self.model_prob / N_t_j)
         new_weights_per_model = self.model_prob_log - np.log(N_t_j)
-        #new_weights_per_model = self.model_prob / N_t_j
 
         if (new_weights_per_model == 0.).any() or np.isinf(
                 new_weights_per_model).any():
             raise ValueError('New weights contain zero on Inf.')
 
-        #self.particles = np.concatenate(new_p)[np.newaxis, :, :]
         self.particles = np.concatenate(new_p, axis=1)
 
         # important: AFTER setting new particles; later comment: why again?
-        # todo: changed for log
-        #self.weights = np.hstack(
-        #    [np.tile(new_weights_per_model[i], int(N_t_j[i]))
-        #     for i in self.model_range])[np.newaxis, ...]
         self.log_weights = np.repeat(np.hstack([np.tile(new_weights_per_model[i], int(N_t_j[i]))
              for i in self.model_range])[np.newaxis, ...],
                                      self.spatial_dims[0], axis=0)
@@ -2308,9 +2244,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             model_ptcls = self.particles[self.stats_ix, mix[j]]
             mu_t_j = param_means[j]
             cov_theta_t_j = param_covs[j]
-            # todo: check if cov matrix should be transposed
-            #theta_tilde_t_k_nan = self.particles[mix[j]][:,
-            #                      self.state_indices['theta']]
             theta_tilde_t_k_nan = self.particles[self.stats_ix, mix[j]][:,
                                   self.state_indices['theta']]
             theta_tilde_t_k = theta_tilde_t_k_nan[:,
@@ -2328,16 +2261,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             (0, 0), (0, self.n_aug_vars - theta_tilde_t_k_new.shape[1])),
                    'constant', constant_values=np.nan)
 
-            # todo: does the assignment work here????
-            #self.particles[mix[j]][:, self.state_indices['theta']] = \
-            #    theta_tilde_t_k_new_pad
             model_ptcls[:, self.state_indices['theta']] = theta_tilde_t_k_new_pad
             model_ptcls_all.append(model_ptcls)
 
-        #self.particles = np.concatenate(model_ptcls_all)[np.newaxis, :, :]
         self.particles = np.repeat(np.concatenate(model_ptcls_all)[np.newaxis, :, :], self.spatial_dims[0], axis=0)
 
-    def evolve_theta(self, mu_0, Sigma_0, rho=0.9, change_mean=True):
+    def evolve_theta(self, mu_0, Sigma_0, rho=0.9, change_mean=True, seed=None):
         """
         Make the model parameters time-varying.
 
@@ -2371,6 +2300,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                 'theta']]
             theta_j = theta_j_nan[..., ~np.isnan(theta_j_nan[0, ...]).all(axis=0)]
             theta_j = np.log(theta_j)
+            np.random.seed(seed)
             zeta_t = np.random.multivariate_normal(np.zeros(len(Sigma_0[j])),
                                                    (1 - rho ** 2) * Sigma_0[j],
                                                    size=theta_j.shape[1])
@@ -2493,40 +2423,36 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         pass
 
 
-def mb_braithwaite_point(psol=None, mu_ice=None, tmean=None, swe=None,
-                         prcp_fac=None, tmelt=0., tmax=None, sis=None):
+def melt_braithwaite(psol=None, mu_ice=None, tmean=None, swe=None,
+                     prcp_fac=None, tmelt=0., tmax=None, sis=None):
     tempformelt = tmean - tmelt
     mu = np.ones_like(swe) * mu_ice
     mu[swe > 0.] = mu_ice * cfg.PARAMS['ratio_mu_snow_ice']
 
-    mb_day = psol - mu * tempformelt
-    icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
-    return icerate
+    return mu * tempformelt / 1000.
 
 
-def mb_hock_point(psol=None, mu_hock=None, a_ice=None, tmean=None,
-                  ipot=None, prcp_fac=None, swe=None, tmelt=0., tmax=None,
-                  sis=None):
+def melt_hock(psol=None, mu_hock=None, a_ice=None, tmean=None,
+              ipot=None, prcp_fac=None, swe=None, tmelt=0., tmax=None,
+              sis=None):
     tempformelt = tmean - tmelt
     a = np.ones_like(swe) * a_ice
     a[swe > 0.] = a_ice * cfg.PARAMS['ratio_a_snow_ice']
-    mb_day = psol - (mu_hock + a * ipot) * tempformelt
-    icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
-    return icerate
+    melt_day = (mu_hock + a * ipot) * tempformelt
+    return melt_day / 1000.
 
 
-def mb_pellicciotti_point(psol=None, tf=None, srf=None, tmean=None,
-                          sis=None, alpha=None, tmelt=1., prcp_fac=None,
-                          tmax=None):
+def melt_pellicciotti(psol=None, tf=None, srf=None, tmean=None,
+                      sis=None, alpha=None, tmelt=1., prcp_fac=None,
+                      tmax=None):
     melt_day = tf * tmean + srf * (1 - alpha) * sis
     melt_day[tmean <= tmelt] = 0.
-    mb_day = psol - melt_day
-    icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
-    return icerate
+
+    return melt_day / 1000.
 
 
-def mb_oerlemans_point(psol=None, c0=None, c1=None, tmean=None, sis=None,
-                       alpha=None, prcp_fac=None, tmax=None):
+def melt_oerlemans(psol=None, c0=None, c1=None, tmean=None, sis=None,
+                   alpha=None, prcp_fac=None, tmax=None):
     # todo: IMPORTANT: sign of c0 is changed to make c0 positive (log!)
     qmelt = (1 - alpha) * sis - c0 + c1 * tmean
     # melt only happens where qmelt > 0.:
@@ -2536,10 +2462,7 @@ def mb_oerlemans_point(psol=None, c0=None, c1=None, tmean=None, sis=None,
     # we want ice flux, so we drop RHO_W for the first...!?
     melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
 
-    # kg m-2 = kg m-2 - kg m-2
-    mb_day = psol - melt
-    icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
-    return icerate
+    return melt / 1000.
 
 
 def point_albedo_brock(swe, t_acc, icedist, p1=0.713, p2=0.112, p3=0.442,
@@ -2565,8 +2488,9 @@ def tacc_from_alpha_brock(alpha, p1=0.86, p2=0.155):
 
 
 def get_initial_conditions(gdir, date, n_samples, begin_mbyear=None,
-                           min_std_swe=0.025, min_std_alpha=0.05, min_std_tacc=10.,
-                           param_dict=None, fl_ids=None, ):
+                           min_std_swe=0.025, min_std_alpha=0.05,
+                           min_std_tacc=10., param_dict=None, fl_ids=None,
+                           seed=None):
     """
     Get initial conditions of SWE and albedo.
 
@@ -2621,6 +2545,7 @@ def get_initial_conditions(gdir, date, n_samples, begin_mbyear=None,
     mb_mean = np.nanmean(mb_init_raw, axis=1)
     mb_std = np.nanstd(mb_init_raw, axis=1)
     # ... so we only take random draws from the model runs
+    np.random.seed(seed)
     mb_init_random = mb_init_raw[:, np.random.randint(0, mb_init_raw.shape[1],
                                                size=n_samples)]
     swe_mean = np.nanmean(np.array(init_cond[1]), axis=0)
@@ -2632,9 +2557,10 @@ def get_initial_conditions(gdir, date, n_samples, begin_mbyear=None,
                         min_std_alpha, None)
     tacc_std = np.clip(np.nanstd(np.array(init_cond[3]), axis=0), min_std_tacc,
                        None)
+    np.random.seed(seed)
     rand_num = np.random.randn(n_samples)
-    swe_init = np.clip(rand_num * np.atleast_2d(swe_std).T + np.atleast_2d(swe_mean).T,
-            0., None)
+    swe_init = np.clip(rand_num * np.atleast_2d(swe_std).T +
+                       np.atleast_2d(swe_mean).T, 0., None)
     # todo: by choosing the same random number, we assume correaltion=-1 between tacc and swe: the correlation should come from the modes though
     tacc_init = np.clip(rand_num * np.atleast_2d(tacc_std).T +
                         np.atleast_2d(tacc_mean).T, 0., None)
@@ -2665,7 +2591,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
              qhisto_by_model=False, limit_to_camera_elevations=False,
              adjust_heights=False, adjust_pelli=True,
              reset_albedo_and_swe_at_obs_init=False, pdata=None,
-             write_probs=False, crps_ice_only=False, use_tgrad_uncertainty=False):
+             write_probs=False, crps_ice_only=False,
+             use_tgrad_uncertainty=False):
     """
     Run the augmented ensemble particle filter.
 
@@ -2750,11 +2677,16 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     obs_std_scale_fac = 1.0
     sis_sigma = 15.  # try a bigger/smaller STDEV for SIS
 
-    min_std_alpha = 0.2#0.05
+    min_std_alpha = 0.0#0.05
     min_std_swe = 0.0#0.025  # m w.e.
     min_std_tacc = 0.0#10.0
 
     fixed_obs_std = None  # m w.e.
+
+    print('MIN_STD_ALPHA:, ', min_std_alpha, 'MIN_STD_SWE: ', min_std_swe,
+          'MIN_STD_TACC: ', min_std_tacc)
+
+    seed = 0
 
     # todo: change this and make it flexible
     # we stop one day earlier than the field date - anyway no obs anymore
@@ -2763,7 +2695,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     elif id == 'RGI50-11.B5616n-1':
         run_end_date = '2019-09-16'#'2019-09-17'#'2019-09-16'#
     elif id == 'RGI50-11.A55F03':
-        run_end_date = '2019-09-29'#'2019-09-30'#'2019-09-18'#
+        run_end_date = '2019-09-18'#'2019-09-30'#''#
     elif id == 'RGI50-11.B5616n-test':
         run_end_date = '2019-09-16'#'2019-09-17'#
     else:
@@ -2826,7 +2758,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         fl_ids = np.arange(len(fl_h))
 
     gmeteo = climate.GlacierMeteo(gdir, randomize=True,
-                                  n_random_samples=n_particles, heights=fl_h, use_tgrad_uncertainty=use_tgrad_uncertainty)
+                                  n_random_samples=n_particles, heights=fl_h,
+                                  use_tgrad_uncertainty=use_tgrad_uncertainty)
     # todo: ATTENTION: This doesn't change sis_sigma in gmeteo.meteo!!!
     if sis_sigma is not None:
         gmeteo.sis_sigma = np.ones_like(gmeteo.sis_sigma) * sis_sigma
@@ -2858,7 +2791,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                                                       fl_ids=fl_ids,
                                                       min_std_alpha=min_std_alpha,
                                                       min_std_swe=min_std_swe,
-                                                      min_std_tacc=min_std_tacc)
+                                                      min_std_tacc=min_std_tacc,
+                                                      seed=seed)
         print('Initial conditions from ', autumn_obs_begin_mbyear_min,
               ' to ', pd.Timestamp(min(first_obs_date)))
     else:
@@ -2926,6 +2860,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
 
             #if pdata_init_otype[foix] == 'ice':
 
+            np.random.seed(seed)
             gauss_range = np.random.normal(point_mb, bp_unc, size=n_particles)
             gauss_range = np.clip(gauss_range, point_mb - bp_unc, point_mb + bp_unc)
 
@@ -2946,6 +2881,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         if len(run_sel) == 0:
             raise ValueError
 
+        np.random.seed(seed)
         rand_choice_ix = np.random.choice(range(len(run_sel)),
                                           n_particles)
         #mb_init = mb_init_homo[:, np.array(run_sel)[rand_choice_ix]]
@@ -2978,7 +2914,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                                  param_prior_distshape,
                                  param_prior_std_scalefactor,
                                  generate_params, param_dict=prior_param_dict,
-                                 adjust_pelli=adjust_pelli)
+                                 adjust_pelli=adjust_pelli, seed=seed)
     # get snow redist fac
     snowredist_ds = xr.open_dataset(gdir.get_filepath('snow_redist'))
 
@@ -3035,6 +2971,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     mprob_list = []
     mpart_list = []
     run_example_list = []
+    np.random.seed(seed)
     if pdata is None:
         rand_45 = np.random.choice(range(n_particles), 45)
     else:
@@ -3087,7 +3024,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                      ipot_sigma, alpha_ix, mod_ix, swe_ix, tacc_ix, mb_ix,
                      tacc_ice, model_error_mean, model_error_std,
                      param_random_walk=param_random_walk,
-                     snowredistfac=snowredistfac)
+                     snowredistfac=snowredistfac, seed=seed)
 
         print(aepf.particles[-1, :, swe_ix])
 
@@ -3155,8 +3092,10 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                         indices_below = fl_h <= np.max(fl_h[s_index[dix]])
                         #ptcls[s_index[dix], :, alpha_ix] = cfg.PARAMS['ice_albedo_default']
                         #ptcls[s_index[dix], :, swe_ix] = 0.
+                        np.random.seed(seed)
                         ptcls[indices_below, :, alpha_ix] = np.random.normal(cfg.PARAMS[
                             'ice_albedo_default'], min_std_alpha, ptcls[indices_below, :, alpha_ix].shape)
+                        np.random.seed(seed)
                         ptcls[indices_below, :, swe_ix] = np.clip(np.random.normal(
                             0, min_std_swe, ptcls[indices_below, :, swe_ix].shape), 0., None)
                     aepf.particles = ptcls
@@ -3224,15 +3163,6 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
             ax1.errorbar(date, obs[0][voi], yerr=obs_std[0][voi], c='k',
             marker='o', fmt='o')
 
-            resampled_ptcls = \
-                resample_weighted_distribution((aepf.particles[:, :, mb_ix] -
-                                                aepf.particles[:, :, obs_init_mb_ix]),
-                                               aepf.weights, n_samples=500, axis=-1)
-            test_ens = crps_ensemble(obs[0].T*cfg.RHO_W/cfg.RHO, resampled_ptcls[s_index, :])
-            test_dir = crps_by_observation_height_direct(resampled_ptcls[s_index,:],
-                                                         obs.T*cfg.RHO_W/cfg.RHO,
-                                                         obs_std.T/cfg.RHO*cfg.RHO_W)
-            print(test_ens, test_dir)
             if analyze_error is True:
                 if limit_to_camera_elevations is True:
                     dep_list.append((obs - np.average(aepf.particles[:, :,
@@ -3251,25 +3181,39 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                                                           s_index, :],
                                                   axis=1)))
                     # todo: check if crps calc.is correct ('observational error is neglected')
-                    properscoring_crps = crps_ensemble(obs[0].T /cfg.RHO*cfg.RHO_W,
-                                                   (aepf.particles[s_index, :,mb_ix] -
-                                                   aepf.particles[s_index,:,obs_init_mb_ix])/cfg.RHO*cfg.RHO_W,
-                                                   aepf.weights[s_index, :])
-                    if (date == pd.Timestamp('2019-08-26')) or date == pd.Timestamp('2019-07-28'):
-                        print('stop')
-                    crps_1 = crps_by_observation_height(aepf, obs.T/cfg.RHO*cfg.RHO_W, obs_std.T/cfg.RHO*cfg.RHO_W, s_index, mb_ix, obs_init_mb_ix)
+                    #properscoring_crps = crps_ensemble(obs[0].T /cfg.RHO*cfg.RHO_W,
+                    #                               (aepf.particles[s_index, :,mb_ix] -
+                    #                               aepf.particles[s_index,:,obs_init_mb_ix])/cfg.RHO*cfg.RHO_W,
+                    #                               aepf.weights[s_index, :])
+                    #crps_1 = crps_by_observation_height(aepf, obs.T/cfg.RHO*cfg.RHO_W, obs_std.T/cfg.RHO*cfg.RHO_W, s_index, mb_ix, obs_init_mb_ix)
+                    resamp_ix = stratified_resample(
+                        aepf.weights[aepf.stats_ix, :], n_samples=1000,
+                        one_random_number=True, seed=seed)
+                    resamp_p, _ = \
+                        resample_from_index_augmented(((aepf.particles[s_index, :, mb_ix] - aepf.particles[s_index, :, obs_init_mb_ix]) * cfg.RHO_W / cfg.RHO)[:, :, np.newaxis], aepf.weights[s_index, :], resamp_ix)
+                    properscoring_crps = crps_ensemble(obs[0].T * cfg.RHO_W / cfg.RHO,
+                                             resamp_p[..., 0])
+                    crps_1 = crps_by_observation_height_direct(
+                        resamp_p[..., 0], obs.T * cfg.RHO_W / cfg.RHO,
+                        obs_std.T / cfg.RHO * cfg.RHO_W)
+                    four_ixs = np.random.uniform(low=0, high=resamp_p.shape[1]-1, size=4).astype(int)
+                    crps_2 = crps_by_observation_height_direct(resamp_p[:, four_ixs, 0], obs.T * cfg.RHO_W / cfg.RHO,
+                        obs_std.T / cfg.RHO * cfg.RHO_W)
                     if crps_ice_only is True:
                         print(obs_phase)
                         properscoring_crps[obs_phase[0] == 's'] = np.nan
                         crps_1[obs_phase[0] == 's'] = np.nan
+                        crps_2[obs_phase[0] == 's'] = np.nan
 
                     crps_list.append(properscoring_crps)
                     crps_1_list.append(crps_1)
+                    crps_2_list.append(crps_2)
             else:
                 dep_list.append(np.full_like(obs, np.nan))
                 # todo: check if crps calc.is correct ('observational error is neglected')
                 crps_list.append(np.full_like(obs[0].T, np.nan))
                 crps_1_list.append(np.full_like(obs[0].T, np.nan))
+                crps_2_list.append(np.full_like(obs[0].T, np.nan))
 
             analyze_error = True
             print('DEPARTURE AT VOI: ', dep_list[-1])
@@ -3332,9 +3276,9 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                                                           weights=w))
             # resample
             if (evolve_params is True) and (param_method == 'liu'):
-                aepf.resample(phi=phi, gamma=gamma, diversify=True)
+                aepf.resample(phi=phi, gamma=gamma, diversify=True, seed=seed)
             else:
-                aepf.resample(phi=phi, gamma=gamma, diversify=False)
+                aepf.resample(phi=phi, gamma=gamma, diversify=False, seed=seed)
 
             ax1.errorbar(date+pd.Timedelta(hours=0.75), np.average(
                 aepf.particles[s_index[voi], :, mb_ix],
@@ -3361,7 +3305,8 @@ mb_ix],
 
         if (evolve_params is True) and (param_method == 'memory'):
             aepf.evolve_theta(theta_priors_means, theta_priors_cov,
-                              rho=theta_memory, change_mean=change_memory_mean)
+                              rho=theta_memory, change_mean=change_memory_mean,
+                              seed=seed)
 
         #  check if minimum std requirements are fulfilled:
         increase_std_alpha = np.std(aepf.particles[..., alpha_ix],
@@ -3401,6 +3346,7 @@ mb_ix],
                                                aepf.particles.shape[0])])
     # todo: shuffle doesn't matter?
     # todo_subtract OBS_INIT=?
+    np.random.seed(seed)
     [np.random.shuffle(mb_during_assim_eq_weights[x, ...]) for x in range(
         mb_during_assim_eq_weights.shape[0])]
     mb_total = mb_until_assim + mb_during_assim_eq_weights
@@ -3411,11 +3357,31 @@ mb_ix],
         # to convert numbers in GLAMOS table to m w.e.
         rho_densities = [0.52, 0.47, 0.47, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9,
                         0.9, 0.9]
+        idxs = np.argmin(np.abs((fl_h - np.atleast_2d(
+            [3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228.,
+             2838., 2306., 2222.]).T)), axis=1)
+        ms = mb_total[idxs, :]
         print('MB at GLAMOS stakes: ',
               np.mean(mb_total[rho_stake_ids, :], axis=1))
         print('Height distances: ', np.min(np.abs((fl_h - np.atleast_2d([3234.,
               3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228., 2838.,
               2306., 2222.]).T)), axis=1))
+        plt.figure()
+        rho_glamos = np.array(
+            [250, 91, 92, -178, -483, -645, -635, -548, -702, -83, -640,
+             -759]) / 100. * rho_densities
+        rho_mean = np.mean(ms, axis=1)
+        rho_std = np.std(ms, axis=1)
+
+        plt.scatter([3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228., 2838., 2306., 2222.], rho_glamos, label = 'GLAMOS')
+        plt.errorbar([3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228., 2838., 2306., 2222.], rho_mean, yerr = rho_std, fmt = 'o', label = 'MOD', c = 'g')
+        mad = np.mean(np.abs(rho_mean - rho_glamos))
+        plt.title('RHONE MAD: {:.2f} m w.e.'.format(mad))
+        plt.xlabel('Elevation (m)')
+        plt.ylabel('Mass Balance in OBS period (m w.e.)')
+        plt.legend()
+        plt.show()
+
     if id == 'RGI50-11.B5616n-1':
         fin_stake_ids = np.argmin(np.abs((fl_h - np.atleast_2d(
             [2619., 2597., 2680., 2788., 2920., 3036., 3122., 3149., 3087.,
@@ -3622,7 +3588,9 @@ def corr_term(mu, sigma):
 def crps_by_observation_height_direct(ptcls, h_obs, h_obs_std, wgts=None):
     """ PTCLS, h_obs and h_obs_std must be given in OBS SPACE!!!"""
     if wgts is None:
-        wgts = np.ones_like(ptcls) / ptcls.shape[1]
+        wgts = np.ones(ptcls.shape[1]) / ptcls.shape[1]
+    # weights may not be n-dimensional at the moment
+    assert wgts.ndim == 1
     first_term = np.nansum(wgts * A_normal(h_obs - ptcls, h_obs_std**2), axis=1)
     len_weights = len(wgts)
     second_term = -0.5 * np.nansum([np.nansum(wgts * wgts[l] * A_normal((ptcls.T - ptcls[:, l]).T, 2 * h_obs_std**2), axis=1) for l in
@@ -3662,7 +3630,7 @@ def crps_by_water_equivalent(aepf, h_obs, h_obs_std, obs_ix, mb_ix, obs_init_mb_
 def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
                              param_prior_distshape,
                              param_prior_std_scalefactor, generate_params=None,
-                             param_dict=None, adjust_pelli=True):
+                             param_dict=None, adjust_pelli=True, seed=None):
     """
 
     Parameters
@@ -3697,7 +3665,7 @@ def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
                                                              fit=param_prior_distshape,
                                                              std_scale_fac=
                                                              param_prior_std_scalefactor[
-                                                                 i]))
+                                                                 i], seed=seed))
                         for i, m in enumerate(mb_models)]
         theta_priors_means = [np.median(np.log(tj), axis=0) for tj in
                               theta_priors]
@@ -3729,7 +3697,7 @@ def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
                                                              fit=param_prior_distshape,
                                                              std_scale_fac=
                                                              param_prior_std_scalefactor[
-                                                                 i]))
+                                                                 i], seed=seed))
                         for i, m in enumerate(mb_models)]
         theta_priors = [np.atleast_2d(np.mean(tj, axis=0)) for tj in
                         theta_priors]
