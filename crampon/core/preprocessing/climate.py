@@ -232,6 +232,35 @@ def interpolate_mean_precipitation_uncertainty(prcp_quant):
     return values_mean[indices]
 
 
+def interpolate_shortwave_rad_uncertainty(month_number):
+    """
+    Interpolate the shortwave radiation uncertainty for radiation grids.
+
+    Values are from [1]_ (p.76). At the moment, this value is constant over the
+    entire year. [1]_ says something around 20 W m-2 (mean absolute bias), so
+    we choose 10 W m-2.
+    # todo: 10 is not a good assumption - how to transform MAB into stdev?
+
+    Parameters
+    ----------
+    month_number: np.array
+        Month for which to give an estimate of interpolated temperature
+        uncertainty.
+
+    Returns
+    -------
+    np.array
+        Radiation mean absolute error for the respective month(s) (W m-2).
+
+    References
+    ----------
+    [1]_.. : Stöckli, R.: The HelioMont Surface Solar Radiation Processing.
+             MeteoSwiss, 2013.
+    """
+
+    return np.ones_like(month_number) * 10.
+
+
 def prcp_fac_annual_cycle(doy):
     """
     Interpolate the annual cycle of the precipitation correction factor.
