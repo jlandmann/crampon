@@ -462,6 +462,22 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
 
         self._snow = np.nansum(self.snowcover.swe, axis=1)
 
+        # get the snow redistribution factor, if desired and possible
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                print('not found')
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
+
     # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
     @property
     def snow(self):
