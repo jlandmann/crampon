@@ -1778,10 +1778,29 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         qmelt = np.clip(qmelt, 0., None)
 
         # kg m-2 d-1 = W m-2 * s * J-1 kg
+        # we want ice flux, so we drop RHO_W for the first...!?
         melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
 
         # kg m-2 = kg m-2 - kg m-2
         mb_day = iprcp_corr - melt
+
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            tmean + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+        self.time_elapsed = date
+
+        # remove old snow to make model faster
+        if date.day == 1:  # this is a good compromise in terms of time
+            oldsnowdist = np.where(self.snowcover.age_days > 365)
+            self.snowcover.remove_layer(ix=oldsnowdist)
+
+        # return kg m-2 s-1 kg-1 m3 = m ice s-1
+        icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
+        return icerate
+
+
+
 
 class ParameterGenerator(object):
     """Interface to calibrated temperature index model parameters."""
