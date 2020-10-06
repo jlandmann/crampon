@@ -1234,7 +1234,16 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             self.sis_scale_factor = None
 
         # get positive temperature sum since snowfall
-        self.tpos_since_snowfall = np.zeros_like(self.heights)
+        swe = np.nansum(self.snowcover.swe, axis=1)
+        init_tpos = np.zeros_like(self.heights)
+        init_tpos[swe == 0.] = cfg.PARAMS['tacc_ice']
+        init_tpos[swe > 0.] = cfg.PARAMS['tacc_ice'] / 2.
+        self.tpos_since_snowfall = init_tpos
+
+        # daily snowfall when alpha is reset (here: 1mm, Ragettli et al. 2015))
+        self.reset_alpha_swe = 1.  # it's in mm here, because precip is in mm
+
+        # get the snow redistribution factor, if desired and possible
         if snow_redist is True:
             try:
                 self.snowdistfac = xr.open_dataset(
@@ -1394,19 +1403,28 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
             # todo: getting efficiently pos t sum between doesn't work with arrays???
             if self.albedo_method == 'brock':
-                self.tpos_since_snowfall[iprcp_corr > 0.] = 0
-                self.tpos_since_snowfall[iprcp_corr <= 0.] += \
-                    climate.get_temperature_at_heights(self.meteo.tmax[ix],
+                self.tpos_since_snowfall[iprcp_corr >
+                                         self.reset_alpha_swe] = 0.
+                tmax = climate.get_temperature_at_heights(self.meteo.tmax[ix],
                                                        self.meteo.tgrad[ix],
                                                        self.meteo.ref_hgt,
-                                                       heights)[iprcp_corr <= 0.]
-                albedo = self.update_albedo(t_acc=self.tpos_since_snowfall)
+                                                       heights)
+                self.tpos_since_snowfall[iprcp_corr <=
+                                         self.reset_alpha_swe] += \
+                    np.clip(tmax[iprcp_corr <= self.reset_alpha_swe], 0., None)
+                # prcp not yet included
+                swe = np.nansum(self.snowcover.swe, axis=1) + iprcp_corr
+                icedist = (swe <= self.reset_alpha_swe / 1000.)
+                albedo = self.update_albedo(swe, self.tpos_since_snowfall,
+                                            icedist)
+                # important: set ice value for next day
+                self.tpos_since_snowfall[icedist] = cfg.PARAMS['tacc_ice']
             elif self.albedo_method == 'oerlemans':
                 age_days = self.snowcover.age_days[np.arange(
                     self.snowcover.n_heights), self.snowcover.top_layer]
                 albedo = self.albedo.update_oerlemans(self.snowcover)
             elif self.albedo_method == 'ensemble':
-                albedo = self.albedo.update_ensemble() # NotImplementedError
+                albedo = self.albedo.update_ensemble()  # NotImplementedError
             else:
                 raise ValueError('Albedo method is still not allowed.')
 
@@ -1512,7 +1530,16 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             self.sis_scale_factor = None
 
         # get positive temperature sum since snowfall
-        self.tpos_since_snowfall = np.zeros_like(self.heights)
+        swe = np.nansum(self.snowcover.swe, axis=1)
+        init_tpos = np.zeros_like(self.heights)
+        init_tpos[swe == 0.] = cfg.PARAMS['tacc_ice']
+        init_tpos[swe > 0.] = cfg.PARAMS['tacc_ice'] / 2.
+        self.tpos_since_snowfall = init_tpos
+
+        # daily snowfall when alpha is reset (here: 1mm, Ragettli et al. 2015))
+        self.reset_alpha_swe = 1.  # it's in mm here, because precip is in mm
+
+        # get the snow redistribution factor, if desired and possible
         if snow_redist is True:
             try:
                 self.snowdistfac = xr.open_dataset(
@@ -1662,15 +1689,21 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
             # todo: getting efficiently pos t sum between doesn't work with arrays???
             if self.albedo_method == 'brock':
-                self.tpos_since_snowfall[iprcp_corr > 0.] = 0
-                self.tpos_since_snowfall[iprcp_corr <= 0.] += \
+                self.tpos_since_snowfall[iprcp_corr >
+                                         self.reset_alpha_swe] = 0.
+                self.tpos_since_snowfall[
+                    iprcp_corr <= self.reset_alpha_swe] += np.clip(
                     climate.get_temperature_at_heights(self.meteo.tmax[ix],
-                                                       self.meteo.tgrad[
-                                                           ix],
+                                                       self.meteo.tgrad[ix],
                                                        self.meteo.ref_hgt,
                                                        heights)[
-                        iprcp_corr <= 0.]
-                albedo = self.update_albedo(t_acc=self.tpos_since_snowfall)
+                        iprcp_corr <= self.reset_alpha_swe], 0., None)
+                icedist = self.snowcover.get_total_height() <= 0.
+                swe = np.nansum(self.snowcover.swe, axis=1)
+                albedo = self.update_albedo(swe, self.tpos_since_snowfall,
+                                            icedist)
+                # important: set ice value for next day
+                self.tpos_since_snowfall[icedist] = cfg.PARAMS['tacc_ice']
             elif self.albedo_method == 'oerlemans':
                 age_days = self.snowcover.age_days[np.arange(
                     self.snowcover.n_heights), self.snowcover.top_layer]
