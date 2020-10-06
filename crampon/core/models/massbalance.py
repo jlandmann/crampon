@@ -753,7 +753,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
                 iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date)]
@@ -1146,8 +1145,9 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     """
 
     cali_params_list = ['tf', 'srf', 'prcp_fac']
-    cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.28, 1.5]))
-    calibration_timespan = (2005, None)
+    cali_params_guess = OrderedDict(zip(cali_params_list, [3., 0.13, 1.5]))
+    param_bounds = ([0.0, 0.0, 0.1], [np.inf, np.inf, 5.0])
+    calibration_timespan = (1984, None)
     prefix = 'PellicciottiModel_'
     mb_name = prefix + 'MB'
 
@@ -1195,9 +1195,11 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         super().__init__(gdir, mu_star=tf, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover, cali_suffix=cali_suffix)
+                         snowcover=snowcover, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         self.albedo = GlacierAlbedo(self.heights) #TODO: finish Albedo object
+        self.ice_albedo = cfg.PARAMS['ice_albedo_default']
 
         # todo: improve this IF: default is "brock" and ELIFs would be appropriate...but what is the ELSE then?
         if albedo_method is None:
