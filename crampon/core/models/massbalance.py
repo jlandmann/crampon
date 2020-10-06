@@ -1223,6 +1223,16 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         else:
             self.srf = srf
 
+        try:
+            self.sis_scale_factor = xr.open_dataset(gdir.get_filepath(
+                'sis_scale_factor')).sis_scale_fac.values
+            self.sis_scale_factor = np.concatenate([self.sis_scale_factor.T,
+                                                    np.atleast_2d(
+                                                        self.sis_scale_factor[
+                                                        :, -1])]).T
+        except FileNotFoundError:
+            self.sis_scale_factor = None
+
         # get positive temperature sum since snowfall
         self.tpos_since_snowfall = np.zeros_like(self.heights)
         if snow_redist is True:
@@ -1301,6 +1311,10 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         # Read timeseries
         # Todo: what to do with the bias? We don't calculate temp this way anymore
         isis = self.meteo.sis[ix]
+
+        if self.sis_scale_factor is not None:
+            doy = date.dayofyear
+            isis = isis * self.sis_scale_factor[:, doy-1]
 
         prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
                                                                    heights)
@@ -1487,6 +1501,16 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         else:
             self.c1 = c1
 
+        try:
+            self.sis_scale_factor = xr.open_dataset(gdir.get_filepath(
+                'sis_scale_factor')).sis_scale_fac.values
+            self.sis_scale_factor = np.concatenate([self.sis_scale_factor.T,
+                                                    np.atleast_2d(
+                                                        self.sis_scale_factor[
+                                                        :, -1])]).T
+        except FileNotFoundError:
+            self.sis_scale_factor = None
+
         # get positive temperature sum since snowfall
         self.tpos_since_snowfall = np.zeros_like(self.heights)
         if snow_redist is True:
@@ -1553,6 +1577,10 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         isis = self.meteo.sis[ix]
 
         tmean = self.meteo.get_tmean_at_heights(date, heights)
+        if self.sis_scale_factor is not None:
+            doy = date.dayofyear
+            isis = isis * self.sis_scale_factor[:, doy-1]
+
 
         # Todo: make precip calculation method a member of cfg.PARAMS
         prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
