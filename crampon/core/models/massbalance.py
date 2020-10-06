@@ -546,6 +546,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
     cali_params_list = ['mu_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [6.5, 1.5]))
+    param_bounds = ([0.0, 0.1], [np.inf, 5.0])
     prefix = 'BraithwaiteModel_'
     mb_name = prefix + 'MB'
 
@@ -899,6 +900,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
     cali_params_list = ['mu_hock', 'a_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(
         zip(cali_params_list, [1.8, 0.013, 1.5]))
+    param_bounds = ([0.0, 0.0, 0.1], [np.inf, np.inf, 5.0])
     prefix = 'HockModel_'
     mb_name = prefix + 'MB'
     # todo: is there also a factor of 0.5 between a_snow and a_ice?
@@ -1442,7 +1444,8 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
     cali_params_list = ['c0', 'c1', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [-110., 16., 1.5]))
-    calibration_timespan = (2005, None)
+    param_bounds = ([-225., 1., 0.1], [-5., 33., 5.0])
+    calibration_timespan = (1984, None)
     prefix = 'OerlemansModel_'
     mb_name = prefix + 'MB'
 
