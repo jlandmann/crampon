@@ -934,8 +934,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         else:
             self.a_ice = a_ice
 
-        # todo: this is the big question:
-        self.a_snow = cfg.PARAMS['ratio_mu_snow_ice'] * self.a_ice
+        self.a_snow = cfg.PARAMS['ratio_a_snow_ice'] * self.a_ice
 
         ipf = gdir.read_pickle('ipot_per_flowline')
         # flatten as we also concatenate flowline heights
