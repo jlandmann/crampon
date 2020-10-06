@@ -754,9 +754,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+            iprcp_fac = self.prcp_fac
 
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
@@ -766,8 +765,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         tempformelt = self.get_tempformelt(temp)
         prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
 
-        # todo: does this make sense now?
         prcpsol *= iprcp_fac
+        prcpsol *= self.prcp_bias
 
         # redistribute prcpsol if given
         if self.snowdistfac is not None:
@@ -993,7 +992,6 @@ class HockModel(DailyMassBalanceModelWithSnow):
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
                 iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date)]
@@ -1001,9 +999,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+            iprcp_fac = self.prcp_fac
 
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
@@ -1015,10 +1012,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
         # todo: does this make sense now?
         prcpsol *= iprcp_fac
-
-        #tmean = self.meteo.get_tmean_at_heights(date, heights)
-        #prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
-                                                                   #heights)
+        prcpsol *= self.prcp_bias
 
         # redistribute if given
         if self.snowdistfac is not None:
@@ -1319,12 +1313,13 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         # Read timeseries
         # Todo: what to do with the bias? We don't calculate temp this way anymore
-        isis = self.meteo.sis[ix]
+        isis = self.meteo.sis[ix] + self.sis_bias
 
         if self.sis_scale_factor is not None:
             doy = date.dayofyear
             isis = isis * self.sis_scale_factor[:, doy-1]
 
+        tmean = self.meteo.get_tmean_at_heights(date, heights) + self.temp_bias
         prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
                                                                    heights)
         prcpsol_unc *= self.prcp_bias
@@ -1555,6 +1550,18 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         else:
             self.snowdistfac = None
 
+        self._sis_bias = 0.
+
+
+    @property
+    def sis_bias(self):
+        """Shortwave incoming radiation bias to add to the original series."""
+        return self._sis_bias
+
+    @sis_bias.setter
+    def sis_bias(self, value):
+        """Set a bias for the shortwave incoming radiation."""
+        self._sis_bias = value
 
     def get_daily_mb(self, heights, date=None):
         """
@@ -1601,13 +1608,13 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
-        isis = self.meteo.sis[ix]
+        isis = self.meteo.sis[ix] + self.sis_bias
 
-        tmean = self.meteo.get_tmean_at_heights(date, heights)
         if self.sis_scale_factor is not None:
             doy = date.dayofyear
             isis = isis * self.sis_scale_factor[:, doy-1]
 
+        tmean = self.meteo.get_tmean_at_heights(date, heights) + self.temp_bias
 
         # Todo: make precip calculation method a member of cfg.PARAMS
         prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
