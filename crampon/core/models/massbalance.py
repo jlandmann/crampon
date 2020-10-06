@@ -483,8 +483,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
            self.snow_init = np.atleast_2d(snow_init)
 
         # todo: REPLACE THIS! It's just for testing
-        rho_init = np.zeros_like(self.snow_init)
-        rho_init.fill(100.)
+        rho_init = np.full_like(self.snow_init, cfg.PARAMS['rho_fresh_snow'])
         origin_date = dt.datetime(1961, 1, 1)
         if snowcover is None:
             self.snowcover = SnowFirnCover(self.heights, self.snow_init,
