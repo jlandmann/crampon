@@ -991,6 +991,18 @@ class HockModel(DailyMassBalanceModelWithSnow):
             Glacier mass balance at the respective heights in m ice s-1.
         """
 
+        # this is for the case that the glacier shape has changed:
+        # at the moment, we can only add constant value to ipot at the tongue
+        # todo: this makes life way too easy
+        if heights.shape[0] > self.ipot.shape[0]:
+            self.ipot = np.pad(
+                self.ipot, ((0, heights.shape[0]-self.ipot.shape[0]), (0, 0)),
+                mode='constant', constant_values=((0, self.ipot[-1]), (0, 0)))
+        elif heights.shape[0] < self.ipot.shape[0]:
+            self.ipot = self.ipot[:heights.shape[0], :]
+        else:
+            pass
+
         # index of the date of MB calculation
         ix = self.tspan_meteo_dtindex.get_loc(date)
 
@@ -1315,6 +1327,22 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             Glacier mass balance at the respective heights in m ice s-1.
         """
 
+        # this is for the case that the glacier shape has changed:
+        # at the moment, we can only add constand value to ipot at the tongue
+        # todo: this makes life way too easy
+        if heights.shape[0] > self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = np.pad(
+                self.tpos_since_snowfall, ((heights.shape[0] -
+                                            self.tpos_since_snowfall.shape[0]),
+                                           (0)),
+                               mode='constant',
+                               constant_values=(self.tpos_since_snowfall[-1]))
+        elif heights.shape[0] < self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = \
+                self.tpos_since_snowfall[:heights.shape[0]]
+        else:
+            pass
+
         # index of the date of MB calculation
         # Todo: Timeit and compare with solution where the dtindex becomes a parameter
         ix = self.meteo.get_loc(date)
@@ -1611,6 +1639,21 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
         """
+
+        # this is for the case that the glacier shape has changed:
+        # at the moment, we can only add constand value to ipot at the tongue
+        # todo: this makes life way too easy
+        if heights.shape[0] > self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = np.pad(self.tpos_since_snowfall, (
+                (heights.shape[0] - self.tpos_since_snowfall.shape[0]), (0)),
+                                              mode='constant',
+                                              constant_values=(
+                                              (self.tpos_since_snowfall[-1])))
+        elif heights.shape[0] < self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = self.tpos_since_snowfall[
+                                       :heights.shape[0]]
+        else:
+            pass
 
         # index of the date of MB calculation
         ix = self.tspan_meteo_dtindex.get_loc(date)
