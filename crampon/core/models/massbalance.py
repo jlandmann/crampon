@@ -435,6 +435,42 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
                  heights_widths=(None, None),
                  filename='climate_daily',
                  filesuffix='', cali_suffix='', snow_redist=True):
+        """
+        Instantiate.
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The glacier directory to set up the mass balance model for.
+        mu_star: float or None, optional
+            A relict from the OGGM mass balance model. Default: None (omit).
+        bias: float or None, optional
+            A mass balance bias. Default: None (no bias).
+        prcp_fac: float or pd.Series or None, optional
+            Precipitation correction factor from calibration. Default: None
+            (get from calibration file).
+        snow_init : np.ndarray or None, optional
+            Initial conditions for snow, given as snow water equivalent (m
+            w.e.). If None, the snow cover will be initiated with zero.
+            Default: None.
+        snowcover : `crampon.core.models.massbalance.SnowFirnCover` or None,
+                     optional
+            A SnowFirnCover object determining the initial conditions for snow
+            and firn on the glacier. If None, snow and firn will be initiated
+            with zeros.
+        heights_widths : tuple of np.array or None, optional
+            Glacier heights and widths as numpy arrays. If None, heights and
+            widths are taken from the glacier directory.
+        filename : str, optional
+            Filename for the climate to use. Default: 'climate_daily'.
+        filesuffix : str, optional
+            Suffix to use when mass balance shall be written to gdir. This is
+            not used yet. Default: '' (no suffix, i.e. use calibration.csv)
+        cali_suffix : str, optional
+            Suffix to use for calibration file.
+        snow_redist : bool, optional
+            Whether to use snow redistribution. Default: True.
+        """
 
         super().__init__(gdir, mu_star=mu_star, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
