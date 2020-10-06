@@ -3963,32 +3963,56 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         self.x = x.copy()
         self.a_snow_init = a_snow_init
         self.a_firn_init = a_firn_init
+        self.a_ice_default = cfg.PARAMS['ice_albedo_default']
+
+        # todo: make GlacierAlbedo time-aware (no memory though)
+        self.date = None
 
         if alpha is None:
-            self.x[snow_ix] = self.a_snow_init
+            self.alpha = np.ones_like(x) * cfg.PARAMS['snow_albedo_default']
+        else:
+            self.alpha = alpha
 
         self.tmax_avail = cfg.PARAMS['tminmax_available']
 
-    def update_brock(self, p1=0.86, p2=0.155, t_acc=None):
+    def update_brock(self, swe, t_acc, icedist, p1=0.713, p2=0.112, p3=0.442,
+                     p4=0.058, a_u=None, d_star=0.024, alpha_max=0.85):
         """
         Update the snow albedo using the method in [Brock et al. (2000)]_.
 
         Parameters
         ----------
-        p1: float, optional
-           Empirical coefficient, described by the albedo of fresh snow (for
-           Ta=1 deg C). Default: (see Pellicciotti et al., 2005 and Gabbi et
-           al, 2014).
-        p2: float, optional
-           Empirical coefficient. Default: (see Pellicciotti et al., 2005 and
-           Gabbi et al., 2014)
+        swe: array-like
+            Snow water equivalent (m w.e.)
         t_acc: array-like
             Accumulated daily maximum temperature > 0 deg C since snowfall.
             Default: None (calculate).
+        icedist: array_like
+            Ice distribution as boolean array. True where there is ice,
+            False where there is no ice.
+        p1: float, optional
+            Empirical coefficient. Default: 0.713 (see [Brock et al. (2000)]_).
+        p2: float, optional
+            Empirical coefficient. Default: 0.112 (see [Brock et al. (2000)]_).
+        p3: float, optional
+            Empirical coefficient. Default: 0.442 (see [Brock et al. (2000)]_).
+        p4: float, optional
+            Empirical coefficient. Default: 0.058 (see [Brock et al. (2000)]_).
+        a_u: float or array or None, optional
+            # todo: this should be a better default and allow underlying firn
+            Albedo of the underlying material (ice/firn). Default: None
+            (we set the albedo of ice from the parameter file)
+        d_star: float, optional
+            Scaling length for the snow water equivalent. Default: 0.0024 (see
+            [Brock et al. (2000)]_).
+        alpha_max: float, optional
+            Maximum albedo that all values are clipped to. Default: 0.85 (see
+            [Brock et al. (2000)]_).
+
 
         References
         ----------
-        [Brock et al. (2000)]_.. : Brock, B., Willis, I., & Sharp, M. (2000).
+        [Brock et al. (2000)] .. : Brock, B., Willis, I., & Sharp, M. (2000).
             Measurement and parameterization of albedo variations at Haut
             Glacier d’Arolla, Switzerland. Journal of Glaciology, 46(155),
             675-688. doi:10.3189/172756500781832675
@@ -3998,9 +4022,21 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         if t_acc is None:
             t_acc = self.get_accumulated_temperature()
 
-        # todo: check clipping with francesca: The function can become greater than one!
-        # clip at 1. so that alpha doesn't become bigger than p1
-        alpha = p1 - p2 * np.log10(np.clip(t_acc, 1., None))
+        if a_u is None:
+            a_u = cfg.PARAMS['ice_albedo_default']
+
+        # deep snow equation
+        # clip alpha at 1. so that alpha doesn't become bigger than p1
+        alpha_ds = np.clip((p1 - p2 * np.log10(t_acc)), None, alpha_max)
+        # shallow snow equation
+        alpha_ss = np.clip((a_u + p3 * np.exp(-p4 * t_acc)), None, alpha_max)
+        # combining deep and shallow
+        alpha = (1. - np.exp(-swe / d_star)) * alpha_ds + \
+                np.exp(-swe / d_star) * alpha_ss
+
+        # where there is ice, put its default albedo
+        alpha[icedist] = self.a_ice_default
+        self.alpha = alpha
         return alpha
 
     def update_oerlemans(self, snowcover, a_frsnow_oerlemans=0.75,
@@ -4073,11 +4109,17 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         # here comes the snowfall event threshold (eq. 6 in paper)
         sh_too_low = np.where(snow_depth < event_thresh)
         alpha_i_total[sh_too_low] = a_background[sh_too_low]
-
+        self.alpha = alpha_i_total
         return alpha_i_total
 
-    def update_ensemble(self):
+    def update_ensemble(self, snowcover):
         """ Update the albedo using an ensemble of methods."""
+
+        alpha_brock = self.update_brock()
+        alpha_oerlemans = self.update_oerlemans(snowcover)
+
+        # self.alpha = alpha_ens
+        # self.sigma_alpha = np.std(alpha_ens, axis=)
 
         raise NotImplementedError
 
