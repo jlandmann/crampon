@@ -4728,6 +4728,240 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     return cover
 
 
+def get_melt_percentiles(gdirs, date, mbclim_suffix='', clip_mbclim=None):
+    """
+    Get the current percentile of the melt distribution for observed glaciers.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of `py:class:crampon.GlacierDirectory`s for which to get the
+        percentiles of current melt in the climatological melt distribution.
+    date: pd.Timestamp
+        Date for which to get the percentiles.
+    mbclim_suffix: str
+        Suffix for the mass balance climatology file. Default: '' (no suffix).
+        Possible e.g. 'fischer' for the mass balance climatology from
+        calibration on geodetic mass balances.
+    clip_mbclim: str or tuple
+        String of reference period allowed in
+        MassBalance.get_climate_reference_period() or tuple of None and/or
+        years.
+
+    Returns
+    -------
+    pctl_dict: dict
+        Dictionary with the GlacierDirectory objects as keys and the percentile
+        lists from the zeroth to the 100th percentile as values.
+    """
+
+    pctl_list = []
+    for g in gdirs:
+        clim = g.read_pickle('mb_daily' + mbclim_suffix)
+        if clip_mbclim is not None:
+            clim = clim.mb.get_climate_reference_period(ref_period=clip_mbclim)
+        # todo: for the assimilated mass balance no suffix necessary (yet?)
+        curr = g.read_pickle('mb_assim')
+
+        # get first assimilation date
+        obs = prepare_holfuy_camera_readings(g)
+        first_assim = pd.Timestamp(obs.date.values[0])
+
+        # select onl those DOYs within the span of the year
+        clim_cs = clim.mb.select_doy_span(first_assim.dayofyear, date.dayofyear)
+        curr_cs = curr.mb.select_doy_span(first_assim.dayofyear, date.dayofyear)
+
+        # select only melt days in the time span
+        clim_cs = clim_cs.where(clim_cs.MB <= 0.)
+        curr_cs = curr_cs.where(curr_cs.MB <= 0.)
+
+        # make custom hydrolo years beginning at the first assimilation date
+        climhyears = clim_cs.mb.make_hydro_years(bg_month=first_assim.month,
+                                                 bg_day=first_assim.day)
+        climdoys = clim_cs.mb.make_hydro_doys(climhyears,
+                                              bg_month=first_assim.month,
+                                              bg_day=first_assim.day)
+        # make cumsum and the percentiles on the last DOY of the span
+        mbcsclim = clim_cs.groupby(climhyears).apply(
+            lambda x: MassBalance.nan_or_cumsum(x))
+        climquant = mbcsclim.groupby(climdoys).apply(
+            lambda x: MassBalance.custom_quantiles(
+                x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
+
+        # same for current year
+        currhyears = curr_cs.mb.make_hydro_years(bg_month=first_assim.month,
+                                                 bg_day=first_assim.day)
+        currdoys = curr_cs.mb.make_hydro_doys(currhyears,
+                                              bg_month=first_assim.month,
+                                              bg_day=first_assim.day)
+        mbcscurr = curr_cs.groupby(currhyears).apply(
+            lambda x: MassBalance.nan_or_cumsum(x))
+        currquant = mbcscurr.groupby(currdoys).apply(
+            lambda x: mbcscurr.mb.custom_quantiles(
+                x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
+
+        # compare climatology and current distribution percentile-wise
+        percentiles = [percentileofscore(climquant, a) for a in currquant]
+
+        # save to list
+        pctl_list.append(percentiles)
+
+    # make it a dict so that we don't use the labeling
+    pctl_dict = dict(zip(gdirs, pctl_list))
+
+    return pctl_dict
+
+
+def extrapolate_melt_percentiles(pctl_dict, xi, yi, in_epsg=4326,
+                                 out_epsg=21781, extrap_func=None):
+    """
+    Interpolate the percentiles found for glaciers with data to space.
+    This function uses inverse distance weighting to extrapolate melt
+    percentiles from glacier with camera measurements to space. If there is
+    only one glacier with measurements, then use this value for all neighboring
+    glaciers.
+
+    Parameters
+    ----------
+    pctl_dict: dict
+         Dictionary with GlacierDirectory instances as keys and percentile
+         lists as values.
+    xi: array
+         X coordinates where to interpolate the percentiles to (should be in
+         out_epsg coordinate system).
+    yi: array
+        Y coordinates where to interpolate the observations to (should be in
+         out_epsg coordinate system).
+    in_epsg: int
+         EPSG number of the input coordinate system (glacier centroid).
+    out_epsg: int
+        EPSG number of the output coordinate system (grid with interpolated
+        percentiles).
+    extrap_func: funtion or None
+        Function to extrapolate percentiles into space. Allowed at the moment:
+        'simple_idw' for inverse distance weighting and 'scipy_idw' for inverse
+        distance weighting using NumPy's radial basis function in the linear
+        mode. Default: None (simple_idw).
+
+    Returns
+    -------
+    extrap_ds: xr.Dataset
+        dataset containing the distribution percentiles ('stat') of the
+        interpolated percentiles.
+    """
+
+    if extrap_func is None:
+        extrap_func = gis.simple_idw
+
+    inProj = Proj(init='epsg:{}'.format(in_epsg))
+    # should be metric (for interpolation)!?
+    outProj = Proj(init='epsg:{}'.format(out_epsg))
+    coord_list = []
+    pctl_list = []
+    for k, v in pctl_dict.items():
+        coord_list.append(transform(inProj, outProj, k.cenlon, k.cenlat))
+        pctl_list.append(v)
+    xi_mg, yi_mg = np.meshgrid(xi, yi)
+    xi_flat, yi_flat = xi_mg.flatten(), yi_mg.flatten()
+
+    extrap_list = []
+    npctls = np.arange(101)
+    # make a "percentile distribution of percentiles"
+    for npctl in npctls:
+        extrap = extrap_func([i for i, j in coord_list],
+                            [j for i, j in coord_list],
+                            [np.nanpercentile(k, npctl) for k in pctl_list],
+                             xi_flat, yi_flat)
+        extrap = extrap.reshape((yi.size, xi.size))
+        # todo: is this allowed?
+        extrap = np.clip(extrap, 0., 100.)
+        extrap_list.append(extrap)
+
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from matplotlib import cm
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot_surface(xi_mg, yi_mg,
+                    extrap_list[50], cmap=cm.RdYlGn)
+    ax.set_zlim3d(0, 100)
+    extrap_ds = xr.Dataset(
+        {'percentiles': (['x', 'y', 'stat'], np.array(extrap_list).T)},
+        coords={'x': (['x', ], xi), 'y': (['y', ], yi),
+                'stat': (['stat', ], npctls)})
+    return extrap_ds
+
+
+def infer_current_mb_from_melt_percentiles(gdirs, extrap_pctls, date,
+                                           date_range_obs, mbclim_suffix='',
+                                           in_epsg=4326, out_epsg=21781):
+    """
+    Calculate the current mass balance from an interpolated percentile map.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of `py:class:crampon.GlacierDirectory` instances to get the mass
+        balance for.
+    extrap_pctls: xr.Dataset
+        Dataset containing the distribution percentiles ('stat') of the
+        interpolated percentiles.
+    date_range_obs: pd.date_range
+        Date range of the observations that determine the time span when the
+        current mass balance has been assimilated.
+    mbclim_suffix: str
+        Suffix for the mass balance climatology file. Default: '' (no suffix).
+        Possible e.g. 'fischer' for the mass balance climatology from
+        calibration on geodetic mass balances.
+    in_epsg: int
+         EPSG number of the input coordinate system (glacier centroid).
+    out_epsg: int
+        EPSG number of grid with interpolated percentiles.
+
+    Returns
+    -------
+
+    """
+    inProj = Proj(init='epsg:{}'.format(in_epsg))
+    outProj = Proj(init='epsg:{}'.format(out_epsg))
+
+    out_list = []  # should be same order as gdirs list
+    print(gdirs)
+    for g in gdirs:
+        print(g)
+        print(g.rgi_id)
+        clim = g.read_pickle('mb_daily' + mbclim_suffix)
+        clim_cs = clim.mb.select_doy_span(date_range_obs[0].dayofyear,
+                                          date_range_obs[-1].dayofyear)
+
+        # todo: this is double code with above function
+        # select only melt day in the time span
+        clim_cs = clim_cs.where(clim_cs.MB <= 0.)
+        climhyears = clim_cs.mb.make_hydro_years(
+            bg_month=date_range_obs[0].month, bg_day=date_range_obs[0].day)
+        climdoys = clim_cs.mb.make_hydro_doys(climhyears,
+                                              bg_month=date_range_obs[0].month,
+                                              bg_day=date_range_obs[0].day)
+        mbcsclim = clim_cs.groupby(climhyears).apply(
+            lambda x: MassBalance.nan_or_cumsum(x))
+        climquant = mbcsclim.groupby(climdoys).apply(
+            lambda x: MassBalance.custom_quantiles(
+                x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
+
+        gx, gy = transform(inProj, outProj, g.cenlon, g.cenlat)
+
+        # get percentiles on dates where there is assimilation data
+        pctls_to_apply = extrap_pctls.sel(x=gx, y=gy,
+                                          method='nearest').percentiles.values
+
+        # turn the actual percentiles into melt during the period
+        mb_sel = np.nanpercentile(climquant, pctls_to_apply)
+
+        out_list.append(mb_sel)
+
+    return out_list
+
+
 if __name__ == '__main__':
     import geopandas as gpd
     from crampon import workflow
