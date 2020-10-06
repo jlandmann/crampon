@@ -56,6 +56,14 @@ class DailyMassBalanceModel(MassBalanceModel):
             Method to use for extrapolation when there are no calibrated
             parameters available for the time step where the mass balance
             should be calcul
+
+        Attributes
+        ----------
+        temp_bias : float, default 0
+            Add a temperature bias to the time series
+        prcp_bias : float, default 1
+            Precipitation factor to the time series (called bias for
+            consistency with `temp_bias`)
         """
 
         super().__init__()
@@ -124,6 +132,10 @@ class DailyMassBalanceModel(MassBalanceModel):
         self.t_liq = cfg.PARAMS['temp_all_liq']
         self.t_melt = cfg.PARAMS['temp_melt']
 
+        # Public attrs
+        self.temp_bias = 0.
+        self.prcp_bias = 1.
+
         # Read file
         fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
         with netCDF4.Dataset(fpath, mode='r') as nc:
@@ -152,9 +164,6 @@ class DailyMassBalanceModel(MassBalanceModel):
             self.ref_hgt = nc.ref_hgt
 
         self.meteo = climate.GlacierMeteo(self.gdir)
-
-        # Public attrs
-        self.temp_bias = 0.
 
         self._time_elapsed = None
 
@@ -676,8 +685,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
             self.pgrad = nc.variables['pgrad'][:]
             self.ref_hgt = nc.ref_hgt
 
-        # Public attrs
-        self.temp_bias = 0.
         if snow_redist is True:
             try:
                 self.snowdistfac = xr.open_dataset(
