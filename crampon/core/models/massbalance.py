@@ -3746,12 +3746,14 @@ class SnowFirnCover(object):
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _anderson_equation(rho_old, ovb_mass, deltat, eta0, etaa, temperature_sub, etab, snda, sndb, sndc, clippie, G=cfg.G):
+    def _anderson_equation(rho_old, ovb_mass, deltat, eta0, etaa,
+                           temperature_sub, etab, snda, sndb, sndc, clippie,
+                           G=cfg.G):
         """ This is just the actual equation, made faster with numba"""
         rho_new = (rho_old + (
                     rho_old * G * ovb_mass * deltat / eta0) * np.exp(etaa * (
-                    temperature_sub) - etab * rho_old) + deltat * rho_old * snda * np.exp(
-            sndb * (temperature_sub) - sndc * clippie))
+                    temperature_sub) - etab * rho_old) + deltat * rho_old *
+                   snda * np.exp(sndb * (temperature_sub) - sndc * clippie))
         return rho_new
 
     def merge_firn_layers(self, date):
