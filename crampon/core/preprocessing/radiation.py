@@ -739,6 +739,8 @@ def get_potential_irradiation_with_toposhade(gdir):
     ipot_ds = ipot_ds.transpose()
     # distribute back to original grid
     ipot_reproj = ds.salem.transform(ipot_ds)
+    ipot_reproj.ipot.encoding.update({'dtype': 'int16', 'scale_factor': 0.01,
+                                      '_FillValue': -9999})
     ipot_reproj.to_netcdf(gdir.get_filepath('ipot'))
 
 
