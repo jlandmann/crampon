@@ -1,7 +1,6 @@
 from __future__ import absolute_import, division
 
 from distutils.version import LooseVersion
-from salem import Grid, wgs84
 import os
 import numpy as np
 import pandas as pd
@@ -16,6 +15,7 @@ from functools import partial
 import geopandas as gpd
 import shapely
 import salem
+from salem import Grid, wgs84
 from oggm.core.gis import gaussian_blur, multi_to_poly,\
     _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks, \
     simple_glacier_masks
@@ -23,7 +23,7 @@ from oggm.utils import get_topo_file
 from scipy import stats
 
 import rasterio
-from rasterio.warp import reproject, Resampling
+from rasterio.warp import reproject, Resampling, SUPPORTED_RESAMPLING
 try:
     # rasterio V > 1.0
     from rasterio.merge import merge as merge_tool
@@ -69,7 +69,6 @@ def merge_rasters_rasterio(to_merge, outpath=None, outformat="Gtiff"):
             rf.close()
 
     return merged, profile
-
 
 
 # This could go to salem via a fork
@@ -324,7 +323,8 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
                 homo_dems.append(dst_array)
                 homo_dates.append(t.time.values)
 
-    # Stupid, but we need it until we are able to fill the whole galcier grid with valid DEM values/take care of NaNs
+    # Stupid, but we need it until we are able to fill the whole glacier grid
+    # with valid DEM values/take care of NaNs
     # Open DEM
     source = entity.DEM_SOURCE if hasattr(entity,
                                           'DEM_SOURCE') else None
@@ -364,29 +364,19 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
         'transform': dst_transform,
         'width': nx,
         'height': ny,
-        #'dtype': np.float32
+        # 'dtype': np.float32
     })
-
-    # Could be extended so that the cfg file takes all Resampling.* methods
-    # if cfg.PARAMS['topo_interp'] == 'bilinear':
-    #    resampling = Resampling.bilinear
-    # elif cfg.PARAMS['topo_interp'] == 'cubic':
-    #    resampling = Resampling.cubic
-    # else:
-    #    raise ValueError('{} interpolation not understood'
-    #                     .format(cfg.PARAMS['topo_interp']))
 
     try:
         resampling = Resampling[cfg.PARAMS['topo_interp'].lower()]
-    except ValueError:
-        raise ValueError(
+    except KeyError:
+        raise KeyError(
             '{} interpolation not understood. Must be a '
             'rasterio.Resampling method string supported by '
             'rasterio.warp.reproject).'
             .format(cfg.PARAMS['topo_interp']))
-    ## Once there is a SUPPORTED_RESAMPLING constant in rasterio.warp (with 1.0 release)
-    # if resampling not in SUPPORTED_RESAMPLING:
-    #     raise ValueError()
+    if resampling not in SUPPORTED_RESAMPLING:
+         raise ValueError('Given resampling method is not supported.')
 
     dem_reproj = gdir.get_filepath('dem')
     with rasterio.open(dem_reproj, 'w', **profile) as dest:
@@ -418,23 +408,20 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     gdir.write_pickle(dem_source_list, 'dem_source')
 
     # write homo dem time series
-    homo_dem_ts = xr.Dataset({'height': (['time', 'y', 'x'],
-                                     np.array(homo_dems))},
-                         coords={
-                             'x': np.linspace(dst_transform[2],
-                                              dst_transform[2] + nx *
-                                              dst_transform[0], nx),
-                             'y': np.linspace(dst_transform[5],
-                                              dst_transform[5] + ny *
-                                              dst_transform[4], ny),
-                             'time': homo_dates},
-                         attrs={'id': gdir.rgi_id, 'name': gdir.name,
-                                'res': dx, 'pyproj_srs': proj4_str,
-                                'transform': dst_transform})
+    homo_dem_ts = xr.Dataset(
+        {'height': (['time', 'y', 'x'], np.array(homo_dems))},
+        coords={'x': np.linspace(dst_transform[2], dst_transform[2] + nx *
+                                 dst_transform[0], nx),
+                'y': np.linspace(dst_transform[5], dst_transform[5] + ny *
+                                 dst_transform[4], ny),
+                'time': homo_dates},
+        attrs={'id': gdir.rgi_id, 'name': gdir.name, 'res': dx,
+               'pyproj_srs': proj4_str, 'transform': dst_transform})
     homo_dem_ts = homo_dem_ts.sortby('time')
     homo_dem_ts.to_netcdf(gdir.get_filepath('homo_dem_ts'))
 
     _ = calculate_geodetic_deltav(gdir)
+
 
 # Important, overwrite OGGM function
 define_glacier_region = define_glacier_region_crampon
