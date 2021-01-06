@@ -101,6 +101,12 @@ class TestClimate(unittest.TestCase):
                                                      np.array([2600, 2700]))
         np.testing.assert_equal(p_hgt, np.array([[5.15, 5.3], [10.5, 11.]]))
 
+    def test_interpolate_mean_temperature_uncertainty(self):
+        pass
+
+    def test_interpolate_mean_precipitation_uncertainty(self):
+        pass
+
     def test_prcp_fac_annual_cycle(self):
         cycle = climate.prcp_fac_annual_cycle(np.arange(1, 367))
         np.testing.assert_equal(np.argmin(cycle), 180)
@@ -234,4 +240,33 @@ class TestRadiation(unittest.TestCase):
         np.testing.assert_almost_equal(np.mean(result[:, 3]), 304.6, 1)
         np.testing.assert_almost_equal(np.argmax(result[:, 3]), 170)
         np.testing.assert_almost_equal(np.argmin(result[:, 3]), 354)
+
+def test_correct_radiation_for_terrain():
+    # test floats
+    # sun in zenith, terrain flat
+    float_result = radiation.correct_radiation_for_terrain(1000., 0., 0., 0.,
+                                                           0., 0.)
+    np.testing.assert_equal(float_result, 1000.)
+    # sun in zenith, terrain at 45 deg, facing south
+    float_result = radiation.correct_radiation_for_terrain(1000., 0.,
+                                                           np.pi / 4., np.pi,
+                                                           0., 0.)
+    np.testing.assert_almost_equal(float_result, 707.1, 1)
+
+    # sun in zenith, terrain at 45 deg, facing north - same value
+    float_result = radiation.correct_radiation_for_terrain(1000., 0.,
+                                                           np.pi / 4., 0.,
+                                                           0., 0.)
+    np.testing.assert_almost_equal(float_result, 707.1, 1)
+
+    # sun at 45 deg in south, terrain at 45 deg, facing south
+    float_result = radiation.correct_radiation_for_terrain(1000., 0.,
+                                                           np.pi / 4., np.pi,
+                                                           np.pi / 4., np.pi)
+    np.testing.assert_almost_equal(float_result, 1414.2, 1)
+
+
+    # array tests
+
+
 
