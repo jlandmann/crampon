@@ -97,10 +97,16 @@ def try_download_new_cirrus_files():
     if not cmeta.time.values[-1] == yesterday_np64:
         # otherwise PermissionError in the next try:
         cmeta.close()
-        # file from yesterday not yet on WSL server -> retry
-        log.info('No new meteo files from yesterday ({}) on WSL server...'
-                 .format(yesterday_np64))
-        raise FileNotFoundError
+
+        now = datetime.datetime.now()
+        if (now.hour >= 12) and (now.minute >= 21):
+            # file from yesterday not yet on WSL server -> retry
+            log.info('No new meteo files from yesterday ({}) on WSL server...'
+                     .format(yesterday_np64))
+            raise FileNotFoundError
+        else:
+            # it's normal that they are not there yet in the morning
+            pass
 
 
 def try_backup(gdirs):
@@ -217,7 +223,9 @@ if __name__ == '__main__':
 
     # Necessary in order not to have spikes anymore
     daily_tasks(gdirs)
+    daily_cosmo_tasks()
 
+    schedule.every().day.at("04:00").do(daily_cosmo_tasks).tag('daily-cosmo-tasks')
     schedule.every().day.at("12:21").do(daily_tasks, gdirs).tag('daily-tasks')
 
     print('Finished setup tasks, switching to operational...')
