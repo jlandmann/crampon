@@ -20,6 +20,8 @@ from oggm.core.climate import glacier_mu_candidates
 from oggm.core.climate import process_cru_data
 from crampon.core.preprocessing.climate import process_custom_climate_data
 from crampon.core.preprocessing.climate import update_climate
+from crampon.core.preprocessing.radiation import \
+    get_potential_irradiation_with_toposhade, distribute_ipot_on_flowlines
 
 from oggm.utils import copy_to_basedir
 from oggm.core.climate import apparent_mb_from_linear_mb
