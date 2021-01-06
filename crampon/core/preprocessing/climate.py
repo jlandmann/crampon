@@ -7,9 +7,6 @@ from glob import glob
 import crampon.cfg as cfg
 from crampon import utils
 from crampon.utils import lazy_property
-import itertools
-import scipy.optimize as optimize
-import matplotlib.pyplot as plt
 from scipy.stats import percentileofscore
 import numpy as np
 import pandas as pd
@@ -22,9 +19,7 @@ import xarray as xr
 import shutil
 import sys
 import datetime as dt
-
-# temporary
-from crampon.workflow import execute_entity_task
+import numba
 
 # Module logger
 log = logging.getLogger(__name__)
@@ -111,12 +106,20 @@ class MeteoSuisseGrid(object):
 
         return clipped
 
-    def get_reference_value(self, shpdir=None):
+    def get_reference_value(self, shppath=None):
+        """
+        Get a reference value for a polygon.
 
-        shape = salem.read_shapefile(shpdir, cached=True)
+        Parameters
+        ----------
+        shppath: str
+            Path to shapefile for whose polygon the reference value shall be
+            retrieved.
+        """
+        shape = salem.read_shapefile(shppath, cached=True)
         centroid = shape.centroid
 
-        return shape
+        raise NotImplementedError()
 
     def get_gradient(self):
         raise NotImplementedError()
@@ -316,6 +319,10 @@ def bias_correct_and_add_geosatclim(gdir: utils.GlacierDirectory,
     diff: xr.DataArray
         Mean difference between Heliomont and Geosatclim during the common time
         period.
+
+    Returns
+    -------
+    None
     """
     gsc_glacier = gsc.sel(lat=gdir.cenlat, lon=gdir.cenlon, method='nearest')
 
@@ -341,7 +348,7 @@ def bias_correct_and_add_geosatclim(gdir: utils.GlacierDirectory,
 
 
 # This writes 'climate_monthly' in the original version (doesn't fit anymore)
-@entity_task(log)
+@entity_task(log, writes=['climate_info'])
 def process_custom_climate_data_crampon(gdir):
     """Processes and writes the climate data from a user-defined climate file.
 
@@ -378,6 +385,10 @@ def process_custom_climate_data_crampon(gdir):
     pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
 
     # get closest grid cell and index
+    # todo: replace ilon&ilat as floats with ilon/ilat as an intersection of
+    #    the grid an the glacier shape
+    # nc_ts.set_roi(gdir.get_filepath('outlines'))
+
     ilon = np.argmin(np.abs(lon - gdir.cenlon))
     ilat = np.argmin(np.abs(lat - gdir.cenlat))
     ref_pix_lon = lon[ilon]
@@ -399,8 +410,7 @@ def process_custom_climate_data_crampon(gdir):
     prcp_qtls = np.array([percentileofscore(iprcp, p)/100. for p in
                           iprcp.values])
     temp_sigma = interpolate_mean_temperature_uncertainty(month_numbers)
-    prcp_sigma = interpolate_mean_precipitation_uncertainty(iprcp.values,
-                                                            prcp_qtls)
+    prcp_sigma = interpolate_mean_precipitation_uncertainty(prcp_qtls)
     sis_sigma = interpolate_shortwave_rad_uncertainty(month_numbers)
     # todo: what to do with tmin, tmax and the gradients?
 
@@ -439,15 +449,42 @@ def process_custom_climate_data_crampon(gdir):
         # change the ``file_name`` keyword!
         gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
                                         ihgt, ref_pix_lon, ref_pix_lat,
-                                        tmin=itmin, tmax=itmax, sis=isis,
+                                        tmin=itmin, tmax=itmax,
+                                        tgrad_sigma=itgrad_unc, sis=isis,
+                                        temp_sigma=temp_sigma,
+                                        prcp_sigma=prcp_sigma,
+                                        sis_sigma=sis_sigma,
                                         file_name='climate_daily',
                                         time_unit=nc_ts._nc.variables['time']
                                         .units)
     else:
         raise NotImplementedError('Climate data frequency not yet understood')
 
-    # for logging
-    end_date = time[-1]
+    hs = xr.open_mfdataset(
+        os.path.join(cfg.PATHS['climate_dir'],
+                     'griddata\\verified\\daily\\'
+                     'msgSISD_daily_global_radiation\\netcdf\\'
+                     'msg.SIS.D_ch02.lonlat_20*.nc'),
+        combine='by_coords')
+    hs = hs.SIS
+    gsc = xr.open_mfdataset(
+        os.path.join(cfg.PATHS['climate_dir'],
+                     'griddata\\verified\\daily\\'
+                     'msgSISD_daily_global_radiation\\netcdf\\'
+                     'Geosatclim\\*.nc'),
+        combine='by_coords')
+    gsc = gsc.SIS
+
+    # todo: shall we bias-correct with the mean bias over all Switzerland or
+    #  with the pixel-specific bias? Pixel-specific delivers the best result...
+    diff = (gsc.mean(['lat', 'lon']) - hs.mean(
+        ['lat', 'lon'])).load().groupby('time.dayofyear').mean().values
+    # hs_glacier = hs.sel(lat=gdir.cenlat, lon=gdir.cenlon, method='nearest')
+    # diff = (gsc_glacier.SIS - hs_glacier.SIS).groupby('time.dayofyear')
+    # .mean(skipna=True).values
+
+    # todo: this should be removed when we have the final Geosatclim version
+    bias_correct_and_add_geosatclim(gdir, gsc, diff)
 
     # metadata
     out = {'baseline_climate_source': fpath, 'baseline_hydro_yr_0': y0 + 1,
@@ -455,7 +492,7 @@ def process_custom_climate_data_crampon(gdir):
     gdir.write_json(out, 'climate_info')
 
 
-@entity_task(log, writes=['spinup_climate_daily'])
+# @entity_task(log, writes=['spinup_climate_daily'])
 def process_spinup_climate_data(gdir):
     """
     Process homogenized gridded data before 1961 into a spinup climate.
@@ -489,10 +526,9 @@ def process_spinup_climate_data(gdir):
     ref_pix_lat = lat[ilat]
 
     # Some special things added in the crampon function
-    #iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(fpath, ilon, ilat,
-    #                                                      def_grad, g_minmax,
-    #                                                      use_grad, def_pgrad,
-    #                                                      pg_minmax, use_pgrad)
+    # iprcp, itemp, igrad, ihgt = utils.joblib_read_climate(
+    #     fpath, ilon, ilat, def_grad, g_minmax, use_grad, def_pgrad,
+    #     pg_minmax, use_pgrad)
 
     local_climate = nc_ts.isel(dict(lat=ilat, lon=ilon))
     iprcp = local_climate.prcp
@@ -500,13 +536,13 @@ def process_spinup_climate_data(gdir):
     ihgt = local_climate.hgt
 
     if use_grad != 0:
-        itgrad = utils.get_tgrad_from_window(nc_ts, ilat, ilon, use_grad,
-                                       def_grad, g_minmax)
+        itgrad = utils.get_tgrad_from_window(
+            nc_ts, ilat, ilon, use_grad, def_grad, g_minmax)
     else:
         itgrad = np.zeros(len(nc_ts.time)) + def_grad
     if use_pgrad != 0:
-        ipgrad = utils.get_pgrad_from_window(nc_ts, ilat, ilon, use_pgrad,
-                                       def_pgrad, pg_minmax)
+        ipgrad = utils.get_pgrad_from_window(
+            nc_ts, ilat, ilon, use_pgrad, def_pgrad, pg_minmax)
     else:
         ipgrad = np.zeros(len(nc_ts.time)) + def_pgrad
 
@@ -552,7 +588,7 @@ def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
              for Switzerland over the past 150 years. Journal of Geophysical
              Research: Atmospheres, 124, 3783– 3799.
              https://doi.org/10.1029/2018JD029910
-    .. [2] : https://www.meteoschweiz.admin.ch/home/klima/schweizer-klima-im-detail/doc/Prod_rec.pdf
+    .. [2] : https://bit.ly/3nhbTQV
     """
 
     # todo: this is double code with make_climate_file: how to remove?
@@ -590,13 +626,13 @@ def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
     to_merge = glob(
         os.path.join(write_to, (globdir + '*.nc').format(str(which))))
     temp = xr.open_dataset([t for t in to_merge if 'TrecabsM' in t][0],
-                             decode_times=False)
+                           decode_times=False)
     prec = xr.open_dataset([r for r in to_merge if 'RrecabsM' in r][0],
-                             decode_times=False)
+                           decode_times=False)
 
     # drop some MeteoSwiss stuff
-    prec = prec.drop(['dummy', 'longitude_latitude'])
-    temp = temp.drop(['dummy', 'longitude_latitude'])
+    prec = prec.drop_sel(['dummy', 'longitude_latitude'])
+    temp = temp.drop_sel(['dummy', 'longitude_latitude'])
 
     # work on calendar - cftime can't read "months since" for "standard" cal.
     def _fix_time(ds):
@@ -625,11 +661,10 @@ def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
     if 'RrecabsM{}'.format(str(which)) in prec.variables:
         prec = prec.rename({'RrecabsM{}'.format(str(which)): 'prcp'})
 
-    month_length = xr.DataArray(utils.get_dpm(prec.time.to_index(),
-                                              calendar='standard'),
+    month_length = xr.DataArray(utils.get_dpm(prec.time.to_index()),
                                 coords=[prec.time], name='month_length')
     # generate "daily precipitation"
-    prec = prec / month_length
+    prec /= month_length
 
     # resample artificially to daily - no 'previous' available yet
     old_t_units = prec.time.units
@@ -638,12 +673,12 @@ def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
                                           pd.tseries.offsets.MonthBegin(1),
                                           pd.Timestamp(max(prec.time).item()) +
                                           pd.tseries.offsets.MonthEnd(1)),
-                       method='nearest', kwargs={'fill_value':'extrapolate'})
+                       method='nearest', kwargs={'fill_value': 'extrapolate'})
     temp = temp.interp(time=pd.date_range(pd.Timestamp(min(temp.time).item()) -
                                           pd.tseries.offsets.MonthBegin(1),
                                           pd.Timestamp(max(temp.time).item()) +
                                           pd.tseries.offsets.MonthEnd(1)),
-                       method='nearest', kwargs={'fill_value':'extrapolate'})
+                       method='nearest', kwargs={'fill_value': 'extrapolate'})
     nc_ts = xr.merge([temp, prec, hgt])
     nc_ts = nc_ts.sel(time=slice(None, '1960-12-31'))
     nc_ts.time.encoding['units'] = old_t_units  # no way to keep when interp
@@ -765,7 +800,8 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
                     # of course, exception...
                     if ftype == 'msgSISD_':
                         ftype = 'msg.SIS.D_'
-                    extracted = glob(os.path.join(ftp_write_to, ftype + '*'))[0]
+                    extracted = glob(os.path.join(ftp_write_to,
+                                                  ftype + '*'))[0]
                     move_to_file = os.path.join(move_to_dir,
                                                 os.path.basename(extracted))
                     try:
@@ -777,17 +813,19 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
                     pass
 
         # if at least one file was retrieved, assemble everything new
-        flist = glob(os.path.join(write_to, (globdir + '*.nc').format(mode, var)))
+        flist = glob(os.path.join(
+            write_to, (globdir + '*.nc').format(mode, var)))
 
         # do we want/need to create everything from scratch?
-        if how == 'from_scratch' or ((not os.path.exists(all_file)) and len(flist) > 0):
-        #if (len(r) > 0) or ((not os.path.exists(all_file)) and len(flist) > 0):
+        if how == 'from_scratch' or ((not os.path.exists(all_file)) and
+                                     len(flist) > 0):
             # Instead of using open_mfdataset (we need a lot of preprocessing)
             log.info('Concatenating {} {} {} files...'
                      .format(len(flist), var, mode))
             sda = utils.read_multiple_netcdfs(flist, chunks={'time': 50},
                                               tfunc=utils._cut_with_CH_glac)
-            # todo: throw an error if data are missing (e.g. files retrieved from Cirrus, pause, then only six from FTP)
+            # todo: throw an error if data are missing (e.g. files retrieved
+            #  from Cirrus, pause, then only six from FTP)
             log.info('Ensuring time continuity...')
             sda = sda.crampon.ensure_time_continuity()
             sda.encoding['zlib'] = True
@@ -798,7 +836,7 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
             old = utils.read_netcdf(all_file, chunks={'time': 50})
             new = utils.read_multiple_netcdfs(r, tfunc=utils._cut_with_CH_glac)
             sda = old.combine_first(new)
-            # todo: do we need to ensure time continuity? What happens if file is missing?
+            # todo: ensure time continuity? What happens if file is missing?
             sda.encoding['zlib'] = True
             sda.to_netcdf(all_file)
         else:
@@ -840,7 +878,7 @@ def make_nwp_file(write_to=None):
     """
     Compile the numerical weather prediction file for mass balance predictions.
 
-    # todo: make the prediction variable names exactly the same as in the climate file
+    # todo: make prediction variable names exactly same as in the climate file
 
     Parameters
     ----------
@@ -850,7 +888,9 @@ def make_nwp_file(write_to=None):
 
     """
     # todo: manage to get an environment with cfgrib running
-    # todo: actually, compared to the other functions above, this function should distribute an existing nwp.nc to all gdirs - the processing below should happen before
+    # todo: actually, compared to the other functions above, this function
+    #  should distribute an existing nwp.nc to all gdirs - the processing
+    #  below should happen before
 
     if not write_to:
         try:
@@ -898,9 +938,10 @@ def make_nwp_file(write_to=None):
     ftp.close()
     cfiles_c_1_e = cfiles_c1 + cfiles_ce
 
-    to_untargz = [os.path.join(cosmo_dir, os.path.basename(r)) for r in cfiles_c7]
+    to_untargz = [os.path.join(cosmo_dir, os.path.basename(r)) for r in
+                  cfiles_c7]
     to_unzip = [os.path.join(cosmo_dir, os.path.basename(r)) for r in
-                  cfiles_c_1_e]
+                cfiles_c_1_e]
 
     for dl_zipfile in to_unzip:
         utils.unzip_file(dl_zipfile)
@@ -911,33 +952,36 @@ def make_nwp_file(write_to=None):
 
     # COSMO-1
     # this gets 10m wind speed (ws), 10m wind direction (p3031), t2m, d2m
-    cosmo1_instant = xr.open_dataset(os.path.join(cosmo_dir, 'wsl_cosmo1_hydro-ch'),
-                           engine='cfgrib', backend_kwargs={
-            'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
-                               'stepType': 'instant'}})
+    cosmo1_instant = xr.open_dataset(
+        os.path.join(cosmo_dir, 'wsl_cosmo1_hydro-ch'), engine='cfgrib',
+        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
+                                           'stepType': 'instant'}})
     cosmo1_instant_resampled = cosmo1_instant.resample(step='1D').mean()
     # this gets total precipitation (tp)
-    cosmo1_accum = xr.open_dataset(os.path.join(cosmo_dir, 'wsl_cosmo1_hydro-ch'),
-                           engine='cfgrib', backend_kwargs={
-            'filter_by_keys': {'typeOfLevel': 'surface', 'stepType': 'accum'}})
+    cosmo1_accum = xr.open_dataset(
+        os.path.join(cosmo_dir, 'wsl_cosmo1_hydro-ch'), engine='cfgrib',
+        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface',
+                                           'stepType': 'accum'}})
     cosmo1_accum_resampled = cosmo1_accum.resample(step='1D').sum()
     cosmo1 = xr.merge([cosmo1_instant_resampled, cosmo1_instant_resampled])
 
     # COSMO-7
-    # this gets albedo, total cloud cover (0-1) and net shortwave rad. flux (not all times)
-    cosmo7_sinstant = xr.open_dataset(os.path.join(cosmo_dir, '{}{}_955'.format(run_day, run_hour), 'grib', 'iaceth7_00000000'),
-                           engine='cfgrib', backend_kwargs={
-            'filter_by_keys': {'typeOfLevel': 'surface',
-                               'stepType': 'instant'}})
+    # gets albedo, total cloud cover (0-1) & net SW rad. flux (not all times)
+    cosmo7_sinstant = xr.open_dataset(
+        os.path.join(cosmo_dir, '{}{}_955'.format(run_day, run_hour), 'grib',
+                     'iaceth7_00000000'), engine='cfgrib',
+        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface',
+                                           'stepType': 'instant'}})
     # this gets 2m temperature
-    cosmo7_aginstant = xr.open_dataset(os.path.join(cosmo_dir, 'iaceth7_03000000'),
-                           engine='cfgrib', backend_kwargs={
-            'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
-                               'stepType': 'instant'}})
+    cosmo7_aginstant = xr.open_dataset(
+        os.path.join(cosmo_dir, 'iaceth7_03000000'), engine='cfgrib',
+        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
+                                           'stepType': 'instant'}})
     # this gets total precipitation (tp)
-    cosmo7_saccum = xr.open_dataset(os.path.join(cosmo_dir, 'iaceth7_00000000'),
-                           engine='cfgrib', backend_kwargs={
-            'filter_by_keys': {'typeOfLevel': 'surface', 'stepType': 'accum'}})
+    cosmo7_saccum = xr.open_dataset(
+        os.path.join(cosmo_dir, 'iaceth7_00000000'), engine='cfgrib',
+        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface',
+                                           'stepType': 'accum'}})
 
     # COSMO-E
     # 20 runs + control
@@ -985,7 +1029,7 @@ def make_nwp_file(write_to=None):
 
     # make daily means/sums/max/mins for everything
     # merge everything together in one xr.Dataset
-    # write out as cosmo_predictions.nc that the mass balance prediction can access it
+    # write out as cosmo_predictions.nc for mass balance prediction to access
     cosmo_ds.to_netcdf(cfg.PATHS['nwp_file'])
 
     # remove the previous files that were downloaded
@@ -1045,7 +1089,7 @@ def update_climate(gdir, clim_all=None):
     pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
 
     gclim = xr.open_dataset(gdir.get_filepath('climate_daily'))
-    #last_day = gclim.time[-1]
+    # last_day = gclim.time[-1]
 
     if last_day < last_day_clim:
         clim_all_sel = clim_all.sel(dict(lat=gclim.ref_pix_lat,
@@ -1077,7 +1121,9 @@ class GlacierMeteo(object):
     Interface to the meteorological data belonging to a glacier geometry.
     """
 
-    def __init__(self, gdir, filename='climate_daily'):
+    def __init__(self, gdir, filename='climate_daily', heights=None,
+                 randomize=False, n_random_samples=1000,
+                 use_tgrad_uncertainty=False):
         """
         Instantiate the GlacierMeteo object.
 
@@ -1090,9 +1136,35 @@ class GlacierMeteo(object):
         gdir: :py:class:`crampon.GlacierDirectory`
             The GlacierDirectory object for which the GlacierMeteo object
             shall be set up.
+        filename: str
+            File name for the climate file to be read. Default:
+            'climate_daily'.
+        heights: np.array or None
+            Heights of the glacier discretization. Not necessary for
+            everything. If None, the values are taken from the flowlines
+            heights. Default: None.
+        randomize: bool
+            If True, randomize the values of meterological paramaters
+            with a Gaussian with the `sigma` values as standard deviation.
+        n_random_samples : int
+            If uncertain estimates for meteorological parameters are
+            desired (randomize=True), draw this number of random samples.
+            Default: 1000. Attention, choosing this as a high number can
+            blow things up easily, especially, when the glacier has many flow
+            line heights.
+        use_tgrad_uncertainty: bool
+            Whether to use the uncertainty in temperature gradient in randomize
+            mode as well. This first accounts for the random temperature error
+            in the meteorological grids, and ten applied on top a random
+            gradient derived from the standard error of the slope of the
+            calculated temperature gradient. Default: False (do not consider).
+
         """
         self.gdir = gdir
-        self._heights = self.gdir.get_inversion_flowline_hw()[0]
+        if heights is None:
+            self._heights = self.gdir.get_inversion_flowline_hw()[0]
+        else:
+            self._heights = heights
         self.meteo = xr.open_dataset(self.gdir.get_filepath(filename))
         self.index = self.meteo.time.to_index()
         self.tmean = self.meteo.temp.values
@@ -1105,6 +1177,10 @@ class GlacierMeteo(object):
             self.tmin = self.meteo.tmin.values
             self.tmax = self.meteo.tmax.values
             self.sis = self.meteo.sis.values
+        else:
+            self.tmin = None
+            self.tmax = None
+            self.sis = None
 
         # get the uncertainties - passively at the moment
         try:
@@ -1123,10 +1199,49 @@ class GlacierMeteo(object):
             self.sis_sigma = self.meteo.sis_sigma.values
         except AttributeError:
             self.sis_sigma = None
+        try:
+            self.tgrad_sigma = self.meteo.tgrad_sigma.values
+        except AttributeError:
+            self.tgrad_sigma = None
+
+        self.randomize = randomize
+        self.n_random_samples = n_random_samples
+        self.use_tgrad_uncertainty = use_tgrad_uncertainty
 
     @property
     def heights(self):
+        """Heights for which to get meteorological variables."""
         return self._heights
+
+    @lazy_property
+    def tmean_stdev(self):
+        """Standard deviation (over time) of mean temperature."""
+        return np.nanstd(self.tmean)
+
+    @lazy_property
+    def tmin_stdev(self):
+        """Standard deviation (over time) of minimum temperature."""
+        if self.tmin is not None:
+            return np.nanstd(self.tmin)
+        else:
+            raise ValueError('GlacierMeteo object does not have a tmin '
+                             'attribute (not generated from daily '
+                             'meteorological data)')
+
+    @lazy_property
+    def tmax_stdev(self):
+        """Standard deviation (over time) of maximum temperature."""
+        if self.tmax is not None:
+            return np.nanstd(self.tmax)
+        else:
+            raise ValueError('GlacierMeteo object does not have a tmax '
+                             'attribute (not generated from daily '
+                             'meteorological data)')
+
+    @lazy_property
+    def prcp_stdev(self):
+        """Standard deviation (over time) of precipitation."""
+        return np.nanstd(self.prcp)
 
     @lazy_property
     def data_quantiles(self, var_name):
@@ -1143,7 +1258,7 @@ class GlacierMeteo(object):
 
     @lazy_property
     def days_since_solid_precipitation(self, heights, min_amount=0.002,
-                                      method=None, **kwargs):
+                                       method=None, **kwargs):
         """
         Lazy-evaluated number of days since there was solid precipitation.
 
@@ -1176,8 +1291,8 @@ class GlacierMeteo(object):
         raise NotImplementedError
         dssp = np.ones((len(heights), len(self.tmean)))
         for i in range(len(self.tmean)):
-            precip_s, _ = self.get_precipitation_liquid_solid(date, method=method,
-                                                              **kwargs)
+            precip_s, _ = self.get_precipitation_solid_liquid(
+                date, method=method, **kwargs)
             where_precip_s = np.where(precip_s >= min_amount)
             dssp[i, where_precip_s] = 0
 
@@ -1200,7 +1315,63 @@ class GlacierMeteo(object):
         else:
             return self.index.get_loc(date)
 
-    def get_tmean_at_heights(self, date, heights=None):
+    def randomize_variable(self, date, var, random_seed=None):
+        """
+        Randomize a variable (create random samples from a Gaussian).
+
+        Parameters
+        ----------
+        date: pd.Timestamp
+            Date on which to randomize the variable.
+        var : str
+            Variable to randomize.
+        random_seed: int or None, optional
+            Whether to put a random seed, i.e. make the results reproducible.
+
+        Returns
+        -------
+        randomized: np.array
+             Desired variable randomized.
+        """
+        ix = self.get_loc(date)
+        # todo: distinguish additive noise (temperatures) and multiplicative
+        #  noise (prcp, sis) ok?
+        var_value = getattr(self, var)[ix]
+        var_sigma = getattr(self, var+'_sigma')[ix]
+
+        # if var in ['tmean', 'tmin', 'tmax', 'sis']:
+        #    gauss_noise_add = np.random.normal(0, var_sigma,
+        #                                       self.n_random_samples)
+        #    randomized = gauss_noise_add + var_value
+        # elif var in ['prcp']:
+        #    gauss_noise_mul = np.random.normal(0, var_sigma,
+        #                                       self.n_random_samples)
+        #    randomized = gauss_noise_mul * var_value
+        if random_seed is not None:
+            np.random.seed(random_seed)
+        gauss_noise_add = np.random.normal(0, var_sigma,
+                                           self.n_random_samples)
+        randomized = gauss_noise_add + var_value
+        return randomized
+
+    def get_tmean_at_heights(self, date, heights=None, random_seed=None):
+        """
+        Get the mean temperature at the given heights and date.
+
+        Parameters
+        ----------
+        date : pd.Timestamp
+            Date for which to calculate the mean temperature.
+        heights : np.array
+            Heights on which to calculate the temperature.
+        random_seed: int or None, optional
+            Whether to put a random seed, i.e. make the results reproducible.
+
+        Returns
+        -------
+        temp_at_hgts: np.array
+            Mean temperature at the given heights and date.
+        """
 
         if heights is None:
             heights = self.heights
@@ -1210,6 +1381,71 @@ class GlacierMeteo(object):
         tgrad = self.tgrad[date_index]
         temp_at_hgts = get_temperature_at_heights(temp, tgrad, self.ref_hgt,
                                                   heights)
+
+        if self.randomize is True:
+            temp_sigma = self.temp_sigma[date_index]
+            if random_seed is not None:
+                np.random.seed(random_seed)
+            temp_at_hgts = np.random.normal(
+                0, temp_sigma, size=self.n_random_samples) + \
+                np.atleast_2d(temp_at_hgts).T
+
+            if self.use_tgrad_uncertainty is True:
+                tgrad_sigma = self.tgrad_sigma[date_index]
+                if random_seed is not None:
+                    np.random.seed(random_seed)
+                random_grads = np.random.normal(tgrad, tgrad_sigma,
+                                                size=self.n_random_samples)
+                temp_at_hgts += np.atleast_2d(random_grads - tgrad) * \
+                    np.atleast_2d(heights - self.ref_hgt).T
+
+        return temp_at_hgts
+
+    # todo: remove this again, it's an emergency solution
+    def get_tmax_at_heights(self, date, heights=None, random_seed=None):
+        """
+        Get the maximum temperature at the given heights and date.
+
+        Parameters
+        ----------
+        date : pd.Timestamp
+            Date for which to calculate the mean temperature.
+        heights : np.array
+            Heights on which to calculate the temperature.
+        random_seed: int or None, optional
+            Whether to put a random seed, i.e. make the results reproducible.
+
+        Returns
+        -------
+        temp_at_hgts: np.array
+            Maximum temperature at the given heights and date.
+        """
+        if heights is None:
+            heights = self.heights
+
+        date_index = self.get_loc(date)
+        temp = self.tmax[date_index]
+        tgrad = self.tgrad[date_index]
+        temp_at_hgts = get_temperature_at_heights(temp, tgrad, self.ref_hgt,
+                                                  heights)
+
+        if self.randomize is True:
+            temp_sigma = self.temp_sigma[date_index]
+            if random_seed is not None:
+                np.random.seed(random_seed)
+            temp_at_hgts = np.random.normal(
+                0, temp_sigma, size=self.n_random_samples) + \
+                np.atleast_2d(temp_at_hgts).T
+
+            if self.use_tgrad_uncertainty is True:
+                tgrad_sigma = self.tgrad_sigma[date_index]
+                if random_seed is not None:
+                    np.random.seed(random_seed)
+                random_grads = np.random.normal(tgrad, tgrad_sigma,
+                                                size=self.n_random_samples)
+                temp_at_hgts += np.atleast_2d(
+                    random_grads - tgrad) * np.atleast_2d(
+                    heights - self.ref_hgt).T
 
         return temp_at_hgts
 
@@ -1244,7 +1480,7 @@ class GlacierMeteo(object):
             heights = self.heights.copy()
 
         temp_at_hgts = self.get_tmean_at_heights(date, heights)
-        # todo: simplify this by clipping (t_melt, None) or using t[t lt t_melt] = 0.
+        # todo: simplify by clipping(t_melt, None) or using t[t lt t_melt] = 0.
         above_melt = temp_at_hgts - t_melt
         return np.clip(above_melt, 0, None)
 
@@ -1331,8 +1567,8 @@ class GlacierMeteo(object):
         """
         return self.meteo.temp.resample(time='MS').mean(dim='time')
 
-    def get_precipitation_liquid_solid(self, date, heights=None, method=None,
-                                       **kwargs):
+    def get_precipitation_solid_liquid(self, date, heights=None, method=None,
+                                       tmean=None, random_seed=None, **kwargs):
         """
         Get solid and liquid fraction of precipitation.
 
@@ -1348,6 +1584,12 @@ class GlacierMeteo(object):
             [Magnusson et al. (2017)]_) and 'linear' (linear gradient between
             temperature thresholds). If None, method is determined from
             configuration file.
+        tmean: np.array
+            An option to give (random) values for tmean, which will determine
+            the fraction of solid precipitation and the total precipitation.
+            Default: None (generate (random) temperature).
+        random_seed: int or None, optional
+            Whether to put a random seed, i.e. make the results reproducible.
         **kwargs: keyword, value pairs, optional
             Keywords accepted by the method to determine the fraction of solid
             precipitation.
@@ -1374,9 +1616,16 @@ class GlacierMeteo(object):
 
         # important: we don't take compound interest formula (p could be neg!)
         prcptot = np.clip(prcptot, 0, None)
-        tm_hgts = self.get_tmean_at_heights(date, heights)
+
+        # tmean determines psol
+        if tmean is None:
+            tm_hgts = self.get_tmean_at_heights(date, heights)
+        else:
+            tm_hgts = tmean.copy()
         if method.lower() == 'magnusson':
-            # todo: instead of calculatng the temp_at_heights again one should make temp_at_heights a kwarg (otherwis get_loc is called two times => cost-intensive)
+            # todo: instead of calculatng the temp_at_heights again one should
+            #  make temp_at_heights a kwarg (otherwis get_loc is called two
+            #  times => cost-intensive)
             frac_solid = get_fraction_of_snowfall_magnusson(tm_hgts, **kwargs)
         elif method.lower() == 'linear':
             frac_solid = get_fraction_of_snowfall_linear(tm_hgts, **kwargs)
@@ -1384,6 +1633,18 @@ class GlacierMeteo(object):
             raise ValueError('Solid precipitation fraction method not '
                              'recognized. Allowed are "magnusson" and '
                              '"linear".')
+
+        if self.randomize is True:
+            # we have read the relative error: sigma * prcp + prcp
+            prcp_sigma = self.prcp_sigma[date_index]
+            if random_seed is not None:
+                np.random.seed(random_seed)
+            prcptot = np.random.normal(
+                1., prcp_sigma, size=self.n_random_samples) * \
+                np.atleast_2d(prcptot).T
+            # brute force clip at zero, since we take a Gaussian error distr.
+            prcptot = np.clip(prcptot, 0., None)
+
         prcpsol = prcptot * frac_solid
         prcpliq = prcptot - prcpsol
 
@@ -1429,10 +1690,10 @@ def get_precipitation_at_heights(prcp, pgrad, ref_hgt, heights):
     ----------
     prcp: float, array-like or xarray.DataArray
         Precipitation at the reference height (deg C or K).
+    pgrad: float, array-like or xarray.DataArray
+        The precipitation gradient to apply (K m-1).
     ref_hgt: float, array-like or xarray.DataArray
         Reference height (m).
-    grad: float, array-like or xarray.DataArray
-        The precipitation gradient to apply (K m-1).
     heights: np.array
         The heights where to interpolate the precipitation to.
 
@@ -1448,13 +1709,14 @@ def get_precipitation_at_heights(prcp, pgrad, ref_hgt, heights):
         try:
             return np.ones_like(heights) * np.array(prcp[:, np.newaxis]) + \
                    np.array(prcp[:, np.newaxis]) * \
-                   np.array(pgrad[:, np.newaxis]) * (heights -ref_hgt)
+                   np.array(pgrad[:, np.newaxis]) * (heights - ref_hgt)
         except IndexError:
             return np.ones_like(heights) * prcp.values[:, np.newaxis] + \
                    prcp.values[:, np.newaxis] * pgrad.values[:, np.newaxis] * \
                    (heights - ref_hgt)
 
 
+@numba.jit(nopython=True)
 def get_fraction_of_snowfall_magnusson(temp, t_base=0.54, m_rho=0.31):
     """
     Get the fraction of snowfall according to [Magnusson et al. (2017)]_.
