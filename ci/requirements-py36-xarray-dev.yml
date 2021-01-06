@@ -25,8 +25,15 @@ dependencies:
   - folium
   - mpld3
   - numba
+  - scikit-learn
+  - folium
+  - branca
+  - mpld3
+  - bokeh
+  - pysolar
   - pip
   - pip:
+    - git+https://github.com/fmaussion/salem.git
     - git+https://github.com/pydata/xarray.git
     - schedule
     - coveralls

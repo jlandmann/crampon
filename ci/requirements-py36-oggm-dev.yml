@@ -13,7 +13,7 @@ dependencies:
   - geopandas
   - rasterio
   - pandas>=0.25
-  - xarray>=0.12.2
+  - xarray>=0.16
   - dask
   - matplotlib
   - Pillow
@@ -24,6 +24,12 @@ dependencies:
   - folium
   - mpld3
   - numba
+  - scikit-learn
+  - folium
+  - branca
+  - mpld3
+  - bokeh
+  - pysolar
   - pip
   - pip:
     - git+https://github.com/OGGM/oggm.git
