@@ -1777,6 +1777,93 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         # melt only happens where qmelt > 0.:
         qmelt = np.clip(qmelt, 0., None)
 
+class EnsembleMassBalanceModel(object):
+    """A wrapper around mass balance models to get model mass balances at once.
+    """
+
+    # todo: this is still WIP
+    
+    def __init__(self, gdir, models=None, bias=0., **kwargs):
+        """
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The GlacierDirectory to get the mass balance for.
+        models: list of `py:class:crampon.core.massbalance.MassbalanceModel` or
+                 None
+            The mass balance models to include in the ensemble. All given mass
+            balance models must have the methods `get_daily_mb` and
+            `get_daily_specific_mb`.
+        bias: float
+            # todo: should this be a list of biases?
+            The mass balance model bias. Default: 0. (no bias)
+        **kwargs: dict
+            Keywords passed on to the mass balance model class.
+        """
+        self.gdir = gdir
+
+        if models is None:
+            self.models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
+        else:
+            self.models = models
+
+        # instantiate models
+        self.models = [m(gdir, bias=bias, **kwargs) for m in self.models]
+
+    def get_daily_mb(self, heights: np.ndarray, date: pd.Timestamp) -> list:
+        """
+        Get the daily mass balance at heights in term of meter ice per second.
+
+        Parameters
+        ----------
+        heights: array
+            Heights at which mass balance should be calculated.
+        date: pd.Timestamp
+            Date at which mass balance should be calculated.
+
+        Returns
+        -------
+        all_mb: list
+            A nested list with all mass balance values at the given heights.
+        """
+
+        all_mb = []
+        for m in self.models:
+            all_mb.append(m.get_daily_mb(heights, date))
+        return all_mb
+
+    def get_daily_specific_mb(self, heights, widths, date) -> list:
+        """
+        Get the daily specific mass balance at heights in terms of meter ice
+        per second.
+
+        Parameters
+        ----------
+        heights: ndarray
+            The altitudes at which the mass-balance will be computed.
+        widths: ndarray
+            The widths of the flowline (necessary for the weighted average).
+        date: pd.Timestamp or array of pd.Timestamp
+            The date(s) when to calculate the specific mass balance.
+
+        Returns
+        -------
+        all_mb: list
+            A list with the estimates of the mass balance models.
+        """
+        all_mb = []
+        for m in self.models:
+            all_mb.append(m.get_daily_specific_mb(heights, widths, date))
+        return all_mb
+
+    def get_monthly_mb(self, heights, year=None, fl_id=None):
+        raise NotImplementedError
+
+    def get_annual_mb(self, heights, year=None, fl_id=None):
+        raise NotImplementedError
+
+
         # kg m-2 d-1 = W m-2 * s * J-1 kg
         # we want ice flux, so we drop RHO_W for the first...!?
         melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
