@@ -1,5 +1,5 @@
 numpy
-pandas
+pandas>=0.25
 geopandas
 -e git+git+https://github.com/fmaussion/salem.git
 -e git+https://github.com/OGGM/oggm.git
@@ -16,7 +16,7 @@ netCDF4
 shapely
 rasterio
 configobj
-xarray
+xarray>=0.15
 schedule
 dateutil
 scikit-learn
@@ -25,3 +25,11 @@ branca
 mpld3
 pysolar
 numba
+descartes
+filterpy
+properscoring
+bokeh
+dask
+cartopy
+pytest
+motionless

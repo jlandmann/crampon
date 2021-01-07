@@ -19,7 +19,6 @@ dependencies:
   - Pillow
   - cartopy
   - paramiko
-  - six
   - configobj
   - folium
   - mpld3
@@ -31,6 +30,8 @@ dependencies:
   - bokeh
   - pysolar
   - descartes
+  - filterpy
+  - properscoring
   - pip
   - pip:
     - git+https://github.com/OGGM/oggm.git
