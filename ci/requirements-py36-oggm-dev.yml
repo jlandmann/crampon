@@ -30,6 +30,7 @@ dependencies:
   - mpld3
   - bokeh
   - pysolar
+  - descartes
   - pip
   - pip:
     - git+https://github.com/OGGM/oggm.git
