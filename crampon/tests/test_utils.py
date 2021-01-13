@@ -16,7 +16,7 @@ from crampon.tests import requires_credentials, requires_vpn
 from crampon import utils
 from crampon import cfg
 from oggm.tests.test_utils import TestDataFiles as OGGMTestDataFiles
-from oggm.tests.funcs import get_test_dir, patch_url_retrieve_github
+from oggm.tests.funcs import get_test_dir
 _url_retrieve = None
 
 # General settings
@@ -180,7 +180,6 @@ class CramponTestDataFiles(unittest.TestCase):
     def tearDown(self):
         if os.path.exists(self.dldir):
             shutil.rmtree(self.dldir)
-        utils._urlretrieve = patch_url_retrieve_github
 
     def reset_dir(self):
         if os.path.exists(self.dldir):

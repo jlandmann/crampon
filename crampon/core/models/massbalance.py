@@ -7,7 +7,6 @@ from crampon import utils
 import xarray as xr
 import datetime as dt
 from enum import IntEnum, unique
-import cython
 from crampon.core.preprocessing import climate
 import numba
 from collections import OrderedDict
