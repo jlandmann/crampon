@@ -16,12 +16,12 @@ from crampon.core.preprocessing.centerlines import catchment_intersections
 from crampon.core.preprocessing.centerlines import initialize_flowlines
 from crampon.core.preprocessing.centerlines import catchment_width_geom
 from crampon.core.preprocessing.centerlines import catchment_width_correction
-from oggm.core.climate import glacier_mu_candidates
 from oggm.core.climate import process_cru_data
 from crampon.core.preprocessing.climate import process_custom_climate_data
 from crampon.core.preprocessing.climate import update_climate
 from crampon.core.preprocessing.radiation import \
-    get_potential_irradiation_with_toposhade, distribute_ipot_on_flowlines
+    get_potential_irradiation_with_toposhade, distribute_ipot_on_flowlines, \
+    get_potential_irradiation_corripio, calculate_and_distribute_ipot
 
 from oggm.utils import copy_to_basedir
 from oggm.core.climate import apparent_mb_from_linear_mb

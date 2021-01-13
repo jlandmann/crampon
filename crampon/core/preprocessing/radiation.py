@@ -613,8 +613,8 @@ def distribute_ipot_on_flowlines(gdir):
                 cond = (c_heights.sel(band=1).data.values <= fhgt[q])
             if not cond.any():
                 continue
-            ts_per_hgt = ipot_subset.where(cond).mean(dim=['x', 'y'],
-                            skipna=True).to_array().values.flatten()
+            ts_per_hgt = ipot_subset.where(cond)\
+                .mean(dim=['x', 'y'], skipna=True).to_array().values.flatten()
             fl_ipot_arr[q, :] = ts_per_hgt
 
         nnan_ix = np.unique(np.where(~np.isnan(fl_ipot_arr))[0])
@@ -1037,17 +1037,6 @@ def get_potential_irradiation_corripio(gdir):
     ----------
     gdir: `py_class:crampon.GlacierDirectory`
         The GlacierDirectory to process the potential solar irradiation for.
-    dem_source: str or None
-        The source of the DEM that is use for raytracing. Can be any source
-        that is accepted by util.get_topo_file. If None and a "dem_file" is
-        provided in the params file, then this DEM will be taken. This can,
-        however, cause problem  e.g. at Swiss borders as the domain is extended
-        by 10km.
-        # todo: merge SRTM and own source to get the best estimate or make a
-        query if whole domain os covered by dem_file -> else, take SRTM
-    grid_reduce_fac: float
-        Factor that determines how coarsely the grid will be resampled (avoid
-        MemoryError). Default: None (values form cfg.PARAMS is taken).
 
     Returns
     -------
@@ -1107,7 +1096,6 @@ def get_potential_irradiation_corripio(gdir):
         })
 
         resampling = Resampling[cfg.PARAMS['topo_interp'].lower()]
-        #resampling = Resampling['cubic_spline']
         dst_array = np.empty((ext_grid.ny, ext_grid.nx),
                              dtype=rasterio.float32)
         reproject(
@@ -1225,8 +1213,6 @@ def get_potential_irradiation_corripio(gdir):
     # order of x, y, time must be exactly like this for salem transform to work
     ipot_ds['ipot'] = (['x', 'y', 'time'], np.moveaxis(testsom_arr, 0, 2))
     ipot_ds.ipot.attrs['pyproj_srs'] = sub_mask.pyproj_srs
-    #ipot_ds.ipot.attrs['pyproj_srs'] = ext_grid.to_dataset().attrs[
-    #    'pyproj_srs']
     ipot_ds = ipot_ds.transpose()
     # distribute back to original grid and write
     ipot_reproj = ds.salem.transform(ipot_ds)
@@ -1235,3 +1221,22 @@ def get_potential_irradiation_corripio(gdir):
                           encoding={'ipot': {'dtype': 'int16',
                                              'scale_factor': 0.1,
                                              '_FillValue': -9999}})
+
+
+@entity_task(log, fallback=_fallback_ipot)
+def calculate_and_distribute_ipot(gdir: utils.GlacierDirectory) -> None:
+    """
+    Shortcut function to get hae both creation and distribution in one.
+
+    Parameters
+    ----------
+    gdir: `py_class:crampon.GlacierDirectory`
+        The GlacierDirectory to process the potential solar irradiation for.
+
+    Returns
+    -------
+    None
+    """
+
+    get_potential_irradiation_corripio(gdir)
+    distribute_ipot_on_flowlines(gdir)
