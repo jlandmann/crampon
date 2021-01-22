@@ -9,8 +9,10 @@ respective OGGM dictionaries.
 from __future__ import absolute_import, division
 
 from oggm.cfg import PathOrderedDict, DocumentedDict, set_intersects_db, \
-    pack_config, unpack_config, oggm_static_paths, get_lru_handler
+    pack_config, unpack_config, oggm_static_paths, get_lru_handler, \
+    set_logging_config
 from oggm.cfg import initialize as oggminitialize
+import oggm.cfg as oggmcfg
 
 
 import logging
@@ -106,10 +108,16 @@ CBASENAMES['calibration_fischer_unique_variability'] = \
 _doc = 'CSV output from the calibration on the geodetic mass changes from ' \
        'Fischer et al, 2015.'
 CBASENAMES['calibration_fischer'] = ('calibration_fischer.csv', _doc)
-_doc = 'The daily climate timeseries for this glacier, stored in a netCDF ' \
+_doc = 'The daily climate time series for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
-_doc = 'The daily spinup climate timeseries for this glacier, stored in a ' \
+_doc = 'The daily NWP prediction for this glacier, stored in a netCDF ' \
+       'file.'
+CBASENAMES['nwp_daily'] = ('nwp_daily.nc', _doc)
+_doc = 'The spinup climate time series for this glacier, stored in a netCDF ' \
+       'file.'
+CBASENAMES['climate_spinup'] = ('climate_spinup.nc', _doc)
+_doc = 'The spinup mass balance for this glacier, stored in a ' \
        'netCDF file.'
 CBASENAMES['mb_spinup'] = ('mb_spinup.pkl', _doc)
 _doc = 'The daily mass balance timeseries for this glacier, stored in a ' \
@@ -132,6 +140,9 @@ CBASENAMES['mb_daily_fischer_unique_variability'] = \
 _doc = 'The snow condition at the end of the spinup phase, stored in a ' \
        'pickle file.'
 CBASENAMES['snow_spinup'] = ('snow_spinup.pkl', _doc)
+_doc = 'The current snow conditions for this glacier on the latest analysis ' \
+       'day (yesterday), stored in a pickle file.'
+CBASENAMES['snow_current'] = ('snow_current.pkl', _doc)
 _doc = 'The daily snow condition time series for this glacier in the past, ' \
        'stored in a pickle file.'
 CBASENAMES['snow_daily'] = ('snow_daily.pkl', _doc)
@@ -162,14 +173,16 @@ CBASENAMES['mb_current_fischer_unique_variability'] = \
 _doc = 'The mass balance of the current budget year for this glacier, ' \
        'stored in a pickle file.'
 CBASENAMES['mb_current'] = ('mb_current.pkl', _doc)
-_doc = 'A time series of all available DEMs for the glacier. Contains groups' \
-       ' for different resolutions.'
-CBASENAMES['mb_current_heights'] = ('mb_current_heights.pkl', _doc)
 _doc = 'The current mass balance time series on all heights for this glacier' \
        ' stored in a pickle file.'
-CBASENAMES['homo_dem_ts'] = ('homo_dem_ts.nc', _doc)
+CBASENAMES['mb_current_heights'] = ('mb_current_heights.pkl', _doc)
+_doc = 'The mass balance prediction for this glacier, stored in a pickle file.'
+CBASENAMES['mb_prediction'] = ('mb_prediction.pkl', _doc)
 _doc = 'A time series of all available DEMs for the glacier, brought to the ' \
        'minimum common resolution.'
+CBASENAMES['homo_dem_ts'] = ('homo_dem_ts.nc', _doc)
+_doc = 'A time series of all available DEMs for the glacier. Contains groups' \
+       ' for different resolutions.'
 CBASENAMES['dem_ts'] = ('dem_ts.nc', _doc)
 _doc = 'Uncorrected geodetic mass balance calculations from the DEMs in ' \
        'homo_dem_ts.nc. Contains groups for different resolutions.'
@@ -200,14 +213,35 @@ _doc = 'Satellite images and derived variables like binary snow maps or snow' \
        ' line altitude.'
 CBASENAMES['sat_images'] = ('sat_images.nc', _doc)
 
+for bn in oggmcfg.BASENAMES:
+    BASENAMES[bn] = (bn, oggmcfg.BASENAMES.doc_str(bn))
+for cbn in CBASENAMES:
+    BASENAMES[cbn] = (cbn, CBASENAMES.doc_str(cbn))
+
 # some more standard names, for less hardcoding
 NAMES['DHM25'] = 'dhm25'
 NAMES['SWISSALTI2010'] = 'alti'
 NAMES['LFI'] = 'lfi'
 
 
-def initialize(file=None):
-    """Read the configuration file containing the run's parameters."""
+def initialize(file=None, logging_level='INFO', params=None):
+    """
+    Read the configuration file containing the run's parameters.
+
+    This should be the first call, before using any of the other CRAMPON
+    modules for most (all?) CRAMPON simulations. Strong imitation of OGGM
+    function.
+
+    Parameters
+    ----------
+    file : str
+        Path to the configuration file (default: CRAMPON params.cfg)
+    logging_level : str
+        Set a logging level. See :func:`oggm.cfg.set_logging_config` for
+        options.
+    params : dict
+        Overrides for specific parameters from the config file
+    """
 
     global IS_INITIALIZED
     global BASENAMES
@@ -228,10 +262,11 @@ def initialize(file=None):
     global RGI_REG_NAMES
     global RGI_SUBREG_NAMES
 
+    set_logging_config(logging_level=logging_level)
+
     # This is necessary as OGGM still refers to its own initialisation
     #oggminitialize(file=file)
     oggminitialize()
-    import oggm.cfg as oggmcfg
 
     # Add the CRAMPON-specific keys to the dicts
     oggmcfg.BASENAMES.update(CBASENAMES)
@@ -257,6 +292,11 @@ def initialize(file=None):
     # Paths
     oggm_static_paths()
 
+    # Apply code-side manual params overrides (OGGM idea).
+    if params:
+        for k, v in params.items():
+            cp[k] = v
+
     oggmcfg.PATHS['dem_file'] = cp['dem_file']
     oggmcfg.PATHS['data_dir'] = cp['data_dir']
     oggmcfg.PATHS['hfile'] = cp['hfile']
@@ -272,6 +312,9 @@ def initialize(file=None):
     oggmcfg.PATHS['mb_dir'] = cp['mb_dir']
     oggmcfg.PATHS['modelrun_backup_dir_1'] = cp['modelrun_backup_dir_1']
     oggmcfg.PATHS['modelrun_backup_dir_2'] = cp['modelrun_backup_dir_2']
+
+    # create place where to store all plots, if not indicated otherwise
+    oggmcfg.PATHS['plots_dir'] = os.path.join(cp['working_dir'], 'plots')
 
     # run params
     oggmcfg.PARAMS['run_period'] = [int(vk) for vk in cp.as_list('run_period')]
@@ -368,7 +411,7 @@ def initialize(file=None):
            'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
            'run_mb_calibration', 'albedo_method', 'glamos_ids',
            'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
-           'alpha_bounds', 'tacc_bounds']
+           'alpha_bounds', 'tacc_bounds', 'nwp_file']
     for k in ltr:
         cp.pop(k, None)
 

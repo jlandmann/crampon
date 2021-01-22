@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from crampon.core.holfuytools import prepare_holfuy_camera_readings
 from crampon.core.models.massbalance import get_melt_percentiles, \
     extrapolate_melt_percentiles, infer_current_mb_from_melt_percentiles
-from operational import climatology_from_daily
+from operational import mb_production
 import geopandas as gpd
 import pandas as pd
 import datetime as dt
@@ -906,7 +906,8 @@ def validate_percentile_extrapolation_at_glamos_glaciers(
     pgd = utils.GlacierDirectory('RGI50-11.A55F03', base_dir=base_dir)
     obs_glaciers = np.array([rgd, pgd, fgd])
 
-    glac_shp = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
+    glac_shp = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                            'mauro_sgi_merge.shp')
     rgidf = gpd.read_file(glac_shp)
     rgidf = rgidf[rgidf.RGIId.isin([
         'RGI50-11.A10G05', 'RGI50-11.B5616n-1', 'RGI50-11.A55F03',
@@ -977,13 +978,13 @@ def validate_percentile_extrapolation_at_glamos_glaciers(
                 mod_all = gg.read_pickle('mb_current')
             if (mod_all.attrs['snow_redist'] == 'no') and \
                     (gg.rgi_id in cfg.PARAMS['glamos_ids']):
-                mod_all = climatology_from_daily.make_mb_current_mbyear(
+                mod_all = mb_production.make_mb_current_mbyear(
                     gg, begin_mbyear, write=False, use_snow_redist=True,
                     suffix=mb_suffix)
         else:
-            mod_all = climatology_from_daily.make_mb_current_mbyear(gg,
-                  begin_mbyear, write=False, use_snow_redist=False,
-                  suffix=mb_suffix)
+            mod_all = mb_production.make_mb_current_mbyear(gg,
+                                                           begin_mbyear, write=False, use_snow_redist=False,
+                                                           suffix=mb_suffix)
 
         model_mb = mod_all.sel(time=slice(first_date_assim, last_date_assim))
         model_melt = model_mb.where(model_mb.MB < 0.)
@@ -1005,11 +1006,11 @@ def validate_percentile_extrapolation_at_glamos_glaciers(
         testclim = gg.read_pickle('mb_daily' + mb_suffix)
         if (use_snow_redist is False) and \
                 (testclim.attrs['snow_redist'] == 'yes'):
-            climatology_from_daily.make_mb_clim(
+            mb_production.make_mb_clim(
                 gg, write=False, use_snow_redist=False, suffix=mb_suffix)
         if (use_snow_redist is True) and (
                 testclim.attrs['snow_redist'] == 'no'):
-            climatology_from_daily.make_mb_clim(
+            mb_production.make_mb_clim(
                 gg, write=False, use_snow_redist=True, suffix=mb_suffix)
 
         # todo: is it okay to shorten the reference period? Probably we should

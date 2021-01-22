@@ -14,7 +14,7 @@ import xarray as xr
 import datetime as dt
 # Locals
 import crampon.cfg as cfg
-from crampon import workflow, tasks, graphics, utils
+from crampon import workflow, tasks, graphics, utils, entity_task
 # only temporary, until process_spinup_climate is a task
 from crampon.core.preprocessing import climate, calibration
 from crampon.workflow import execute_entity_task
@@ -33,11 +33,12 @@ log = logging.getLogger(__name__)
 log.setLevel('DEBUG')
 
 
+@entity_task(log, writes=['mb_daily', 'snow_daily'])
 def make_mb_clim(gdir: utils.GlacierDirectory,
                  mb_model: MassBalanceModel = None, bgyear: int = 1961,
                  endyear: int or None = None, write: bool = True,
-                 reset: bool = False, use_snow_redist: bool = True,
-                 suffix: str = '') -> tuple:
+                 reset_file: bool = False, use_snow_redist: bool = True,
+                 suffix: str = '') -> None:
     """
     Make a mass balance climatology for the available calibration period.
 
@@ -57,11 +58,12 @@ def make_mb_clim(gdir: utils.GlacierDirectory,
         1st, then include automatically the recently completed year.
     write: bool
         Whether or not to write the result into the GlacierDirectory (leave
-        other existing values untouched, except `reset` is set to True).
+        other existing values untouched, except `reset_file` is set to True).
         Default: True.
-    reset: bool
+    reset_file: bool
         Whether or not to delete an existing mass balance file and start from
-        scratch. Default: False.
+        scratch. The reason why this is not called "reset"  only is that it
+        interferes with the argument `reset` from entity_task. Default: False.
     use_snow_redist: bool
         Whether to apply snow redistribution, if applicable. Default: True.
     suffix: str
@@ -70,9 +72,10 @@ def make_mb_clim(gdir: utils.GlacierDirectory,
 
     Returns
     -------
-    mb_ds, snow_cond, time_elap: xr.Dataset, np.ndarray, pd.DatetimeIndex
-        The mass balance as an xarray dataset, the snow conditions during the
-        run and the elapsed time.
+    None
+    #mb_ds, snow_cond, time_elap: xr.Dataset, np.ndarray, pd.DatetimeIndex
+    #    The mass balance as an xarray dataset, the snow conditions during the
+    #    run and the elapsed time.
     """
 
     hyear_bgmonth = cfg.PARAMS['begin_mbyear_month']
@@ -118,6 +121,7 @@ def make_mb_clim(gdir: utils.GlacierDirectory,
                 # overwrite endyear
                 endyear = mbm.calibration_timespan[1]
 
+        # todo: constrain bgyear with the min date of the cali CSV file
         begin_clim = utils.get_begin_last_flexyear(dt.datetime(bgyear, 12, 31))
         end_clim = utils.get_begin_last_flexyear(dt.datetime(endyear, 12, 31))
 
@@ -132,6 +136,24 @@ def make_mb_clim(gdir: utils.GlacierDirectory,
                 continue
         else:
             day_model = copy.copy(mbm)
+
+        # if 'unique' in suffix:
+        #    geod_cali = gdir.get_calibration(day_model, suffix=suffix)
+        #    clip_years = geod_cali.time.min().year, geod_cali.time.max().year
+        #    try:
+        #        glamos_params = ParameterGenerator(gdir, mb_model,
+        #        latest_climate=False,
+        #         only_pairs=True, constrain_with_bw_prcp_fac=True,
+        #         bw_constrain_year=None, narrow_distribution=False,
+        #         output_type=None, suffix='').from_single_glacier(
+        #         clip_years=clip_years)
+        #        p_variability = glamos_params - np.nanmean(glamos_params)
+        #        params = geod_cali + p_variability
+        #    except:
+        #        params = None
+        # else:
+        #    params = None
+
         mb = []
         sc_list_one_model = []
         sc_date_list = []
@@ -181,21 +203,19 @@ def make_mb_clim(gdir: utils.GlacierDirectory,
                              'yes' if use_snow_redist is True else 'no',
                          'suffix': suffix})
     if write:
-        merged.mb.append_to_gdir(gdir, 'mb_daily' + suffix, reset=reset)
+        merged.mb.append_to_gdir(gdir, 'mb_daily' + suffix, reset=reset_file)
 
     # take care of snow
-    print([x.time.values for x in sc_list if
-           len(x.time.values) != len(np.unique(x.time.values))])
     sc_ds = xr.concat(
         sc_list, dim=pd.Index([m.__name__ for m in mb_models_used],
                               name='model'))
     if write:
         gdir.write_pickle(sc_ds, 'snow_daily' + suffix)
 
-    return merged, sc_ds, alpha
 
-
-def make_mb_clim_new(gdir, mb_model=None, write=True, reset=False, suffix=''):
+@entity_task(log, writes=['mb_daily', 'snow_daily'])
+def make_mb_clim_new(gdir, mb_model=None, write=True, reset_file=False,
+                     suffix=''):
     """
     Make a mass balance climatology for the available calibration period.
 
@@ -205,27 +225,19 @@ def make_mb_clim_new(gdir, mb_model=None, write=True, reset=False, suffix=''):
         The GlacierDirectory to calculate the current mass balance for.
     mb_model:
         Which mass balance model to use. Default: None (use all available).
-    bgyear: int
-        Begin year for the climatology. This is automatically cut to the
-        allowed usage span fo the mass balance model (e.g. due to radiation
-        data availability). Default: 1961.
-    endyear: int or None
-        End year for the climatology. Default: None (take the last full mass
-        budget year, i.e. if today's date is within the year is after October
-        1st, then include automatically the recently completed year.
     write: bool
         Whether or not to write the result into the GlacierDirectory.
         Default: True.
-    reset: bool, optional
-        Whether to reset existing files. Default: False.
+    reset_file: bool, optional
+        Whether to reset existing files. The reason why this is not called
+        "reset"  only is that it interferes with the argument `reset` from
+        entity_task. Default: False.
     suffix: str, optional
         Suffix to add to filename. Default: ''.
 
     Returns
     -------
-    mb_ds, snow_cond, time_elap: xr.Dataset, np.ndarray, pd.DatetimeIndex
-        The mass balance as an xarray dataset, the snow conditions during the
-        run and the elapsed time.
+    None
     """
 
     if mb_model:
@@ -249,7 +261,6 @@ def make_mb_clim_new(gdir, mb_model=None, write=True, reset=False, suffix=''):
         encoding="iso-8859-1")
     fischer_vals = fischer_df[
         fischer_df['SGI2010'].str.contains(gdir.rgi_id.split('.')[1])]
-    print(fischer_vals)
     t1_year = fischer_vals.t1_year.item()
     t2_year = fischer_vals.t2_year.item()
     area1 = fischer_vals.area_t1_km2.item() * 10 ** 6  # km2 -> m2
@@ -387,28 +398,28 @@ def make_mb_clim_new(gdir, mb_model=None, write=True, reset=False, suffix=''):
     merged.attrs.update({'id': gdir.rgi_id, 'name': gdir.name,
                          'units': 'm w.e.'})
     if write:
-        merged.mb.append_to_gdir(gdir, 'mb_daily'+suffix, reset=reset)
+        merged.mb.append_to_gdir(gdir, 'mb_daily'+suffix, reset=reset_file)
 
     # take care of snow
     sc_ds = None
     # sc_ds = xr.concat(sc_list, dim=pd.Index([m.__name__ for m in mb_models],
     #                                        name='model'))
-    # if reset:
+    # if reset_file:
     #    gdir.write_pickle(sc_ds, 'snow_daily'+suffix)
 
-    return merged, sc_ds
+    # return merged, sc_ds
 
 
-def make_mb_current_mbyear(gdir: utils.GlacierDirectory,
-                           begin_mbyear: dt.datetime or pd.Timestamp,
-                           last_day: dt.datetime or pd.Timestamp or None =
-                           None,
-                           mb_model: MassBalanceModel or None = None,
-                           snowcover: SnowFirnCover or xr.Dataset or None =
-                           None,
-                           write: bool = True, reset: bool = False,
-                           use_snow_redist: bool = True,
-                           suffix: str = '') -> xr.Dataset:
+@entity_task(log, writes=['mb_current', 'snow_current'])
+def make_mb_current_mbyear(
+        gdir: utils.GlacierDirectory,
+        first_day: dt.datetime or pd.Timestamp or None = None,
+        last_day: dt.datetime or pd.Timestamp or None = None,
+        mb_model: MassBalanceModel or None = None,
+        snowcover: SnowFirnCover or xr.Dataset or None = None,
+        write: bool = True, reset_file: bool = False,
+        use_snow_redist: bool = True,
+        suffix: str = '') -> None:
     """
     Make the mass balance of the current mass budget year for a given glacier.
 
@@ -416,29 +427,34 @@ def make_mb_current_mbyear(gdir: utils.GlacierDirectory,
     ----------
     gdir: `py:class:crampon.GlacierDirectory`
         The GlacierDirectory to calculate the current mass balance for.
-    begin_mbyear: datetime.datetime
-        The beginning of the current mass budget year.
-    last_day: dt.datetime or pd.Timestamp or None
+    first_day: datetime.datetime or pd.Timestamp or None, optional
+        Custom begin date of the current mass budget year. This can be used to
+        just extend the existing mass balance. If given, reset_file will be
+        overwritten to `False`, and a warning will be issued if the two values
+        are in conflict.Default: None (take the beginning of the last mass
+        budget year as defined in params.cfg).
+    last_day: dt.datetime or pd.Timestamp or None, optional
         When the calculation shall be stopped (e.g. for assimilation).
         Default: None (take either the last day with meteo data available or
         the last day of the mass budget year since `begin_mbyear`).
     mb_model: `py:class:crampon.core.models.massbalance.DailyMassBalanceModel`,
               optional
         A mass balance model to use. Default: None (use all available).
-    snowcover: SnowFirnCover or xr.Dataset or None
+    snowcover: SnowFirnCover or xr.Dataset or None, optional
         Snowcover object to initiate the snow cover.
-    write: bool
+    write: bool, optional
         Whether or not to write the result to GlacierDirectory. Default: True
         (write out).
-    reset: bool
+    reset_file: bool, optional
         Whether to completely overwrite the mass balance file in the
-        GlacierDirectory or to append (=update with) the result. Default: False
-        (append).
-    use_snow_redist: bool
+        GlacierDirectory or to append (=update with) the result. The reason why
+        this is not called "reset"  only is that it interferes with the
+        argument `reset` from entity_task. Default: False (append).
+    use_snow_redist: bool, optional
         Whether to apply snow redistribution, if applicable. Default: True.
-    suffix: str
+    suffix: str, optional
         Suffix of the calibration file and the mass balance files, e.g.
-        '_fischer_unique'. Default: ''.
+        '_fischer_unique'. Default: '' (no suffix).
 
     Returns
     -------
@@ -451,28 +467,76 @@ def make_mb_current_mbyear(gdir: utils.GlacierDirectory,
     else:
         mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
 
-    if snowcover is None:
+    if (snowcover is None) and (first_day is None):
         try:
             snowcover = gdir.read_pickle('snow_daily')
         except FileNotFoundError:
+            log.warning(
+                'No initial snow cover given and no snow cover file found. '
+                'Initializing snow cover with assumptions defined in '
+                'massbalance.DailyMassBalanceModelWithSnow.')
             snowcover = None
 
     if last_day is None:
         last_day = utils.get_cirrus_yesterday()
+
+    # if first day is not given, take begin of current MB year
+    if first_day is None:
+        first_day = utils.get_begin_last_flexyear(pd.Timestamp.now())
+    else:
+        with gdir.read_pickle('mb_current') as mbc:
+            # first day for us is the last day of the existing file plus one
+            last_day_mbc = mbc.time.values[-1]
+        # todo: check also for end date of snow_current?
+
+        # file might be already up to date
+        if (last_day_mbc == last_day) and (reset_file is False):
+            return
+
+        if last_day_mbc < first_day:
+            # try to make the time series fit
+            log.info('Existing current MB time series is not long enough. '
+                     'Making it...')
+            make_mb_current_mbyear(
+                gdir=gdir, write=write, mb_model=mb_model, snowcover=snowcover,
+                suffix=suffix, reset_file=reset_file,
+                use_snow_redist=use_snow_redist)
+        elif last_day_mbc == first_day:
+            pass
+        else:
+            raise NotImplementedError(
+                'At the moment, the snow status is only written to file at the'
+                ' beginning of the season and on the last day.')
+
+        if reset_file is True:
+            log.warning(
+                "`reset_file` is `True`, but the time span for making the "
+                "current mass balance is set to only update the mass balance. "
+                "Setting `reset_file` to `False` and continuing...")
+            reset_file = False
+        # still respect argument over retrieval
+        if snowcover is None:
+            try:
+                snowcover = gdir.read_pickle('snow_current' + suffix)
+            except FileNotFoundError:
+                pass
+
     # if begin more than one year ago, clip to make current MB max 1 year long
-    max_end = pd.Timestamp('{}-{}-{}'.format(begin_mbyear.year + 1,
-                                             begin_mbyear.month,
-                                             begin_mbyear.day)) - \
+    max_end = pd.Timestamp('{}-{}-{}'.format(
+        first_day.year + 1, first_day.month, first_day.day)) - \
         pd.Timedelta(days=1)
+
     if last_day > max_end:
+        # todo: it might also make sense to keep "last_day"
         last_day = max_end
     last_day_str = last_day.strftime('%Y-%m-%d')
-    begin_str = begin_mbyear.strftime('%Y-%m-%d')
+    begin_str = first_day.strftime('%Y-%m-%d')
 
     curr_year_span = pd.date_range(start=begin_str, end=last_day_str,
                                    freq='D')
 
     ds_list = []
+    sc_list = []
     day_model_curr = None
     for mbm in mb_models:
 
@@ -490,26 +554,39 @@ def make_mb_current_mbyear(gdir: utils.GlacierDirectory,
         pg = ParameterGenerator(
             gdir, mbm, latest_climate=latest_climate, only_pairs=True,
             constrain_with_bw_prcp_fac=constrain_with_bw_prcp_fac,
-            bw_constrain_year=begin_mbyear.year + 1,
+            bw_constrain_year=first_day.year + 1,
             narrow_distribution=0., output_type='array', suffix=suffix)
         try:
             param_prod = pg.from_single_glacier()
         except pd.core.indexing.IndexingError:
             continue
 
+        # no parameters found, e.g. when using latest_climate = True for A50I06
+        if param_prod.size == 0:
+            log.error('With current settings (`latest_climate=True`, no '
+                      'parameters were found to produce current MB.')
+            return
+
         # todo: select by model or start with ensemble median snowcover?
         it = 0
+        sc_list_one_model = []
         for params in param_prod:
             it += 1
-
             if snowcover is not None:
+                # todo: maybe fatal? here we assume the parameters are
+                #  iterated in the same order. actually mb_current also comes
+                #  from this routine: Solution: include params in the dataset?
                 try:
+                    # it's snow_current with a time and members
+                    sc = SnowFirnCover.from_dataset(
+                        snowcover.sel(
+                            model=mbm.__name__, time=curr_year_span[0])
+                            .isel(member=it-1))
+                except (KeyError, ValueError):
+                    # it's snow_daily
                     sc = SnowFirnCover.from_dataset(
                         snowcover.sel(model=mbm.__name__,
                                       time=curr_year_span[0]))
-                except:
-                    sc = SnowFirnCover.from_dataset(
-                        snowcover.sel(model=mbm.__name__))
             else:
                 sc = None
 
@@ -537,10 +614,20 @@ def make_mb_current_mbyear(gdir: utils.GlacierDirectory,
                 day_model_curr.snowcover.densify_snow_anderson(date)
                 mb_now.append(tmp)
 
+                # only write snow on last day
+                if date == curr_year_span[-1]:
+                    sc_list_one_model.append(
+                        day_model_curr.snowcover.to_dataset(date=date))
+
             if stacked is not None:
                 stacked = np.vstack((stacked, mb_now))
             else:
                 stacked = mb_now
+
+        sc_list.append(
+            xr.concat(sc_list_one_model,
+                      dim=pd.Index(np.arange(len(sc_list_one_model)),
+                                   name='member')))
 
         if isinstance(stacked, np.ndarray):
             stacked = np.sort(stacked, axis=0)
@@ -567,95 +654,225 @@ def make_mb_current_mbyear(gdir: utils.GlacierDirectory,
              '%Y-%m-%d')})
 
     if write:
-        ens_ds.mb.append_to_gdir(gdir, 'mb_current' + suffix, reset=reset)
+        ens_ds.mb.append_to_gdir(gdir, 'mb_current' + suffix, reset=reset_file)
 
     # check at the point where we cross the MB budget year
-    if dt.date.today == (begin_mbyear + dt.timedelta(days=1)):
+    if dt.date.today == (first_day + dt.timedelta(days=1)):
         mb_curr = gdir.read_pickle('mb_current' + suffix)
-        mb_curr = mb_curr.sel(time=slice(begin_mbyear, None))
+        mb_curr = mb_curr.sel(time=slice(first_day, None))
         gdir.write_pickle(mb_curr, 'mb_current' + suffix)
 
-    return ens_ds
+    # assemble and write snow status
+    snow_ens = xr.concat(
+        sc_list, dim=pd.Index([m.__name__ for m in mb_models], name='model'))
+    snow_ens.attrs.update(
+        {'id': gdir.rgi_id, 'name': gdir.name, 'suffix': suffix,
+         'snow_redist': 'yes' if use_snow_redist is True else 'no'})
+    # important for reading as SnowFirnCover later on
+    snow_ens['last_update'] = snow_ens['last_update'].astype(object)
+    snow_ens['origin'] = snow_ens['origin'].astype(object)
+
+    if write:
+        gdir.write_pickle(snow_ens, 'snow_current' + suffix)
 
 
-        it = 0
-        for params in param_prod:
-            print(it, dt.datetime.now())
-            it += 1
+@entity_task(log, writes=['mb_spinup', 'snow_spinup'])
+def make_spinup_mb(gdir, param_method='guess', length=30):
+    """
+    Create mass balance in the spinup phase (1930-1960).
 
-            pdict = dict(zip(mbm.cali_params_list, params))
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory to produce the spinup mass balance for.
+    param_method: str
+        How parameters should be determined. At the moment, there are two
+        options: the first one, 'guess', just uses the best guess parameters as
+        defined in the MassbalanceModel class. The second option, 'predict'
+        uses a random forest model to predict parameters based on geometrical
+        and meteorological features. Default: 'guess'.
+    length: int
+        Length of the spinup period in years. Default: 30.
+
+    Returns
+    -------
+    None
+    """
+    models = []
+    if 'HockModel' in cfg.MASSBALANCE_MODELS:
+        models.append(HockModel)
+    if 'BraithwaiteModel' in cfg.MASSBALANCE_MODELS:
+        models.append(BraithwaiteModel)
+
+    if not os.path.exists(gdir.get_filepath('spinup_climate_daily')):
+        climate.process_spinup_climate_data(gdir)
+
+    ds_list = []
+    sc_list = []
+    meteo_begin = 1961
+    for mbm in models:
+
+        try:
+            cali = gdir.get_calibration(mb_model=mbm)
+            cali = cali.dropna()
+        except FileNotFoundError:
+            cali = None
+
+        # spinup phase time depends on model - try to keep years with guessed
+        # parameters as short as possible; rest is done by Braithwaite & Hock
+        if hasattr(mbm, 'calibration_timespan') and \
+                (mbm.calibration_timespan[0] is not None):
+            t0 = '{}-01-01'.format(str(mbm.calibration_timespan[0] - length
+                                       - 1))
+            t1 = utils.get_begin_last_flexyear(
+                dt.datetime(meteo_begin, 12, 31)) - dt.timedelta(days=1)
+            time_span = pd.date_range(t0, t1)
+        else:
+            # defined by the beginning of the meteo data
+            time_span = pd.date_range('{}-10-01'.format(
+                meteo_begin - length - 1),
+                utils.get_begin_last_flexyear(dt.datetime(meteo_begin, 12, 31))
+                - dt.timedelta(days=1))
+
+        stacked = None
+        heights, widths = gdir.get_inversion_flowline_hw()
+
+        if param_method == 'guess':
+            params = list(mbm.cali_params_guess.values())
+        elif param_method == 'predict':
+            raise NotImplementedError
+            # get the random forest model here
+            # predict parameters for each of the years in time_span
+        else:
+            raise ValueError('Parameter determination method "{}" not '
+                             'understood.'.format(param_method))
+
+        init_swe = np.zeros_like(heights)
+        init_swe.fill(np.nan)
+        init_temp = init_swe + cfg.ZERO_DEG_KELVIN
+        cover = SnowFirnCover(heights, swe=init_swe, rho=None,
+                              origin=time_span[0], temperatures=init_temp,
+                              refreezing=False)
+
+        # todo: rubbish if parameters are predicted year-wise \w random forest
+        pdict = dict(zip(mbm.cali_params_list, params))
+        if isinstance(mbm, utils.SuperclassMeta):
+            day_model = mbm(gdir, **pdict, snowcover=None, bias=0.,
+                            filename='spinup_climate_daily')
+        else:
+            day_model = copy.copy(mbm)
+
+        meteo = climate.GlacierMeteo(gdir, filename='spinup_climate_daily')
+
+        mb_now = []
+        switch_model = False
+        switch_date = pd.Timestamp(meteo_begin, 1, 1)
+        for date in time_span:
+            if date >= switch_date:
+                switch_model = True
+                break
+
+            # Get the mass balance and convert to m per day
+            tmp = day_model.get_daily_mb(heights, date=date) * \
+                cfg.SEC_IN_DAY * cfg.RHO / cfg.RHO_W
+
+            swe = tmp.copy()
+            rho = np.ones_like(tmp) * get_rho_fresh_snow_anderson(
+                meteo.meteo.sel(time=date).temp.values + cfg.ZERO_DEG_KELVIN)
+            temperature = swe.copy()
+
+            cover.ingest_balance(swe, rho, date, temperature)
+            cover.densify_snow_anderson(date)
+
+            if date.day == 30 and date.month == 4:
+                cover.update_temperature_huss()
+                cover.apply_refreezing(exhaust=True)
+
+            if (date.month == 10 and date.day == 1) or date == time_span[-1]:
+                cover.densify_firn_huss(date)
+
+            mb_now.append(tmp)
+
+        # phase 2 (meteo data present)
+        if switch_model is True:
+            # switch back to normal climate file
+            meteo = climate.GlacierMeteo(gdir)
             if isinstance(mbm, utils.SuperclassMeta):
-                try:
-                    day_model_curr = mbm(gdir, **pdict, snowcover=sc, bias=0.,
-                                         cali_suffix=suffix)
-                except:  # model not in cali file (for fischer geod. cali)
-                    mb_models.remove(mbm)
-                    continue
+                if cali is None:
+                    day_model_p2 = mbm(gdir, **pdict, snowcover=None, bias=0.)
+                else:
+                    day_model_p2 = mbm(gdir, snowcover=None, bias=0.)
             else:
-                day_model_curr = copy.copy(mbm)
+                day_model_p2 = copy.copy(mbm)
+            for date in pd.date_range(switch_date, time_span[-1]):
+                # try:
+                #    for p in mbm.cali_params_list:
+                #        setattr(day_model_p2, p,
+                #                cali.ix[date, day_model_p2.prefix + p])
+                # except KeyError:
+                #    # go back to guessed/predicted parameters
+                #    for p in mbm.cali_params_list:
+                #        setattr(day_model_p2, p,
+                #        day_model_p2.cali_params_guess[p])
 
-            mb_now = []
-            for date in curr_year_span:
                 # Get the mass balance and convert to m per day
-                tmp = day_model_curr.get_daily_specific_mb(heights, widths,
-                                                           date=date)
-                mb_now.append(tmp)
+                tmp = day_model_p2.get_daily_mb(heights, date=date) * \
+                      cfg.SEC_IN_DAY * cfg.RHO / cfg.RHO_W
 
-            if stacked is not None:
-                stacked = np.vstack((stacked, mb_now))
-            else:
-                stacked = mb_now
+                swe = tmp.copy()
+                rho = np.ones_like(tmp) * get_rho_fresh_snow_anderson(
+                    meteo.meteo.sel(
+                        time=date).temp.values + cfg.ZERO_DEG_KELVIN)
+                temperature = swe.copy()
+
+                cover.ingest_balance(swe, rho, date, temperature)
+                cover.densify_snow_anderson(date)
+
+                if date.day == 30 and date.month == 4:
+                    cover.update_temperature_huss()
+                    cover.apply_refreezing(exhaust=True)
+
+                if (date.month == 10 and date.day == 1) or \
+                        date == time_span[-1]:
+                    cover.densify_firn_huss(date)
+
+                mb_now.append(tmp)
+            sc_list.append(cover.to_dataset())
+        else:
+            sc_list.append(cover.to_dataset())
+
+        if stacked is not None:
+            stacked = np.vstack((stacked, mb_now))
+        else:
+            stacked = mb_now
 
         stacked = np.sort(stacked, axis=0)
 
         mb_for_ds = np.moveaxis(np.atleast_3d(np.array(stacked)), 1, 0)
+        mb_for_ds = mb_for_ds[..., np.newaxis]
         # todo: units are hard coded and depend on method used above
-        mb_ds = xr.Dataset({'MB': (['time', 'member', 'model'], mb_for_ds)},
+        mb_ds = xr.Dataset({'MB': (['fl_id', 'time', 'member', 'model'],
+                                   mb_for_ds)},
                            coords={'member': (['member', ],
-                                              np.arange(mb_for_ds.shape[1])),
+                                              [mb_for_ds.shape[-2]]),
                                    'model': (['model', ],
-                                             [day_model_curr.__name__]),
+                                             [day_model.__name__]),
                                    'time': (['time', ],
-                                            pd.to_datetime(curr_year_span)),
+                                            pd.to_datetime(time_span)),
+                                   'fl_id': (['fl_id', ],
+                                             np.arange(len(heights))),
                                    })
 
         ds_list.append(mb_ds)
 
     ens_ds = xr.merge(ds_list)
     ens_ds.attrs.update({'id': gdir.rgi_id, 'name': gdir.name,
-                         'units': 'm w.e.'})
+                         'units': 'm w.e.', 'param_method': param_method})
 
-    if write:
-        ens_ds.mb.append_to_gdir(gdir, 'mb_current', reset=reset)
+    gdir.write_pickle(ens_ds, 'mb_spinup')
 
-    # check at the point where we cross the MB budget year
-    if dt.date.today == (begin_mbyear + dt.timedelta(days=1)):
-        mb_curr = gdir.read_pickle('mb_current')
-        mb_curr = mb_curr.sel(time=slice(begin_mbyear, None))
-        gdir.write_pickle(mb_curr, 'mb_current')
+    # take care of snow
+    sc_ds = xr.concat(sc_list, dim=pd.Index([m.__name__ for m in models],
+                                            name='model'))
 
-    return ens_ds
-
-
-
-
-
-        else:
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                                                     loc=3)
-
-    # Write out glacier statistics
+    gdir.write_pickle(sc_ds, 'snow_spinup')

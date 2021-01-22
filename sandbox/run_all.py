@@ -22,7 +22,7 @@ from crampon.workflow import execute_entity_task
 from crampon import graphics, utils
 from crampon.core.models.massbalance import BraithwaiteModel, \
     PellicciottiModel, OerlemansModel, MassBalance, SnowFirnCover
-from operational import climatology_from_daily as cfd
+from operational import mb_production as cfd
 from itertools import product
 import copy
 
@@ -52,7 +52,8 @@ if __name__ == '__main__':
     utils.mkdir(cfg.PATHS['working_dir'])
 
     # Mauro's DB ad disguised in RGI
-    glaciers = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
+    glaciers = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                            'mauro_sgi_merge.shp')
     rgidf = gpd.read_file(glaciers)
 
     cfg.PARAMS['continue_on_error'] = False
@@ -165,7 +166,7 @@ if __name__ == '__main__':
             print('make clim', dt.datetime.now())
             # get all we can within calibration period
             mb_clim, snowcov_clim = cfd.make_mb_clim(g, mb_model=copy.copy(
-                day_model), reset=False)
+                day_model), reset_file=False)
 
             # MB of this budget year
             begin_mbyear = pd.to_datetime(mb_clim.time[-1].values) + \

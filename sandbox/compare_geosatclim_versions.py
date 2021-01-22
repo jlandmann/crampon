@@ -8,10 +8,10 @@ def compare_geosatclim(old, new):
     Parameters
     ----------
     old: xr.Dataset
-        MB (produced by climatology_from_daily.make_mb_clim) with old
+        MB (produced by operational.mb_production.make_mb_clim) with old
         geosatclim version
     new: xr.Dataset
-        MB (produced by climatology_from_daily.make_mb_clim) with new
+        MB (produced by operational.mb_production.make_mb_clim) with new
         geosatclim version
 
     Returns

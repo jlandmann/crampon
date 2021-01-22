@@ -1,8 +1,8 @@
 """
 A collection of some useful miscellaneous functions.
 """
-
 from __future__ import absolute_import, division
+from typing import Union, Iterable
 
 from joblib import Memory
 import posixpath
@@ -34,9 +34,10 @@ import netCDF4
 from scipy import stats
 from salem import lazy_property, read_shapefile
 from functools import partial, wraps
-from oggm.utils import *
-# Locals
 import crampon.cfg as cfg
+from oggm.utils import *
+from oggm.utils._workflow import _timeout_handler
+# Locals
 from pathlib import Path
 
 
@@ -51,6 +52,103 @@ log = logging.getLogger(__name__)
 # Joblib
 MEMORY = Memory(cfg.CACHE_DIR, verbose=0)
 SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
+
+
+# seems there is no way around copying this from OGGM (it uses cfg in OGGM)
+class entity_task(object):
+    """Decorator for common job-controlling logic.
+
+    All tasks share common operations. This decorator is here to handle them:
+    exceptions, logging, and (some day) database for job-controlling.
+    """
+
+    def __init__(self, log, writes=[], fallback=None):
+        """Decorator syntax: ``@oggm_task(log, writes=['dem', 'outlines'])``
+
+        Parameters
+        ----------
+        log: logger
+            module logger
+        writes: list
+            list of files that the task will write down to disk (must be
+            available in ``cfg.BASENAMES``)
+        fallback: python function
+            will be executed on gdir if entity_task fails
+        """
+        self.log = log
+        self.writes = writes
+        self.fallback = fallback
+
+        cnt = ['    Notes']
+        cnt += ['    -----']
+        cnt += ['    Files writen to the glacier directory:']
+
+        for k in sorted(writes):
+            cnt += [cfg.BASENAMES.doc_str(k)]
+        self.iodoc = '\n'.join(cnt)
+
+    def __call__(self, task_func):
+        """Decorate."""
+
+        # Add to the original docstring
+        if task_func.__doc__ is None:
+            raise RuntimeError('Entity tasks should have a docstring!')
+
+        task_func.__doc__ = '\n'.join((task_func.__doc__, self.iodoc))
+
+        @wraps(task_func)
+        def _entity_task(gdir, *, reset=None, print_log=True, **kwargs):
+
+            if reset is None:
+                reset = not cfg.PARAMS['auto_skip_task']
+
+            task_name = task_func.__name__
+
+            # Filesuffix are typically used to differentiate tasks
+            fsuffix = (kwargs.get('filesuffix', False) or
+                       kwargs.get('output_filesuffix', False))
+            if fsuffix:
+                task_name += fsuffix
+
+            # Do we need to run this task?
+            s = gdir.get_task_status(task_name)
+            if not reset and s and ('SUCCESS' in s):
+                return
+
+            # Log what we are doing
+            if print_log:
+                self.log.info('(%s) %s', gdir.rgi_id, task_name)
+
+            # Run the task
+            try:
+                if cfg.PARAMS['task_timeout'] > 0:
+                    signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(cfg.PARAMS['task_timeout'])
+                ex_t = time.time()
+                out = task_func(gdir, **kwargs)
+                ex_t = time.time() - ex_t
+                if cfg.PARAMS['task_timeout'] > 0:
+                    signal.alarm(0)
+                if task_name != 'gdir_to_tar':
+                    gdir.log(task_name, task_time=ex_t)
+            except Exception as err:
+                # Something happened
+                out = None
+                gdir.log(task_name, err=err)
+                pipe_log(gdir, task_name, err=err)
+                if print_log:
+                    self.log.error('%s occurred during task %s on %s: %s',
+                                   type(err).__name__, task_name,
+                                   gdir.rgi_id, str(err))
+                if not cfg.PARAMS['continue_on_error']:
+                    raise
+
+                if self.fallback is not None:
+                    self.fallback(gdir)
+            return out
+
+        _entity_task.__dict__['is_entity_task'] = True
+        return _entity_task
 
 
 dpm = {'noleap': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
@@ -75,7 +173,8 @@ def get_crampon_demo_file(fname: str):
     raise NotImplementedError
 
 
-def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
+def retry(exceptions: Union[str, Iterable, tuple, Exception], tries=100,
+          delay=60, backoff=1, log_to=None):
     """
     Retry decorator calling the decorated function with an exponential backoff.
 
@@ -83,7 +182,7 @@ def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
 
     Parameters
     ----------
-    exceptions: str or tuple
+    exceptions: str or tuple or Exception
         The exception to check. May be a tuple of exceptions to check. If just
         `Exception` is provided, it will retry after any Exception.
     tries: int
@@ -219,8 +318,7 @@ def get_dpm(time: pd.DatetimeIndex or xr.CFTimeIndex,
     """
     Return array of days per month corresponding to months provided in `time`.
 
-    A corrected version from:
-    http://xarray.pydata.org/en/stable/examples/monthly-means.html?highlight=calendar
+    From an old version of the xarray documentation (link was [1]_).
 
     time: pd.DatetimeIndex, xr.CFTimeIndex
         A time index with attributes 'year' and 'month'.
@@ -233,6 +331,10 @@ def get_dpm(time: pd.DatetimeIndex or xr.CFTimeIndex,
     -------
     month_length: np.array
         Array with month lengths in days.
+
+    References
+    ----------
+    [1]_ : https://bit.ly/3sFrsFT
     """
     month_length = np.zeros(len(time), dtype=np.int)
 
@@ -274,7 +376,7 @@ def closest_date(date, candidates):
 
     References
     ----------
-    .. [1] https://stackoverflow.com/questions/32237862/find-the-closest-date-to-a-given-date
+    .. [1] https://bit.ly/2M2Mr4K
     """
     return min(candidates, key=lambda x: abs(x - date))
 
@@ -311,7 +413,7 @@ def justify(arr, invalid_val=0, axis=1, side='left'):
 
     References
     ----------
-    .. [1] https://stackoverflow.com/questions/44558215/python-justifying-numpy-array.
+    .. [1] https://bit.ly/2LMzUT8
     """
 
     if invalid_val is np.nan:
@@ -331,20 +433,20 @@ def justify(arr, invalid_val=0, axis=1, side='left'):
     return out
 
 
-def get_begin_last_flexyear(date, start_month=10, start_day=1):
+def get_begin_last_flexyear(date, start_month=None, start_day=None):
     """
     Get the begin date of the most recent/current ("last") flexible
     year since the given date.
 
     Parameters
     ----------
-    date: datetime.datetime
+    date: datetime.datetime or pd.Timestamp
         Date from which on the most recent begin of the hydrological
         year shall be determined, e.g. today's date.
-    start_month: int
+    start_month: int or None, optional
         Begin month of the flexible year. Default: 10 (for hydrological
-        year)
-    start_day: int
+        year). Default: None (parse from params.cfg)
+    start_day: int or None, optional
         Begin day of month for the flexible year. Default: 1
 
     Returns
@@ -358,12 +460,17 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
     2018-01-24.
 
     >>> import datetime as dt
-    >>> get_begin_last_flexyear(dt.datetime(2018,1,24))
+    >>> get_begin_last_flexyear(dt.datetime(2018, 1, 24))
     dt.datetime(2017, 10, 1, 0, 0)
-    >>> get_begin_last_flexyear(dt.datetime(2017,11,30),
+    >>> get_begin_last_flexyear(dt.datetime(2017, 11, 30),
     >>> start_month=9, start_day=15)
     dt.datetime(2017, 9, 15, 0, 0)
     """
+
+    if start_month is None:
+        start_month = cfg.PARAMS['begin_mbyear_month']
+    if start_day is None:
+        start_day = cfg.PARAMS['begin_mbyear_day']
 
     start_year = date.year if dt.datetime(
         date.year, start_month, start_day) <= date else date.year - 1
@@ -816,23 +923,42 @@ class WSLSFTPClient():
         self.client.quit()
 
 
-def copy_to_webpage_dir(src_dir):
+def copy_to_webpage_dir(src_dir: str, glob_pattern='*') -> None:
+    """
+    Copy folder content to the CRAMPON webpage directory on the WEBBI04 server.
 
-    to_put = glob.glob(src_dir + '*')
+    Uses SFTP as protocol.
+
+    Parameters
+    ----------
+    src_dir : str
+        Source directory that shall be copied.
+    glob_pattern: str
+        Addition restriction on what shall be selected. Default: '*' (no
+        restriction).
+
+    Returns
+    -------
+    None.
+    """
+
+    to_put = glob.glob(os.path.join(src_dir,  glob_pattern))
+    to_put = [i for i in to_put if os.path.isfile(i)]
     client = pm.SSHClient()
     client.load_system_host_keys()
     client.set_missing_host_key_policy(pm.AutoAddPolicy())
     cred = parse_credentials_file()
     # first connect to login.ee.ethz.ch, then ssh to webbi04
-    client.connect(cred['webbi04']['host'], cred['webbi04']['port'],
+    client.connect(cred['webbi04']['login_host'], cred['webbi04']['port'],
                    cred['webbi04']['user'], cred['webbi04']['password'])
     _ = client.exec_command(cred['webbi04']['remote_cmd'])
 
     # now we're on webbi04
     sftp = client.open_sftp()
     for tp in to_put:
-        sftp.put(tp, cred['webbi04']['host'] + '/public_html/' +
-                 os.path.split(src_dir)[1])
+        common = os.path.commonpath([src_dir, tp])
+        srv_path = './public_html/' + tp[len(common):].replace('\\', '/')
+        sftp.put(tp, srv_path)
     sftp.close()
     client.close()
 
@@ -1430,13 +1556,13 @@ def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
         skipna=True).groupby('time.dayofyear').mean(skipna=True)
 
     # days with nan should be the same in both itgrad and itgrad_unc
-    nan_doys = [pd.Timestamp(x).dayofyear - 1 for x in
+    nan_doys = [pd.Timestamp(x).dayofyear for x in
                 climate.time[np.isnan(itgrad)].values]
 
     # fill finally
-    itgrad[np.isnan(itgrad)] = grad_rmean.isel(dayofyear=nan_doys).values
+    itgrad[np.isnan(itgrad)] = grad_rmean.sel(dayofyear=nan_doys).values
     itgrad_unc[np.isnan(itgrad_unc)] = \
-        grad_unc_rmean.isel(dayofyear=nan_doys).values
+        grad_unc_rmean.sel(dayofyear=nan_doys).values
 
     # apply the boundaries, in case the gradient goes wild
     itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
@@ -1494,7 +1620,7 @@ def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
         flattened_mask = locp[mask].flatten()
         if (~mask).all():
             continue
-        slope, icpt, _, p_val, _ = stats.linregress(
+        slope, icpt, _, p_val, stderr = stats.linregress(
             np.ma.masked_array(phgt, ~mask).compressed(),
             flattened_mask)
         # Todo: Is that a good method?
@@ -1784,7 +1910,9 @@ def get_local_dems(gdir):
     ----------
     .. [1] http://xarray.pydata.org/en/stable/auto_gallery/plot_rasterio.html#recipes-rasterio
     """
-
+    # get already the dx to which the DEMs should be interpolated later on
+    dx = dx_from_area(gdir.area_km2)
+    '''
     # get forest inventory DEMs (quite hard-coded for the LFI file names)
     out = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
 
@@ -1807,9 +1935,12 @@ def get_local_dems(gdir):
 
     # 'common' DEMs for this glacier (all years!)
     cdems = []
-    for z in zones:
-        plist = [x for x in lfi_dem_list if 'ADS_{}'.format(z) in x]
-        cdems.extend(plist)
+    for q in zones:
+        match = 'ADS_{}'.format(str(q))
+        # somehow, this doesn't work with list comprehension
+        for i in lfi_dem_list:
+            if match in i:
+                cdems.append(i)
 
     # check the common dates for all zones
     cdates = [dt.datetime(int(os.path.basename(x).split('_')[4]),
@@ -1819,8 +1950,7 @@ def get_local_dems(gdir):
     cdates = np.unique(cdates)
     cyears = np.unique([d.year for d in cdates])
 
-    # get already the dx to which the DEMs should be interpolated later on
-    dx = dx_from_area(gdir.area_km2)
+    
 
     lfi_all = []
     for cd in cyears:
@@ -1867,11 +1997,11 @@ def get_local_dems(gdir):
 
     concat.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w',
                      group=cfg.NAMES['LFI'])
-
+    '''
     # get DHM25 DEMs
     log.info('Assembling DHM25 DEM for {}'.format(gdir.rgi_id))
-    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25'].upper() +
-                       '*\\*.agr')
+    d_list = glob.glob(os.path.join(cfg.PATHS['dem_dir'], '*' +
+                                    cfg.NAMES['DHM25'].upper() + '*', '*.agr'))
     d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                        '*' + cfg.NAMES['DHM25'].upper() +
                                        '*.shp'))
@@ -1882,16 +2012,18 @@ def get_local_dems(gdir):
     # TODO: Replace with real acquisition dates!
     d_acq_dates = dt.datetime(1970, 1, 1)
     d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates, dx)
-    d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
+    #d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
+    #                group=cfg.NAMES['DHM25'])
+    d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w',
                     group=cfg.NAMES['DHM25'])
 
     # get SwissALTI3D DEMs
     log.info('Assembling SwissALTI3D DEM for {}'.format(gdir.rgi_id))
-    a_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+
-                       cfg.NAMES['SWISSALTI2010'].upper()+'*\\*.agr')
+    a_list = glob.glob(os.path.join(cfg.PATHS['dem_dir'], '*' +
+                       cfg.NAMES['SWISSALTI2010'].upper() + '*', '*.agr'))
     a_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                        '*'+cfg.NAMES['SWISSALTI2010'].upper()
-                                       +'*.shp'))
+                                       + '*.shp'))
     a_zones = get_zones_from_worksheet(a_ws_path[0], 'zone', gdir=gdir)
     a_to_merge = []
     for a_z in a_zones:
@@ -2630,6 +2762,7 @@ def idealized_gdir(surface_h, widths_m, map_dx, flowline_dx=1, name=None,
     return gdir
 
 
+# this function is copied from OGGM
 def initialize_merged_gdir_crampon(main, tribs=[], glcdf=None,
                            filename='climate_daily', input_filesuffix=''):
     """Creats a new GlacierDirectory if tributaries are merged to a glacier
@@ -2728,32 +2861,57 @@ def initialize_merged_gdir_crampon(main, tribs=[], glcdf=None,
                          + '.nc'
         climfile_m = os.path.join(merged.dir, climfilename_m)
         try:
-            shutil.copyfile(main.get_filepath(filename,
+            shutil.copyfile(main.get_filepath('climate_monthly',
                                               filesuffix=input_filesuffix),
-                            climfile)
+                            climfile_m)
         except:
-            pass
+            log.warning('No climate_monthly file found for {} during '
+                        'GlacierDirectory merging.'.format(main.rgi_id))
 
     # try/except form OGGM
     try:
-        _mufile = os.path.basename(merged.get_filepath('local_mustar')).split('.')
+        _mufile = os.path.basename(merged.get_filepath('local_mustar')).split(
+            '.')
         mufile = _mufile[0] + '_' + main.rgi_id + '.' + _mufile[1]
         shutil.copyfile(main.get_filepath('local_mustar'),
                         os.path.join(merged.dir, mufile))
     except FileNotFoundError:
-        pass
+        log.warning('No mu_star file found for {} during GlacierDirectory '
+                    'merging.'.format(main.rgi_id))
 
     # Crampon extension
     try:
-        _califile = os.path.basename(merged.get_filepath('calibration')).split('.')
+        _califile = os.path.basename(merged.get_filepath('calibration')).split(
+            '.')
         califile = _califile[0] + '_' + main.rgi_id + '.' + _califile[1]
         shutil.copyfile(main.get_filepath('calibration'),
                         os.path.join(merged.dir, califile))
     except FileNotFoundError:
-        pass
+        log.warning(
+            'No calibration file found for {} during GlacierDirectory '
+            'merging.'.format(main.rgi_id))
     # I think I need the climate_info only for the main glacier
     shutil.copyfile(main.get_filepath('climate_info'),
                     merged.get_filepath('climate_info'))
+
+    try:
+        _ipotfile = os.path.basename(merged.get_filepath('ipot')).split('.')
+        ipotfile = _ipotfile[0] + '_' + main.rgi_id + '.' + _ipotfile[1]
+        shutil.copyfile(main.get_filepath('ipot'),
+                        os.path.join(merged.dir, ipotfile))
+    except FileNotFoundError:
+        log.warning('No Ipot file found for {} during GlacierDirectory '
+                    'merging.'.format(main.rgi_id))
+
+    try:
+        _ippffile = os.path.basename(
+            merged.get_filepath('ipot_per_flowline')).split('.')
+        ippffile = _ippffile[0] + '_' + main.rgi_id + '.' + _ippffile[1]
+        shutil.copyfile(main.get_filepath('ipot_per_flowline'),
+                        os.path.join(merged.dir, ippffile))
+    except FileNotFoundError:
+        log.warning('No Ipot per flowline file found for {} during '
+                    'GlacierDirectory merging.'.format(main.rgi_id))
 
     # reproject the flowlines to the new grid
     for nr, fl in reversed(list(enumerate(mfls))):

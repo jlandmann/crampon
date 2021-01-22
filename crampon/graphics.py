@@ -1,11 +1,12 @@
 from __future__ import division
+from typing import Optional, List
 
 from oggm.graphics import *
 from crampon.utils import entity_task
 from crampon import utils, workflow
 from crampon.core.preprocessing.climate import GlacierMeteo
-from crampon.core.models.massbalance import MassBalance
-from crampon.core.models import assimilation
+from crampon.core.models.massbalance import MassBalance, DailyMassBalanceModel
+from crampon.core import holfuytools
 import xarray as xr
 from matplotlib.ticker import NullFormatter
 from oggm.utils import nicenumber
@@ -218,8 +219,12 @@ def plot_entity_param_dist(gdirs):
     return df_comb
 
 
-def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
-                      save_suffix='', prefer_mb_suffix=''):
+def make_mb_popup_map(
+        gdirs: Optional[List[utils.GlacierDirectory]] = None,
+        mb_model: Optional[DailyMassBalanceModel] = None,
+        shp_loc: Optional[str] = None, ch_loc: Optional[str] = None,
+        save_suffix: Optional[str] = '', prefer_mb_suffix: Optional[str] = '',
+        plot_dir: Optional[str] = None) -> None:
     """
     Create a clickable map of all Swiss glacier outlines.
 
@@ -228,13 +233,16 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
 
     Parameters
     ----------
+    gdirs: list of `py:class:utils.GlacierDirectory` or None, optional
+        If given, only these GlacierDirectories are put on the map. Mutually
+        exclusive with `shp_loc`. Default: None (take from shape_loc)
     mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`, str
         The mass balance model output to plot. Default: None (use ensemble
         median estimate).
-    shp_loc: str
+    shp_loc: str or None, optional
         Path to the glacier shapefile. If None, search in the data directory.
         Default: None.
-    ch_loc: str
+    ch_loc: str or None, optional
         Path to the shapefile with Swiss borders. If None, search in the data
         directory. Default: None.
     save_suffix: str, optional
@@ -243,11 +251,17 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
         Which mass balance suffix shall be preferred when making the map, e.g.
         '_fischer_unique_variability'. Default: '' (take the default order
         from 'good' to 'bad'.)
+    plot_dir: str or None, optional
+        Directory where to save the plot. Default: None (do not save).
 
     Returns
     -------
     None
     """
+
+    if (gdirs is not None) and (shp_loc is not None):
+        raise ValueError('Arguments `gdirs` and `shp_loc` are mutually '
+                         'exclusive.')
 
     if isinstance(mb_model, utils.SuperclassMeta):
         mb_model = mb_model.__name__
@@ -296,12 +310,19 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
                                       style_function=style_function)
     m.add_child(ch_poly)
 
-    # Add glacier shapes
-    glc_gdf = gpd.GeoDataFrame.from_file(shp_loc)
-    glc_gdf = glc_gdf.sort_values(by='Area', ascending=True)
-    # glc_gdf = glc_gdf[['Name', 'RGIId', 'CenLat', 'CenLon', 'Area',
-    #                   'geometry']]
-    gdirs = workflow.init_glacier_regions(glc_gdf)
+    # Add glacier shapes: read shp_loc anyway, if gdirs are not given
+    if gdirs is None:
+        glc_gdf = gpd.GeoDataFrame.from_file(shp_loc)
+        glc_gdf = glc_gdf.sort_values(by='Area', ascending=True)
+        gdirs = workflow.init_glacier_regions(glc_gdf)
+    else:
+        crs_int = 4326
+        glc_gdf = gpd.GeoDataFrame(crs='epsg:{}'.format(crs_int))
+        for gd in gdirs:
+            ol_path = gd.get_filepath('outlines')
+            gd_gdf = gpd.GeoDataFrame.from_file(ol_path)
+            gd_gdf = gd_gdf.to_crs(epsg=crs_int)
+            glc_gdf = glc_gdf.append(gd_gdf)
 
     # try "from good to bad":
     suffix_priority_list = ['', '_fischer', '_fischer_unique_variability',
@@ -312,26 +333,20 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
     # todo: externalize this function and make it an entity task
     has_current_and_clim = []
     error = 0
+    cnt = 0
     for gdir in gdirs:
-        print(gdir.rgi_id)
         clim = None
         current = None
 
         for mb_source_suffix in suffix_priority_list:
             try:
-                clim = gdir.read_pickle('mb_daily'+mb_source_suffix)
-                current = gdir.read_pickle('mb_current'+mb_source_suffix)
-                print('SUCCESS')
+                clim = gdir.read_pickle('mb_daily' + mb_source_suffix)
+                current = gdir.read_pickle('mb_current' + mb_source_suffix)
                 break
-            except FileNotFoundError:
-                print('FileNotFoundError')
-                continue
-            except AttributeError:
-                print('AttributeError')
+            except (FileNotFoundError, AttributeError):
                 continue
         if (clim is None) or (current is None):
             error += 1
-            print('ERROR')
             continue
         if mb_model is not None:
             current = current.sel(model=mb_model)
@@ -354,13 +369,14 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
                       list(mb_cumsum.groupby(hydro_years))[:-1]]
         mbd_values = sorted(mbd_values)
         pctl = percentileofscore(mbd_values, mbc_value.item())
-        if (gdir.rgi_id == 'RGI50-11.B3626-1') or \
-                (gdir.rgi_id == 'RGI50-11.A51G05'):
-            pctl = 11.
         glc_gdf.loc[glc_gdf.RGIId == gdir.rgi_id, 'pctl'] = pctl
         has_current_and_clim.append(gdir.rgi_id)
-        log.info('Successfully calculated mb distribution for {}'.format(
-            gdir.rgi_id))
+
+        cnt += 1
+        if cnt % 100 == 0:
+            log.info('{} glaciers done for popup map.'.format(cnt))
+    log.info('Successfully calculated mb distribution for {} out of {} '
+             'glaciers.'.format(len(gdirs) - error, len(gdirs)))
     glc_gdf = glc_gdf[glc_gdf.RGIId.isin(has_current_and_clim)]
 
     cmap_str = 'rainbow_r'
@@ -457,8 +473,9 @@ def make_mb_popup_map(mb_model=None, shp_loc=None, ch_loc=None,
     m.get_root().html.add_child(folium.Element(update_html))
 
     # Save
-    plots_dir = os.path.join(cfg.PATHS['working_dir'], 'plots')
-    m.save(os.path.join(plots_dir, 'status_map{}.html'.format(save_suffix)))
+    if plot_dir is not None:
+        m.save(os.path.join(plot_dir, 'status_map',
+                            'status_map{}.html'.format(save_suffix)))
 
 
 def plot_compare_cali(wdir=None, dev=5.):
@@ -569,10 +586,10 @@ class AnyObjectHandler(object):
 
 
 @entity_task(log)
-def plot_cumsum_climatology_and_current(gdir=None, clim=None, current=None,
-                                        mb_model=None, clim_begin=(10, 1),
-                                        current_begin=(10, 1),
-                                        abs_deviations=False, fs=14, loc=0):
+def plot_cumsum_climatology_and_current(
+        gdir=None, clim=None, current=None, suffix='', mb_model=None,
+        clim_begin=None, current_begin=None, abs_deviations=False, fs=14,
+        loc=0, plot_dir=None):
     """
     Make the standard plot containing the MB climatology in the background and
     the current MB year on top.
@@ -585,41 +602,50 @@ def plot_cumsum_climatology_and_current(gdir=None, clim=None, current=None,
 
     Parameters
     ----------
-    gdir: `py:class:crampon.GlacierDirectory` or None
+    gdir: `py:class:crampon.GlacierDirectory` or None, optional
         The GlacierDirectory to plot the data for. Mutually exclusive with
         [`clim` and `current`]. Default: None.
-    clim: xarray.Dataset or None
+    clim: xarray.Dataset or None, optional
         The mass balance climatology. The mass balance variable should be named
         'MB', where MassBalanceModel can be any
         MassBalanceModel and mass balance should have two coordinates (e.g.
         'time' and 'n' (some experiment)). This parameter is mutually exclusive
         with `gdir`. Default: None.
-    current: xarray.Dataset
+    current: xarray.Dataset or None, optional
         The current year's mass balance. The mass balance variable should be
         named 'MassBalanceModel_MB', where MassBalanceModel can be any mass
         balance model class and mass balance should have two coordinates (e.g.
         'time' and 'n' (some experiment)). This parameter is mutually exclusive
         with `gdir`. Default: None.
-    mb_model: str or None
+    suffix : str, optional
+        Which climate and current files with which suffix exactly to look for.
+        Only valid, when `gdir` is passed and thus mutually exclusive with
+        [`clim` and `current`]!. Accepted are all suffices that are also
+        possible in terms of calibration. If at least one of the desired files
+        is not there, an error is logged. Default: '' (no suffix).
+    mb_model: str or None, optional
         Mass balance model to make the plot for. must be contained in both the
         mass balance climatology and current mass balance file. Default: None
         (make plot for ensemble mass balance estimate).
-    clim_begin: tuple
-        Tuple of (month, day) when the mass budget year normally begins.
-    current_begin: tuple
+    clim_begin: tuple or None, optional
+        Tuple of (month, day) when the mass budget year begins. Default: (None,
+        None) (take from params).
+    current_begin: tuple or None, optional
         Tuple of (month, day) when the mass budget year begins in the current
-        mass budget year.
-    abs_deviations: bool
+        mass budget year. Default: (None, None) (take from params).
+    abs_deviations: bool, optional
         # TODO: Redo this! There is a bug somewhere
         Whether or not to plot also the current absolute deviations of the
         prediction from the reference median. Size of the figure will be
         adjusted accordingly to make both plots fit. Default: False.
-    fs: int
-        Font size for title, axis labels and legend.
-    loc: int
+    fs: int, optional
+        Font size for title, axis labels and legend. Default: 14.
+    loc: int, optional
         Legend position as passed to plt.legend(). Sometimes the placing of the
         legend fails when done automatically, so this helps to keep control.
         Default: 0 ('best' position).
+    plot_dir: str or None
+        Where to save the plot to. Default: None (do not save).
 
     Returns
     -------
@@ -635,10 +661,15 @@ def plot_cumsum_climatology_and_current(gdir=None, clim=None, current=None,
                          'given.')
 
     if gdir is not None:
-        clim = gdir.read_pickle('mb_daily')
-        current = gdir.read_pickle('mb_current')
+        clim = gdir.read_pickle('mb_daily', filesuffix=suffix)
+        current = gdir.read_pickle('mb_current', filesuffix=suffix)
     else:
         pass
+
+    if clim_begin is None:
+        clim_begin = (cfg.PARAMS['bgmon_hydro'], cfg.PARAMS['bgday_hydro'])
+    if current_begin is None:
+        current_begin = (cfg.PARAMS['bgmon_hydro'], cfg.PARAMS['bgday_hydro'])
 
     if mb_model is not None:
         try:
@@ -763,6 +794,16 @@ def plot_cumsum_climatology_and_current(gdir=None, clim=None, current=None,
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # include suptitle
 
+    if gdir is not None:
+        if plot_dir is None:
+            return
+        bname = os.path.join(plot_dir, 'mb_dist',
+                             gdir.rgi_id.split('.')[1] + '_')
+        plt.savefig(bname + 'mb_dist_{}.png'.format('ensemble' + suffix),
+                    dpi=1000)
+        plt.savefig(bname + 'mb_dist_{}_prev.png'.format('ensemble' + suffix),
+                    dpi=40)
+
 
 def plot_cumsum_allyears(gdir, mb_model=None):
     """
@@ -830,9 +871,11 @@ def plot_animated_swe(mb_model):
     return ani
 
 
-def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
+@entity_task(log)
+def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
+                                       show=False):
     """
-    Makes an interactive spaghetti plot of all avaiable mass balance years.
+    Makes an interactive spaghetti plot of all available mass balance years.
 
     When hovering over the plot, the cumulative mass balance curves are
     highlighted and the value is displayed as tooltip.
@@ -841,13 +884,16 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
     ----------
     gdir: :py:class:`crampon.GlacierDirectory`
         The glacier directory for which to produce the plot.
-    plot_dir:
-        Directory where to store the plot (HTML file). Usually, this is
-        something like `os.path.join(cfg.PATHS['working_dir'], 'plots')`.
+    plot_dir: str or None, optional
+        Directory where to store the plot (HTML file). Default: None (do not
+        save).
     mb_models: list of crampon.core.models.massbalance.DailyMassbalanceModel or
         None, optional
         Mass balance models to plot. If None, all model in `mb_clim` and
         `mb_current`, respectively, are used.
+    show: bool
+        whether to show the plot once done (i.e. open the HTML file in a
+        browser). Default: False (not handy during the operational runs).
 
     Returns
     -------
@@ -1010,12 +1056,14 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir, mb_models=None):
     plot.add_tools(UndoTool())
     plot.add_tools(RedoTool())
 
-    output_file(os.path.join(plot_dir, gdir.rgi_id +
-                             '_interactive_mb_spaghetti.html'))
-    export_png(plot, os.path.join(plot_dir, gdir.rgi_id +
-                                  '_interactive_mb_spaghetti.png'))
-    save(plot)
-    bkshow(plot)
+    if plot_dir is not None:
+        output_file(os.path.join(plot_dir, 'mb_spaghetti', gdir.rgi_id +
+                                 '_interactive_mb_spaghetti.html'))
+        export_png(plot, os.path.join(plot_dir, gdir.rgi_id +
+                                      '_interactive_mb_spaghetti.png'))
+        save(plot)
+    if show is True:
+        bkshow(plot)
 
 
 def plot_topo_per_glacier(start_year=2005, end_year=None):
@@ -1381,7 +1429,7 @@ def plot_holfuy_station_availability(fontsize=14, barheight=0.8):
     for id in ['RGI50-11.A55F03', 'RGI50-11.B4312n-1', 'RGI50-11.B5616n-1']:
         gdir = utils.GlacierDirectory(
             id, base_dir=os.path.join(cfg.PATHS['working_dir'], 'per_glacier'))
-        obs_merge = assimilation.prepare_holfuy_camera_readings(
+        obs_merge = holfuytools.prepare_holfuy_camera_readings(
             gdir, ice_only=False, exclude_keywords=False,
             exclude_initial_snow=False)
         for h in obs_merge.height.values:

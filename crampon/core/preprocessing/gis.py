@@ -125,7 +125,7 @@ def utm_grid(center_ll=None, extent=None, ny=600, nx=None,
                 pixel_ref='corner')
 
 
-@entity_task(log, writes=['glacier_grid', 'dem', 'outlines'])
+@entity_task(log, writes=['glacier_grid', 'homo_dem_ts', 'outlines'])
 def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     """
     Define the local grid for a glacier entity.
@@ -473,7 +473,6 @@ def calculate_geodetic_deltav(gdir, fill_threshold=0.1):
         # if NaNs are more than the fill threshold, continue
         fill_ratio = round(
             len(missing_mask.nonzero()[0]) / missing_mask.count(), 3)
-        print(fill_ratio)
         if fill_ratio > fill_threshold:
             continue
 
@@ -487,8 +486,6 @@ def calculate_geodetic_deltav(gdir, fill_threshold=0.1):
 
         # calculate dV assuming that missing cells have the average dV
         dv = np.nansum(diff) * dems_sel.res ** 2
-
-        print(dv.item())
 
         gvc_df.loc[ix, 'dv'] = round(dv.item())
         gvc_df.loc[ix, 'date0'] = pd.Timestamp(d1.time.item())

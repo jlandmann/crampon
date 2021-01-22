@@ -492,14 +492,14 @@ def process_custom_climate_data_crampon(gdir):
     gdir.write_json(out, 'climate_info')
 
 
-# @entity_task(log, writes=['spinup_climate_daily'])
+@entity_task(log, writes=['climate_spinup'])
 def process_spinup_climate_data(gdir):
     """
     Process homogenized gridded data before 1961 into a spinup climate.
     """
     # todo: double code with climate processing: how to do a wrapper function?
     fpath = os.path.join(cfg.PATHS['climate_dir'],
-                         cfg.BASENAMES['spinup_climate_daily'])
+                         cfg.BASENAMES['climate_spinup'])
     if not os.path.exists(fpath):
         raise IOError('Spinup climate file {} not found'.format(fpath))
 
@@ -605,7 +605,7 @@ def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
             raise KeyError('Must supply hfile or initialize the crampon'
                            'configuration.')
 
-    outfile = os.path.join(write_to, cfg.BASENAMES['spinup_climate_daily'])
+    outfile = os.path.join(write_to, cfg.BASENAMES['climate_spinup'])
 
     globdir = 'griddata/reconstruction/*{}/'
     if sys.platform.startswith('win'):
@@ -685,6 +685,9 @@ def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
 
     # ensure it's compressed when exporting
     nc_ts.encoding['zlib'] = True
+    for v in nc_ts.data_vars:
+        nc_ts[v].encoding.update({'dtype': np.int16, 'scale_factor': 0.01,
+                                  '_FillValue': -9999})
     nc_ts.to_netcdf(outfile)
 
 
@@ -735,6 +738,9 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
     ftp_key_dict = {'BZ13': 'RprelimD', 'BZ14': 'RhiresD', 'BZ51': 'TabsD',
                     'BZ54': 'TminD', 'BZ55': 'TmaxD', 'BZ69': 'msgSISD_',
                     'CZ91': 'TabsD', 'CZ92': 'TminD', 'CZ93': 'TmaxD'}
+
+    # encoding used when writing to disk (sves enormous amounts of data
+    io_enc = {'dtype': np.int16, 'scale_factor': 0.01, '_FillValue': -9999}
 
     # cheap way for platoform-dependent path
     globdir = 'griddata/{}/daily/{}*/netcdf/'
@@ -837,11 +843,15 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
             new = utils.read_multiple_netcdfs(r, tfunc=utils._cut_with_CH_glac)
             sda = old.combine_first(new)
             # todo: ensure time continuity? What happens if file is missing?
-            sda.encoding['zlib'] = True
-            sda.to_netcdf(all_file)
         else:
             raise ValueError('Climate file creation creation mode {} is not '
                              'allowed.'.format(mode))
+
+        sda.encoding['zlib'] = True
+        # `var` is not always the variable name in the file, so iterate:
+        for v in sda.data_vars:
+            sda[v].encoding.update(io_enc)
+        sda.to_netcdf(all_file)
 
     # update operational with verified
     for var in ['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_']:
@@ -855,6 +865,8 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
             data = data.crampon.update_with_verified(v_ve)
         except FileNotFoundError:
             data = utils.read_netcdf(v_ve, chunks={'time': 50})
+        for v in data.data_vars:
+            data[v].encoding.update(io_enc)
         data.to_netcdf(os.path.join(write_to, '{}_op_ver.nc'.format(var)))
 
     # combine both
@@ -899,7 +911,6 @@ def make_nwp_file(write_to=None):
             raise KeyError('Must supply write_to or initialize the crampon'
                            'configuration.')
 
-    out_file = os.path.join(write_to, 'cosmo_predictions.nc')
     cosmo_dir = os.path.join(write_to, 'cosmo')
 
     # current midnight modelrun
@@ -1089,7 +1100,11 @@ def update_climate(gdir, clim_all=None):
     pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
 
     gclim = xr.open_dataset(gdir.get_filepath('climate_daily'))
-    # last_day = gclim.time[-1]
+    last_day_gclim = gclim.time[-1]
+
+    # it can be that updating the glacier climate is longer ago than 62 days
+    last_day = min(last_day, last_day_gclim)
+    # todo: take also care that existing climate_daily does not have gaps!!!
 
     if last_day < last_day_clim:
         clim_all_sel = clim_all.sel(dict(lat=gclim.ref_pix_lat,
@@ -1102,9 +1117,16 @@ def update_climate(gdir, clim_all=None):
         # we need to add tgrad and pgrad (not in climate file)
         ilon = np.argmin(np.abs(clim_all.lon - gdir.cenlon)).item()
         ilat = np.argmin(np.abs(clim_all.lat - gdir.cenlat)).item()
-        clim_all_sel['tgrad'] = (['time'], utils.get_tgrad_from_window(
+        # todo: handing over clim_all_tsel is bullshit, since we take a 30 day
+        #  rolling mean to fill gradient gaps
+        # selection [0] for tgrad ([1] is uncertainty)
+        tg, tgu = utils.get_tgrad_from_window(
             clim_all_tsel, ilat=ilat, ilon=ilon, win_size=use_tgrad,
-            default_tgrad=def_tgrad, minmax_tgrad=tg_minmax))
+            default_tgrad=def_tgrad, minmax_tgrad=tg_minmax)
+        clim_all_sel['tgrad'] = (['time'], tg)
+        clim_all_sel['tgrad_sigma'] = (['time'], tgu)
+
+        # no double output for pgrad
         clim_all_sel['pgrad'] = (['time'], utils.get_pgrad_from_window(
             clim_all_tsel, ilat=ilat, ilon=ilon, win_size=use_pgrad,
             default_pgrad=def_pgrad, minmax_pgrad=pg_minmax))
@@ -1360,7 +1382,7 @@ class GlacierMeteo(object):
 
         Parameters
         ----------
-        date : pd.Timestamp
+        date : pd.Timestamp or pd.DatetimeIndex
             Date for which to calculate the mean temperature.
         heights : np.array
             Heights on which to calculate the temperature.

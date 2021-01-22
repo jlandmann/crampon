@@ -11,8 +11,9 @@ import pytest
 import pandas as pd
 import datetime
 import numpy as np
+import xarray as xr
 
-from crampon.tests import requires_credentials, requires_vpn
+from crampon.tests import requires_credentials, requires_wsl_vpn, ON_TRAVIS
 from crampon import utils
 from crampon import cfg
 from oggm.tests.test_utils import TestDataFiles as OGGMTestDataFiles
@@ -31,7 +32,7 @@ if not os.path.exists(TEST_DIR):
 
 
 @requires_credentials
-@requires_vpn
+@requires_wsl_vpn
 @pytest.mark.internet
 class TestCirrusClient(unittest.TestCase):
 
@@ -137,13 +138,27 @@ class TestMiscFuncs(unittest.TestCase):
             datetime.datetime(2016, 11, 15))
 
     @requires_credentials
-    @requires_vpn
+    @requires_wsl_vpn
     @pytest.mark.internet
     def test_mount_network_drive(self):
 
         drive = r'\\speedy10.wsl.ch\data_15\_PROJEKTE\Swiss_Glacier'
         msg = utils.mount_network_drive(drive, r'wsl\landmann')
         self.assertEqual(msg, 0)
+
+    @pytest.mark.skipif(ON_TRAVIS, reason='requires local data')
+    def test_get_local_dems(self):
+        # remove and make again
+        os.remove(self.gdir.get_filepath('dem_ts'))
+        utils.get_local_dems(self.gdir)
+
+        # see if it worked
+        dem_source_list = [cfg.NAMES['DHM25'], cfg.NAMES['SWISSALTI2010']
+                           #, cfg.NAMES['LFI']
+                           ]
+        for demtype in dem_source_list:
+            _ = xr.open_dataset(self.gdir.get_filepath('dem_ts'),
+                                   group=demtype)
 
     def test_weighted_quantiles(self):
 

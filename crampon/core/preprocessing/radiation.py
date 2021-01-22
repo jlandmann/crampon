@@ -3,11 +3,9 @@ import math
 import xarray as xr
 from pysolar.solar import *
 from pysolar import radiation
-import datetime
 import pandas as pd
 import rasterio
 import netCDF4
-import matplotlib.pyplot as plt
 from numba import jit
 import salem
 from crampon import utils
@@ -17,6 +15,7 @@ from scipy.interpolate import interp1d
 from crampon import cfg
 from crampon.utils import entity_task
 import logging
+import pyproj
 
 # Module logger
 log = logging.getLogger(__name__)
@@ -66,15 +65,15 @@ def bresenham(x0, y0, x1, y1):
         dx, dy = dy, dx
         xx, xy, yx, yy = 0, ysign, xsign, 0
 
-    D = 2 * dy - dx
+    d = 2 * dy - dx
     y = 0
 
     for x in range(dx + 1):
         yield x0 + x*xx + y*yx, y0 + x*xy + y*yy
-        if D >= 0:
+        if d >= 0:
             y += 1
-            D -= 2*dx
-        D += 2 * dy
+            d -= 2*dx
+        d += 2 * dy
 
 
 @jit(nopython=True)
@@ -234,6 +233,7 @@ def get_incidence_angle_garnier(terrain_slope, terrain_azi, sun_zen, sun_azi):
     sun_azi: float or array_like
         Sun azimuth angle (radian).
 
+    Returns
     -------
     theta: same as input
         Angle(s) of incidence for the given parameters.
@@ -373,7 +373,8 @@ def get_potential_irradiation_without_toposhade(lat_deg, lon_deg, tz='UTC',
     return alt_azi
 
 
-def ipot_loop(mask, resolution, dem_array, alt_azi):
+def ipot_loop(mask, resolution, dem_array, alt_azi,
+              freqstr):
     """
     Loop over times and all grid pixels to get the potential irradiation.
     
@@ -393,6 +394,8 @@ def ipot_loop(mask, resolution, dem_array, alt_azi):
         Dataframe with solar altitudes and azimuths in both radians and
         degrees. Needs to have columns 'azimuth_deg', 'azimuth_rad',
         'altitude_deg', altitude_rad' and the index 'time'.
+    freqstr: str
+        Interval between the calculations of Ipot (e.g. 10min).
 
     Returns
     -------
@@ -416,14 +419,31 @@ def ipot_loop(mask, resolution, dem_array, alt_azi):
     radius = max(dem_array.shape)
     xx, yy = np.meshgrid(x_coords, y_coords)
 
+    # todo 1): make a grid of the glacier with buffer,
+    #  2) map indices of this grid to the bigger grid
+
+    # end of day indices
+    eod_ix = \
+        np.cumsum([len(x) for x in
+                   alt_azi.index.groupby(alt_azi.index.date).values()]) - 1
+
     # prepare the output array
     time_array = np.empty((len(x_coords), len(y_coords), len(times)))
     time_array.fill(np.nan)
 
+    n_times_per_day = int(pd.Timedelta(days=1) / pd.to_timedelta(
+                    pd.tseries.frequencies.to_offset(freqstr)))
+    small_array = np.full(n_times_per_day, np.nan)
+
     # save time: only go over valid glacier cells
     valid = np.where(mask)
 
+    sy, sx = np.gradient(dem_array, resolution)
+    slope = np.arctan(np.sqrt(sx ** 2 + sy ** 2))
+    aspect = np.arctan2(-sx, sy)
+
     npixel = 0
+    insert_at = 0
     # loop over space, then over time: due to angle grids, this is faster
     for y, x in zip(*valid):
         # todo: remove before making entity task
@@ -435,7 +455,7 @@ def ipot_loop(mask, resolution, dem_array, alt_azi):
         angle_grid, angle_grid_deg = make_elevation_angle_grid(x, y, xx, yy,
                                                                resolution,
                                                                dem_array)
-
+        it = 0
         for tindex, (azi, azi_rad, alti, t) in enumerate(zip(azis, azis_rad,
                                                              altis, times)):
 
@@ -474,7 +494,7 @@ def ipot_loop(mask, resolution, dem_array, alt_azi):
                                                   aspect, np.pi / 2. -
                                                   altis_rad[i], azis_rad[i])
         # clip zero: diffuse rad is set to zero (direct could be negative!)
-        corrected = np.clip(corrected, 0., None)
+        corrected[corrected < 0.] = 0.  # prob. faster than np.clip(arr. large)
         time_array_corrected[:, :, i] = corrected.T
 
     return time_array_corrected
@@ -523,50 +543,81 @@ def correct_radiation_for_terrain(r_beam, r_diff, slope, terrain_a, sun_z,
     return r_s
 
 
-def scale_irradiation_with_potential_irradiation(gdir, sis, ipot,
+def scale_irradiation_with_potential_irradiation(gdir, sis,
                                                  diff_rad_ratio=0.2):
     """
-    Scale the actual measured incoming solar radiation with potential irradiation.
+    Scale actual measured incoming solar radiation with potential irradiation.
 
     This is used to apply terrain effects to the MeteoSwiss HelioSat global
     irradiation product.
 
     Parameters
     ----------
+    gdir: :py:class:`crampon.GlacierDirectory`
+        GlacierDirectory to scale Ipot for.
     sis: float
         Mean irradiation over a time span, e.g. one day.
-    ipot: np.array
-        Grid with the mean potential irradiation over the same time span as
-        isis.
+    diff_rad_ratio: float
+        Ratio of diffuse to total radiation. We can only guess here,
+        until we include also SISDIR. Default: 0.2 (20% of SIS is diffuse
+        radiation).
 
     Returns
     -------
     sis_distr: np.array
         The solar incoming radiation distributed on terrain.
     """
+    cd = xr.open_dataset(gdir.get_filepath('climate_daily'))
+    ipot = xr.open_dataset(gdir.get_filepath('ipot'))
+    ippf = gdir.read_pickle('ipot_per_flowline')
+    ippf = np.array([i for sub in ippf for i in sub])
 
-    # normalize Ipot
-    ipot_norm = (ipot - np.nanmin(ipot)) / (np.nanmax(ipot) - np.nanmin(ipot))
+    p = pyproj.Proj(init='epsg:4326')
+    # resulting projection, WGS84, long, lat
 
+    lon, lat = [cd.ref_pix_lon, cd.ref_pix_lat]
+    cenx, ceny = pyproj.transform(p, gdir.grid.proj, lon, lat)
+    # cell size is approx. 1.6km x 2.3 km
+    # todo: this can be made more precisely - cell size varies throughout CH
+    ipot_sel = ipot.where((ipot.x >= cenx - 800.) & (ipot.x >= cenx + 800) & (
+                ipot.y >= ceny - 1150.) & (ipot.y <= ceny + 1150.))
+    ipot_cell_mean = ipot_sel.mean(dim=['x', 'y'])
+
+    # todo: get the diffuse ratio from SIS/SISDIR
+    sis_corr_fac = ippf / np.atleast_2d(ipot_cell_mean.ipot.values)
+    # if ippf is zero, we have a problem. Everywhere should be diffuse rad.
+    sis_corr_fac = np.clip(sis_corr_fac, diff_rad_ratio, None)
+
+    da = xr.DataArray(sis_corr_fac, dims={
+        'fl_id': (['fl_id'], np.arange(sis_corr_fac.shape[0])),
+        'doy': (['doy'], np.arange(sis_corr_fac.shape[1]))},
+                      coords={'fl_id': (['fl_id'],
+                                        np.arange(sis_corr_fac.shape[0])),
+                              'doy': (['doy'],
+                                      np.arange(sis_corr_fac.shape[1]))},
+                      name='sis_scale_fac')
+
+    da.to_netcdf(gdir.get_filepath('sis_scale_factor'))
+
+    # todo: this assumes that ISIS is the mean! To make this happen,
+    #  we actually need to know which Ipot cells the SIS cell covers. Then
+    #  we don't take the mean of Ipot in general, but the mean over this area.
+    # Ipot as a factor of the mean
+    ipot_fac = ipot / np.nanmean(ipot)
+    ipot_fac = np.clip(ipot_fac, diff_rad_ratio, None)
+
+    # todo: this does not include diffuse radiation: if at a time step
+    #  during the day Ipot was 0, then this will also be counted as zero for
+    #  ISIS. This is not true, however: It should be counted as 20% of the
+    #  total (diffuse part) or so.
     # Apply normalization to incoming solar radiation
-    isis_distr = sis * ipot_norm
+    isis_distr = sis * ipot_fac
 
     return isis_distr
 
 
-def test_correct_radiation_for_terrain():
-    # test floats
-    # sun in zenith, terrain flat
-    float_result = correct_radiation_for_terrain(1000., 0., 0., 0., np.pi/2.,
-                                                 np.pi)
-    # sun in zenith, terrain at 90 deg
-    float_result = correct_radiation_for_terrain(1000., 0., np.pi / 4., 0.,
-                                                 np.pi / 2., np.pi)
-
-
-    # array tests
-
-
+# For whatever reason this 'HAS TO'
+# @entity_task(log, writes=['ipot_per_flowline'])
 def distribute_ipot_on_flowlines(gdir):
     """
     Distribute potential irradiation on a raster grid to the glacier flowlines.
@@ -604,7 +655,8 @@ def distribute_ipot_on_flowlines(gdir):
 
         fl_ipot_arr = np.full((len(fhgt), 365), np.nan, float)
         for q in range(len(fhgt)):
-            # todo: check if surface surface_h values are lower edge, uppder edge or mid of the interval
+            # todo: check if surface surface_h values are lower edge, uppder
+            #  edge or mid of the interval
             try:
                 cond = (c_heights.sel(band=1).data.values <= fhgt[q]) & (
                         c_heights.sel(band=1).data.values > fhgt[q + 1])
@@ -627,7 +679,10 @@ def distribute_ipot_on_flowlines(gdir):
     gdir.write_pickle(ipot_per_flowline, 'ipot_per_flowline')
 
 
-def get_potential_irradiation_with_toposhade(gdir):
+# For whatever reason (OGM complains) this has to stay commented out
+# @entity_task(log, writes=['ipot'])
+def get_potential_irradiation_with_toposhade(gdir, dem_source='SRTM',
+                                             grid_reduce_fac=None):
     """
     Get the potential solar irradiation including topographic shading.
 
@@ -635,6 +690,17 @@ def get_potential_irradiation_with_toposhade(gdir):
     ----------
     gdir: `py_class:crampon.GlacierDirectory`
         The GlacierDirectory to process the potential solar irradiation for.
+    dem_source: str or None
+        The source of the DEM that is use for raytracing. Can be any source
+        that is accepted by util.get_topo_file. If None and a "dem_file" is
+        provided in the params file, then this DEM will be taken. This can,
+        however, cause problem  e.g. at Swiss borders as the domain is extended
+        by 10km.
+        # todo: merge SRTM and own source to get the best estimate or make a
+        query if whole domain os covered by dem_file -> else, take SRTM
+    grid_reduce_fac: float
+        Factor that determines how coarsely the grid will be resampled (avoid
+        MemoryError). Default: None (values form cfg.PARAMS is taken).
 
     Returns
     -------
@@ -642,8 +708,6 @@ def get_potential_irradiation_with_toposhade(gdir):
     """
 
     dem = xr.open_rasterio(gdir.get_filepath('dem'))
-    with netCDF4.Dataset(gdir.get_filepath('gridded_data'), 'r') as ncd:
-        mask = ncd.variables['glacier_mask'][:]
     ds = dem.to_dataset(name='data')
     ds.attrs['pyproj_srs'] = dem.crs
     grid = salem.grid_from_dataset(ds)
@@ -657,13 +721,16 @@ def get_potential_irradiation_with_toposhade(gdir):
                                 int(grid.ny + 2 * extend_border / abs(grid.dy))
                                 ))
     # regrid to coarser resolution (save time)
-    ext_regrid = ext_grid.regrid(factor=cfg.PARAMS['reduce_rgrid_resolution'])
+    if grid_reduce_fac is None:
+        grid_reduce_fac = cfg.PARAMS['reduce_rgrid_resolution']
+    ext_regrid = ext_grid.regrid(factor=grid_reduce_fac)
     print('new_resolution: {}'.format(ext_regrid.dx))
 
     # todo: get rid of double code from init_glacier_regions
     lon_ex = (ext_grid.extent_in_crs()[0], ext_grid.extent_in_crs()[1])
     lat_ex = (ext_grid.extent_in_crs()[2], ext_grid.extent_in_crs()[3])
-    dems_ext_list, _ = utils.get_topo_file(lon_ex=lon_ex, lat_ex=lat_ex)
+    dems_ext_list, _ = utils.get_topo_file(lon_ex=lon_ex, lat_ex=lat_ex,
+                                           source=dem_source)
 
     if len(dems_ext_list) == 1:
         dem_dss = [rasterio.open(dems_ext_list[0])]  # if one tile, just open
@@ -703,6 +770,10 @@ def get_potential_irradiation_with_toposhade(gdir):
     regrid_ds = ext_regrid.to_dataset()
     regrid_ds['height'] = (['y', 'x'], dst_array)
     new_mask = regrid_ds.salem.roi(shape=gdir.get_filepath('outlines'))
+    # todo: make ipot calculation at finer grids possible
+    if np.isnan(new_mask.height.values).all():  # tiny glac. (< new grid size)
+        new_mask = regrid_ds.salem.roi(shape=gdir.get_filepath('outlines'),
+                                       all_touched=True)
 
     # assume: grid is small enough that difference in sun angles doesn't matter
     latitude_deg = np.mean(grid.ll_coordinates[1])  # pos. in the northern h.
@@ -714,7 +785,8 @@ def get_potential_irradiation_with_toposhade(gdir):
 
     ipot_array = ipot_loop(mask=~np.isnan(new_mask).height.values,
                            resolution=ext_regrid.dx, dem_array=dst_array,
-                           alt_azi=alt_azi)
+                           alt_azi=alt_azi, src_grid=ext_regrid, dst_grid=grid,
+                           freqstr=freqstr)
 
     # make daily mean
     group_indices = alt_azi.groupby(by=alt_azi.index.date).indices
@@ -725,9 +797,9 @@ def get_potential_irradiation_with_toposhade(gdir):
 
         one_day = ipot_array[:, :, group_indices[pd.Timestamp(day)]]
         # we have to account for time steps during the night
-        one_day_mean = np.sum(one_day, axis=2) / (
-                    pd.Timedelta(days=1) / pd.to_timedelta(
-                pd.tseries.frequencies.to_offset(freqstr)))
+        one_day_mean = np.sum(one_day, axis=2) / \
+            (pd.Timedelta(days=1) /
+             pd.to_timedelta(pd.tseries.frequencies.to_offset(freqstr)))
         ipot_array_daymean[:, :, nth_day] = one_day_mean
 
     ipot_ds = ext_regrid.to_dataset()
@@ -785,8 +857,8 @@ def irradiation_top_of_atmosphere(doy, latitude_deg, solar_constant=None):
     # declination  of the sun (approximated as in [2]_.)
     delta = 0.4093 * np.sin(((2. * np.pi) / 365. * doy) - 1.3944)
 
-    # ratio of mean & current sun-earth distance approxim. from ([1]_ in [2]_)
-    d0d = (1 + 0.033 * np.cos(((2. * np.pi * doy) / 365.)))
+    # Approx. ratio of mean & current sun-earth distance
+    d0d = ratio_mean_to_current_sun_earth_distance(doy)
 
     # cosine of sun hour angle
     cos_omega = - np.tan(latitude_rad) * np.tan(delta)
@@ -796,8 +868,8 @@ def irradiation_top_of_atmosphere(doy, latitude_deg, solar_constant=None):
 
     # putting all together
     s_toa = solar_constant * d0d * 1 / np.pi * (
-            omega * np.sin(latitude_rad) * np.sin(delta) + np.cos(
-        latitude_rad) * np.cos(delta) * np.sin(omega))
+        omega * np.sin(latitude_rad) * np.sin(delta) + np.cos(latitude_rad)
+        * np.cos(delta) * np.sin(omega))
 
     return s_toa
 
@@ -816,14 +888,14 @@ def get_declination(doy):
     decl: int
         Declination for the given day of year.
     """
-    TT = 2 * math.pi * doy / 366
+    tt = 2 * math.pi * doy / 366
     decl = (0.322003 -
-            22.971 * math.cos(TT) -
-            0.357898 * math.cos(2 * TT) -
-            0.14398 * math.cos(3 * TT) +
-            3.94638 * math.sin(TT) +
-            0.019334 * math.sin(2 * TT) +
-            0.05928 * math.sin(3 * TT))  # solar declination in degrees
+            22.971 * math.cos(tt) -
+            0.357898 * math.cos(2 * tt) -
+            0.14398 * math.cos(3 * tt) +
+            3.94638 * math.sin(tt) +
+            0.019334 * math.sin(2 * tt) +
+            0.05928 * math.sin(3 * tt))  # solar declination in degrees
     return decl
 
 
@@ -842,16 +914,16 @@ def get_declination_corripio(jd):
         Declination angle in degrees.
     """
     jdc = (jd - 2451545.0) / 36525.0
-    sec = 21.448 - jdc * (46.8150 + jdc * (0.00059 - jdc * (0.001813)))
+    sec = 21.448 - jdc * (46.8150 + jdc * (0.00059 - jdc * 0.001813))
     e0 = 23.0 + (26.0 + (sec / 60.0)) / 60.0
     oblcorr = e0 + 0.00256 * np.cos(np.deg2rad(125.04 - 1934.136 * jdc))
-    l0 = 280.46646 + jdc * (36000.76983 + jdc * (0.0003032))
+    l0 = 280.46646 + jdc * (36000.76983 + jdc * 0.0003032)
     l0 = (l0 - 360 * (int(l0 / 360))) % 360
     gmas = 357.52911 + jdc * (35999.05029 - 0.0001537 * jdc)
     gmas = np.deg2rad(gmas)
     seqcent = np.sin(gmas) * (1.914602 - jdc * (0.004817 + 0.000014 * jdc)) + \
-              np.sin(2 * gmas) * (0.019993 - 0.000101 * jdc) + \
-              np.sin(3 * gmas) * 0.000289
+        np.sin(2 * gmas) * (0.019993 - 0.000101 * jdc) + np.sin(3 * gmas) \
+        * 0.000289
 
     suntl = l0 + seqcent
     sal = suntl - 0.00569 - 0.00478 * np.sin(np.deg2rad(125.04 - 1934.136 *
@@ -1028,7 +1100,7 @@ def _fallback_ipot(gdir):
                                                              gdir.name))
 
 
-@entity_task(log, fallback=_fallback_ipot)
+@entity_task(log, writes=['ipot'], fallback=_fallback_ipot)
 def get_potential_irradiation_corripio(gdir):
     """
     Get the potential solar irradiation including topographic shading.
@@ -1218,9 +1290,9 @@ def get_potential_irradiation_corripio(gdir):
     ipot_reproj = ds.salem.transform(ipot_ds)
     # apply tricks to not consume endless disk space when writing
     ipot_reproj.to_netcdf(gdir.get_filepath('ipot'),
-                          encoding={'ipot': {'dtype': 'int16',
-                                             'scale_factor': 0.1,
-                                             '_FillValue': -9999}})
+                          encoding={'ipot': {'dtype': np.uint16,
+                                             'scale_factor': 0.01,
+                                             '_FillValue': 9999}})
 
 
 @entity_task(log, fallback=_fallback_ipot)

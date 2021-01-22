@@ -26,15 +26,12 @@ logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
 log = logging.getLogger(__name__)
 log.setLevel('DEBUG')
 
-
-# Initialize CRAMPON (and OGGM, hidden in cfg.py)
-cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
-                    'CH_params.cfg')
 PLOTS_DIR = os.path.join(cfg.PATHS['working_dir'], 'plots')
 utils.mkdir(cfg.PATHS['working_dir'])
 
 # Read one test glacier
-glaciers = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
+glaciers = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                        'mauro_sgi_merge.shp')
 rgidf = gpd.read_file(glaciers)
 
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]  # Gries OK
@@ -45,6 +42,10 @@ rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05'])]  # Silvretta OK
 #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.C1410'])]  # Basòdino
 
 if __name__ == '__main__':
+
+    # Initialize CRAMPON (and OGGM, hidden in cfg.py)
+    cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
+                        'CH_params.cfg')
 
     # Go - initialize working directories
     gdirs = workflow.init_glacier_regions(rgidf, reset=False, force=False)
@@ -87,11 +88,11 @@ if __name__ == '__main__':
         for date in pd.date_range(begin_clim, end_clim):
 
             # Get the mass balance and convert to m w.e. per day
-            tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * cfg.RHO /\
-              1000.
+            tmp = day_model.get_daily_mb(heights, date=date) * cfg.SEC_IN_DAY * \
+                  cfg.RHO / cfg.RHO_W
             mb.append(tmp)
 
-        mb_ds = xr.Dataset({'MB': (['n', 'height', 'time'],
+        mb_ds = xr.Dataset({day_model.mb_name: (['n', 'height', 'time'],
                                    np.atleast_3d(mb).T)},
                            coords={'n': (['n'], exp),
                                    'time': pd.to_datetime(

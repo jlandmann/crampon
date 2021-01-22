@@ -7,11 +7,16 @@ from crampon import utils
 import xarray as xr
 import datetime as dt
 from enum import IntEnum, unique
+from scipy.stats import percentileofscore
 from crampon.core.preprocessing import climate
+from crampon.core.preprocessing import gis
 import numba
 from collections import OrderedDict
 from itertools import product
 import pandas as pd
+import copy
+from pyproj import Proj, transform
+from crampon.core.holfuytools import prepare_holfuy_camera_readings
 
 import logging
 
@@ -155,14 +160,15 @@ class DailyMassBalanceModel(MassBalanceModel):
                 self.prcp = nc.variables['prcp'][:] * \
                             self.prcp_fac.reindex(index=time,
                                                   method='nearest')\
-                                .fillna(value=self.param_ep_func(self.prcp_fac))
+                                .fillna(value=self.param_ep_func(self.prcp_fac)).values
             else:
-                self.prcp = nc.variables['prcp'][:] * self.prcp_fac
+                # todo: this is to check out whether we can pass several correction factors at once
+                self.prcp = nc.variables['prcp'][:] * np.atleast_2d(self.prcp_fac).T
             self.tgrad = nc.variables['tgrad'][:]
             self.pgrad = nc.variables['pgrad'][:]
             self.ref_hgt = nc.ref_hgt
 
-        self.meteo = climate.GlacierMeteo(self.gdir)
+        self.meteo = climate.GlacierMeteo(self.gdir, filename=filename)
 
         self._time_elapsed = None
 
@@ -353,8 +359,11 @@ class DailyMassBalanceModel(MassBalanceModel):
         -------
         the mass-balance (same dim as `heights`) (units: [m s-1])
         """
-
-        month_mb = None
+        month_beg = cfg.PARAMS['begin_mbyear_month']
+        day_beg = cfg.PARAMS['begin_mbyear_day']
+        year_range = pd.date_range(
+            '{}-{}-{}'.format(year - 1, month_beg, day_beg),
+            '{}-{}-{}'.format(year, month_beg, day_beg))
 
     def get_annual_mb(self, heights, year=None, fl_id=None):
         """Like `self.get_monthly_mb()`, but for annual MB.
@@ -512,7 +521,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('not found')
+                print('Snow redist factors not found')
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -555,6 +564,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
     cali_params_list = ['mu_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [6.5, 1.5]))
     param_bounds = ([0.0, 0.1], [np.inf, 5.0])
+    calibration_timespan = (None, None)
     prefix = 'BraithwaiteModel_'
     mb_name = prefix + 'MB'
 
@@ -677,9 +687,10 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                 self.prcp = nc.variables['prcp'][:] * \
                             self.prcp_fac.reindex(index=time,
                                                   method='nearest').fillna(
-                    value=self.param_ep_func(self.prcp_fac))
+                                value=self.param_ep_func(self.prcp_fac)).values
             else:
-                self.prcp = nc.variables['prcp'][:] * self.prcp_fac
+                # todo: this is to check out whether we cann pass several correction factors at once
+                self.prcp = nc.variables['prcp'][:] * np.atleast_2d(self.prcp_fac).T
             self.tgrad = nc.variables['tgrad'][:]
             self.pgrad = nc.variables['pgrad'][:]
             self.ref_hgt = nc.ref_hgt
@@ -905,6 +916,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
     cali_params_guess = OrderedDict(
         zip(cali_params_list, [1.8, 0.013, 1.5]))
     param_bounds = ([0.0, 0.0, 0.1], [np.inf, np.inf, 5.0])
+    calibration_timespan = (None, None)
     prefix = 'HockModel_'
     mb_name = prefix + 'MB'
     # todo: is there also a factor of 0.5 between a_snow and a_ice?
@@ -948,7 +960,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('not found')
+                print('Snow redist factors not found')
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -1198,8 +1210,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         References
         ----------
-        [1]_.. : MeteoSwiss TabsD product description:
-                 https://www.meteoswiss.admin.ch/content/dam/meteoswiss/fr/climat/le-climat-suisse-en-detail/doc/ProdDoc_TabsD.pdf
+        [1]_.. : MeteoSwiss TabsD product description: https://bit.ly/3d32wR7
         """
 
         # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
@@ -1267,7 +1278,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('not found')
+                print('Snow redist factors not found')
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -1580,7 +1591,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('not found')
+                print('Snow redist factors not found')
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -1906,8 +1917,9 @@ class ParameterGenerator(object):
                   or str
             The mass balance model to get the parameters for.
         latest_climate: bool
-            If only the last 30 years of the claibration period shall be
-            considered.
+            If only the last 30 years of the calibration period shall be
+            considered. If no values from the last 30 years are available, a
+            warning is issued.
         only_pairs:
             Determines whether there are only parameter combinations used which
             have already appeared, no random mixing. If False, the all
@@ -1923,9 +1935,9 @@ class ParameterGenerator(object):
             experiments (e.g. a mass budget year has already been fully
             calibrated, but we want to pretend the melt factors are still
             unknown.
-        narrow_distribution: bool
+        narrow_distribution: bool or float
             Whether to narrow down the distribution, i.e. clipping off the
-            edges of the found parameter ranges. Default: False
+            edges of the found parameter ranges. Default: False.
         output_type = str or None
             Desired output type for the functions. Allowed: 'array' or 'list.
             Default: None (don't force output of the function to be something
@@ -1953,17 +1965,49 @@ class ParameterGenerator(object):
         cali_df = self.gdir.get_calibration(self.mb_model,
                                             filesuffix=self.suffix)
         cali_filtered = cali_df.filter(regex=self.mb_model.__name__)
-        cali_sel = cali_filtered[~cali_filtered.duplicated()]
+
+        try:
+            cali_sel = cali_filtered[~cali_filtered.duplicated()]
+        except pd.core.indexing.IndexingError:
+            log.error(
+                'Desired calibration for {} does not seems to be present. '
+                'Glacier needs to be recalibrated.'.format(
+                    self.mb_model.__name__))
+            # todo: trigger calibration here according to cali file was chosen
+            #  or with a function 'cali_best_effort' or so
+
+        # todo: check from theory if this is a clever idea
+        if self.latest_climate:
+            try:
+                cali_sel = cali_sel[(dt.datetime.now().year -
+                                     cali_sel.index.year) <= 30.]
+            except IndexError:
+                pass
+
+            if cali_sel.empty:
+                log.warning('With choosing the latest climatology only, there '
+                            'are no calibration values left.')
+
         # important: be sure columns match the "order" of the params
         cali_sel = cali_sel[[self.mb_model.__name__ + '_' + i for i in
                              self.mb_model.cali_params_list]]
+        cali_sel.dropna(inplace=True)
         return cali_sel
 
     @lazy_property
     def pooled_params(self, which='glamos'):
-        """Get pooled parameters from all calibrated glaciers"""
+        """
+        Get pooled parameters from all calibrated glaciers
+
+        Parameters
+        ----------
+        which: str, optional
+            Pool parameters from 'glamos' glaciers or 'all'? Default: 'glamos'.
+        """
         if which == 'glamos':
             calibrated_ids = cfg.PARAMS['glamos_ids']
+        elif which == 'all':
+            raise NotImplementedError
         else:  # "all" could be an option after iter. calibration on LFI done
             raise NotImplementedError
         bdir = cfg.PATHS['working_dir'] + '/per_glacier/'
@@ -2137,27 +2181,24 @@ class ParameterGenerator(object):
                     constr_pfac = np.nan
         else:
             try:
-                glamos_cali = ParameterGenerator(self.gdir, self.mb_model,
-                                                 self.latest_climate,
-                                                 self.only_pairs,
-                                                 self.constrain_with_bw_prcp_fac,
-                                                 self.bw_constrain_year,
-                                                 self.narrow_distribution,
-                                                 output_type='array',
-                                                 suffix='')
-                glamos_cali.bw_constrain_year = glamos_cali.single_glacier_params.tail(
-                    1).index.item()
+                glamos_cali = ParameterGenerator(
+                    self.gdir, self.mb_model, self.latest_climate,
+                    self.only_pairs, self.constrain_with_bw_prcp_fac,
+                    self.bw_constrain_year, self.narrow_distribution,
+                    output_type='array', suffix='')
+                glamos_cali.bw_constrain_year = \
+                    glamos_cali.single_glacier_params.tail(1).index.item()
                 log.info('Constraining precipitation correction factor is '
                          'taken from GLAMOS calibration.')
                 constr_pfac = glamos_cali.get_constraining_prcp_fac(
                     glamos_cali.single_glacier_params)
             except FileNotFoundError:
-                log.warning('Precipitation correction factor could not be '
-                         'constrained, GLAMOS calibration file is is missing.')
-                # return mean
-                constr_pfac = cali_sel[self.mb_model.__name__ +
-                                       '_prcp_fac'].mean().item()
-        print("winter MB is constrained with PRCP_FAC of ", constr_pfac)
+                log.warning(
+                    'Precipitation correction factor could not be constrained,'
+                    ' GLAMOS calibration file is is missing.')
+                # todo: this is not a good idea!?
+                constr_pfac = np.nan
+        log.info("Winter MB is constrained with PRCP_FAC of ", constr_pfac)
         return constr_pfac
 
     def generate_output(self, params):
@@ -2374,7 +2415,7 @@ class SnowFirnCover(object):
         # for temperature models that don't update layer by layer
         # must be initialized by hand with the desired form
         self._regridded_temperature = None
-        self._ice_melt = np.zeros_like(swe)
+        self._ice_melt = np.zeros_like(self.height_nodes)
 
     @property
     def swe(self):
@@ -3102,6 +3143,7 @@ class SnowFirnCover(object):
         if widths is None:
             return self.get_total_height()
         else:
+            # reminder: flowline_dx is the distance in pixel coordinates
             return self.get_total_height() * widths * \
                    cfg.PARAMS['flowline_dx'] * map_dx
 
@@ -3188,7 +3230,7 @@ class SnowFirnCover(object):
 
         # NaN part becomes negative as with the NaN from NaN subtraction zero
         # is returned since NumPy 1.9.0
-        ovb_dpth = np.clip(ovb_dpth, 0., None)
+        ovb_dpth[ovb_dpth < 0.] = 0.  # might be faster than np.clip here
 
         if ix is None:
             return ovb_dpth
@@ -3214,7 +3256,7 @@ class SnowFirnCover(object):
                              ovb_swe.shape[1], axis=1)
         # NaN part becomes negative as with the NaN from NaN subtraction zero
         # is returned since NumPy 1.9.0
-        ovb_swe = np.clip(ovb_swe, 0., None)
+        ovb_swe[ovb_swe < 0.] = 0.  # might be faster than np.clip here
 
         if ix is None:
             return ovb_swe
@@ -3355,7 +3397,7 @@ class SnowFirnCover(object):
         temp[np.isnan(depth)] = np.nan
         slope = (surface_temp - max_depth_temp) / (-max_depth)
         temp = slope * depth + surface_temp + cfg.ZERO_DEG_KELVIN
-        temp = np.clip(temp, None, cfg.ZERO_DEG_KELVIN)
+        temp[temp > cfg.ZERO_DEG_KELVIN] = cfg.ZERO_DEG_KELVIN
         # temperature is now the layer temperature at the center depth
         self.temperature = temp
 
@@ -3508,9 +3550,6 @@ class SnowFirnCover(object):
         None
         """
 
-        # Todo: remove comment out
-        #self.merge_firn_layers(date)
-
         # Mean annual surface temperature, 'presumably' firn temperature at 10m
         # depth (Reeh (2008)); set to 273 according to Huss 2013
         # TODO: this should be actually calculated
@@ -3637,7 +3676,7 @@ class SnowFirnCover(object):
             b = np.nanmax(masked, axis=1)
             #b = b.filled(masked.fill_value)  # to eliminate 1e20 from the mask
             #b = np.repeat(np.atleast_2d(b).T, self.rho.shape[1], axis=1)
-            #b = np.clip(b, 0, None)
+            #b[b < 0.] = 0.
             b = np.apply_along_axis(lambda x: np.clip(x, 0, b), 0,
                                 self.get_overburden_swe())
             # todo: there is a problem when there is only one layer: it does not densify, because it has no overburden weight and then it densifies to 900 directly
@@ -4198,11 +4237,63 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         self.alpha = alpha_i_total
         return alpha_i_total
 
+    def update_dutra(self, mb, tao_s=0.01, alpha_max=0.85,
+                     tao_a=0.00800064, alpha_min=0.45,
+                     tao_f=0.00240192):
+        """
+        Update according to the equation in [1]_ as used in [2]_.
+
+        Parameters
+        ----------
+        mb : np.array
+            'Net accumulation', i.e. mass balance of the snow pack in m w.e.
+        tao_s : float
+            Snowfall threshold for albedo update. Default: 0.01 m w.e..
+        alpha_max : float
+            Maximum albedo for fresh snow. Default: 0.85.
+        tao_a : float
+            Aging constant for non-melting snow. Default: 9.26 * 10 ** -8 *
+            86400 d-1.
+        alpha_min : float
+            Minimum albedo for snow. Default: 0.45.
+        tao_f : float
+            Aging constant for non-melting snow. Default: 2.78 * 10 ** -8 *
+            86400 d-1.
+
+        Returns
+        -------
+        self.alpha: np.array
+            Updated albedo.
+
+        References
+        ----------
+        .. [1] : Dutra, E., Balsamo, G., Viterbo, P., Miranda, P. M., Beljaars,
+                 A., Schär, C., & Elder, K. (2010). An improved snow scheme for
+                 the ECMWF land surface model: Description and offline
+                 validation. Journal of Hydrometeorology, 11(4), 899-916.
+        .. [2] : Aalstad, K., Westermann, S., Schuler, T., Boike, J., &
+                 Bertino, L. (2018). Ensemble-based assimilation of fractional
+                 snow-covered area satellite retrievals to estimate the snow
+                 distribution at Arctic sites. The Cryosphere, 12(1), 247-270.
+        """
+
+        # todo: this function is not yet tested
+        if mb > 0.:
+            self.alpha = self.alpha + np.min([1., mb / tao_s]) * (alpha_max -
+                                                                  self.alpha)
+        elif mb == 0.:
+            self.alpha = np.max([self.alpha - tao_a, alpha_min])
+        else:
+            self.alpha = (self.alpha - alpha_min) * np.exp(-tao_f) + alpha_min
+
+        return self.alpha
+
     def update_ensemble(self, snowcover):
         """ Update the albedo using an ensemble of methods."""
 
         alpha_brock = self.update_brock()
         alpha_oerlemans = self.update_oerlemans(snowcover)
+        alpha_dutra = self.update_dutra(mb)
 
         # self.alpha = alpha_ens
         # self.sigma_alpha = np.std(alpha_ens, axis=)
@@ -4454,7 +4545,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         """
 
-    def extend_until(self, date, write=True):
+    def extend_until(self, date):
         """
         Append one/more time steps at the end of the time series.
 
@@ -4487,7 +4578,12 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         mb_cumsum = self._obj.groupby(hyears).apply(
             lambda x: self.time_cumsum(x))
-        # todo: EMERGENCY SOLUTION as long as we are not able to calculate cumsum with NaNs correctly
+
+        # todo: EMERGENCY SOLUTION as long as there is no operational radiation => PLOTS ARE WRONG!
+        # eliminate the runs where we don't have radiation data
+        mb_cumsum = mb_cumsum.where(~np.isnan(self._obj))
+        # todo: EMERGENCY SOLUTION as long as we are not able to calculate
+        #  cumsum with NaNs correctly
         mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
         if quantiles:
             quant = mb_cumsum.groupby(hdoys) \
@@ -4661,13 +4757,12 @@ class CurrentYearMassBalance(MassBalance):
         super().__init__(gdir, mb_model, dataset=dataset)
 
 
-def run_snowfirnmodel_with_options(gdir, run_start, run_end,
-                                   mb=None,
-                                   reclassify_heights=None,
+def run_snowfirnmodel_with_options(gdir, run_start, run_end, mb=None,
+                                   mb_model=None, reclassify_heights=None,
                                    snow_densify='anderson',
                                    snow_densify_kwargs=None,
                                    firn_densify='huss',
-                                   firn_densify_kwargs= None,
+                                   firn_densify_kwargs=None,
                                    temp_update='huss',
                                    temp_update_kwargs=None,
                                    merge_layers=0.05):
@@ -4686,6 +4781,11 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
         # Todo: make this more felxible: one should also be able to let the MB calculate online
         The mass balance time series. Default: None (calculate the MB
         durign the model run).
+    mb_model: `py:class:crampon.core.models.massbalance.DailyMassBalanceModel`,
+              optional
+        The mass balance model to use. Options are BraithwaiteModel and
+        HockModel at the moment, as radiation products do not reach back to
+        1961, when the modeling begins. Default: None (use BraithwaiteModel).
     reclassify_heights: float or None
         Whether to reclassify the glacier flowline heights. This can
         significantly decrease the time to run the model. If a number is
@@ -4733,9 +4833,16 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     else:
         heights, widths = gdir.get_inversion_flowline_hw()
 
-    #if mb is None:
-    day_model = BraithwaiteModel(gdir, bias=0.,
-                                     snow_init=np.zeros_like(heights))
+    if mb is None:
+        if mb_model is None:
+            day_model = BraithwaiteModel(gdir, bias=0.,
+                                         snow_init=np.zeros_like(heights),
+                                         **BraithwaiteModel.cali_params_guess)
+        else:
+            if isinstance(mb_model, utils.SuperclassMeta):
+                day_model = mb_model(gdir, snowcover=None, bias=0.)
+            else:
+                day_model = copy.copy(mb_model)
 
     init_swe = np.zeros_like(heights)
     init_swe.fill(np.nan)
