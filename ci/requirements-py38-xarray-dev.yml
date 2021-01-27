@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - oggm
 dependencies:
-  - python=3.6
+  - python=3.8
   - six
   - numpy
   - scipy
@@ -14,7 +14,6 @@ dependencies:
   - geopandas
   - rasterio
   - pandas>=0.25
-  - xarray>=0.16
   - dask
   - matplotlib
   - Pillow
@@ -34,13 +33,17 @@ dependencies:
   - descartes
   - filterpy
   - properscoring
+  - cftime
+  - cfgrib
+  - selenium
+  - geckodriver
+  - firefox
   - pip
   - pip:
     - git+https://github.com/fmaussion/salem.git
+    - git+https://github.com/pydata/xarray.git
     - schedule
     - coveralls
     - pytest-cov
     - pytest-mpl
     - motionless
-
-
