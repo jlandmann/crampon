@@ -16,8 +16,7 @@ import geopandas as gpd
 import shapely
 import salem
 from salem import Grid, wgs84
-from oggm.core.gis import gaussian_blur, multi_to_poly,\
-    _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks, \
+from oggm.core.gis import gaussian_blur, _interp_polygon, _polygon_to_pix, define_glacier_region, glacier_masks, \
     simple_glacier_masks
 from oggm.utils import get_topo_file
 from scipy import stats
@@ -178,9 +177,18 @@ def define_glacier_region_crampon(gdir, entity=None, reset_dems=False):
     # TODO: Here single outlines should be transformed and their union used
     # for defining the grid
     # transform geometry to map
-    geometry = shapely.ops.transform(project, entity['geometry'])
-    geometry = multi_to_poly(geometry, gdir=gdir)
-    xx, yy = geometry.exterior.xy
+    #geometry = shapely.ops.transform(project, entity['geometry'])
+    #geometry = multi_to_poly(geometry, gdir=gdir)
+    #xx, yy = geometry.exterior.xy
+
+    # Get the local map proj params and glacier extent
+    gdf = gdir.read_shapefile('outlines')
+
+    # Get the map proj
+    utm_proj = salem.check_crs(gdf.crs)
+
+    # Get glacier extent
+    xx, yy = gdf.iloc[0]['geometry'].exterior.xy
 
     # Corners, incl. a buffer of N pix
     ulx = np.min(xx) - cfg.PARAMS['border']

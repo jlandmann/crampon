@@ -99,14 +99,14 @@ def daily_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
 
     log.info('Starting daily tasks...')
 
-    log.info('Downloading weather analyses data...')
+    log.info('Downloading weather analyses and updating climate file...')
     try_download_new_cirrus_files()
 
     # before we recalculate climate, delete it from cache
     utils.joblib_read_climate_crampon.clear()
     daily_entity_tasks = [
         (tasks.update_climate, {}, 'Updating glacier climate files...'),
-        (tasks.make_mb_current_mbyear,
+        (mb_production.make_mb_current_mbyear,
          {'first_day': utils.get_cirrus_yesterday()},
          'Making current mass balance...'),
         (tasks.plot_cumsum_climatology_and_current, {'plot_dir': plot_dir},
@@ -120,7 +120,8 @@ def daily_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
         execute_entity_task(task, gdirs, **kwargs)
 
     log.info('Making the clickable popup map...')
-    tasks.make_mb_popup_map(plot_dir=plot_dir)
+    tasks.make_mb_popup_map(gdirs=gdirs, plot_dir=plot_dir,
+                            allow_unpreferred_mb_suffices=False)
 
     log.info('Copying plots to webpage...')
     # search only sub-folders
@@ -299,7 +300,9 @@ if __name__ == '__main__':
     rgidf = rgidf[rgidf.RGIId.isin(cfg.PARAMS['glamos_ids'])]
 
     gdirs = init_glacier_regions(rgidf, reset=False, force=False)
-    gdirs = [gdirs[17]]
+
+    # clear the climate cache
+    utils.joblib_read_climate_crampon.clear()
 
     log.info('Making initial climate file from scratch...')
     # 2) make/update climate file
@@ -312,7 +315,7 @@ if __name__ == '__main__':
 
     # 3) make MB climatology
     log.info('Making mass balance climatology...')
-    execute_entity_task(mb_production.make_mb_clim, gdirs)
+    execute_entity_task(mb_production.make_mb_clim, gdirs, reset_file=True)
 
     # 4) make MB since beginning of the mass balance year
     log.info('Making mass balance of the current mass budget year...')

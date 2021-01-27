@@ -224,6 +224,7 @@ def make_mb_popup_map(
         mb_model: Optional[DailyMassBalanceModel] = None,
         shp_loc: Optional[str] = None, ch_loc: Optional[str] = None,
         save_suffix: Optional[str] = '', prefer_mb_suffix: Optional[str] = '',
+        allow_unpreferred_mb_suffices: Optional[bool] = True,
         plot_dir: Optional[str] = None) -> None:
     """
     Create a clickable map of all Swiss glacier outlines.
@@ -251,6 +252,9 @@ def make_mb_popup_map(
         Which mass balance suffix shall be preferred when making the map, e.g.
         '_fischer_unique_variability'. Default: '' (take the default order
         from 'good' to 'bad'.)
+    allow_unpreferred_mb_suffices: bool, optional
+        Whether to allow other suffices than the preferred one at all.
+        Default: True (for final operational runs).
     plot_dir: str or None, optional
         Directory where to save the plot. Default: None (do not save).
 
@@ -327,8 +331,10 @@ def make_mb_popup_map(
     # try "from good to bad":
     suffix_priority_list = ['', '_fischer', '_fischer_unique_variability',
                             '_fischer_unique']
-    if len(prefer_mb_suffix) > 0:
+    if (len(prefer_mb_suffix) > 0) and (allow_unpreferred_mb_suffices is True):
         suffix_priority_list = [prefer_mb_suffix] + suffix_priority_list
+    else:
+        suffix_priority_list = ['']
 
     # todo: externalize this function and make it an entity task
     has_current_and_clim = []
@@ -350,6 +356,11 @@ def make_mb_popup_map(
             continue
         if mb_model is not None:
             current = current.sel(model=mb_model)
+
+        # stack model and potential members
+        clim = clim.stack(ens=['model', 'member'])
+        # stack model and potential members
+        current = current.stack(ens=['model', 'member'])
         current_csq = current.mb.make_cumsum_quantiles()
         mbc_values = current_csq.sel(quantile=0.5)
         mbc_value = mbc_values.MB.isel(hydro_doys=-1)
@@ -362,10 +373,8 @@ def make_mb_popup_map(
         #  cumsum with NaNs correctly
         mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
 
-        mbd_values = [j.MB.sel(
-            time=pd.to_datetime(j.time.values[0]) + dt.timedelta(
-                days=mbc_values.hydro_doys[-1].item() - 1)).median(
-            dim='model', skipna=True).item() for i, j in
+        mbd_values = [j.MB.sel(time=mbc_values.hydro_doys[-1].item() - 1)
+                          .median(dim='ens', skipna=True).item() for i, j in
                       list(mb_cumsum.groupby(hydro_years))[:-1]]
         mbd_values = sorted(mbd_values)
         pctl = percentileofscore(mbd_values, mbc_value.item())
@@ -661,8 +670,15 @@ def plot_cumsum_climatology_and_current(
                          'given.')
 
     if gdir is not None:
-        clim = gdir.read_pickle('mb_daily', filesuffix=suffix)
-        current = gdir.read_pickle('mb_current', filesuffix=suffix)
+        try:
+            clim = gdir.read_pickle('mb_daily', filesuffix=suffix)
+            current = gdir.read_pickle('mb_current', filesuffix=suffix)
+        except FileNotFoundError:
+            # either of the files is not there
+            log.info('No MB current plot generated for {} (not both mb_daily{}'
+                     ' and mb_current{} files found).'.format(gdir.rgi_id,
+                                                             suffix, suffix))
+            return
     else:
         pass
 
@@ -797,6 +813,8 @@ def plot_cumsum_climatology_and_current(
     if gdir is not None:
         if plot_dir is None:
             return
+        if not os.path.exists(os.path.join(plot_dir, 'mb_dist')):
+            os.mkdirs(os.path.join(plot_dir, 'mb_dist'))
         bname = os.path.join(plot_dir, 'mb_dist',
                              gdir.rgi_id.split('.')[1] + '_')
         plt.savefig(bname + 'mb_dist_{}.png'.format('ensemble' + suffix),
@@ -900,8 +918,11 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
     None
     """
 
-    mb_clim = gdir.read_pickle('mb_daily')
-    mb_curr = gdir.read_pickle('mb_current')
+    try:
+        mb_clim = gdir.read_pickle('mb_daily')
+        mb_curr = gdir.read_pickle('mb_current')
+    except FileNotFoundError:
+        return
 
     if mb_models is not None:
         mb_clim = mb_clim.sel(model=mb_models)
@@ -979,10 +1000,10 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
         for n in range(int(np.floor(greyshades / 256.))):
             custompalette.extend(grey(256))
 
-        custompalette.extend(grey(greyshades % 256.))
+        custompalette.extend(grey(int(greyshades % 256.)))
         custompalette.extend(current_colors)
     else:
-        custompalette = grey(greyshades) + current_colors
+        custompalette = grey(greyshades) + tuple(current_colors)
 
     xs = [np.arange(arr.shape[1])] * arr.shape[0]
     ys = arr.tolist()
@@ -1059,7 +1080,7 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
     if plot_dir is not None:
         output_file(os.path.join(plot_dir, 'mb_spaghetti', gdir.rgi_id +
                                  '_interactive_mb_spaghetti.html'))
-        export_png(plot, os.path.join(plot_dir, gdir.rgi_id +
+        export_png(plot, filename=os.path.join(plot_dir, gdir.rgi_id +
                                       '_interactive_mb_spaghetti.png'))
         save(plot)
     if show is True:

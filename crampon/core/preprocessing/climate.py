@@ -337,9 +337,12 @@ def bias_correct_and_add_geosatclim(gdir: utils.GlacierDirectory,
 
     # overwrite SIS in climate file
     climate_file = gdir.get_filepath('climate_daily')
-    with xr.open_dataset(climate_file) as clim:
+    # todo: all the load and closes and None assignments seems necessary to not get a PermissionError
+    with xr.open_dataset(climate_file, autoclose=True) as clim:
         clim_copy = clim.copy(deep=True)
     clim_copy.load()
+    clim.close()
+    clim = None
     # trust Heliomont more
     # todo: this processing takes ages. Any better solution? Rechunking?
     combo_clim = clim_copy.combine_first(result_ds.to_dataset(name='sis'))
@@ -462,16 +465,16 @@ def process_custom_climate_data_crampon(gdir):
 
     hs = xr.open_mfdataset(
         os.path.join(cfg.PATHS['climate_dir'],
-                     'griddata\\verified\\daily\\'
-                     'msgSISD_daily_global_radiation\\netcdf\\'
+                     'griddata', 'verified', 'daily',
+                     'msgSISD_daily_global_radiation', 'netcdf',
                      'msg.SIS.D_ch02.lonlat_20*.nc'),
         combine='by_coords')
     hs = hs.SIS
     gsc = xr.open_mfdataset(
         os.path.join(cfg.PATHS['climate_dir'],
-                     'griddata\\verified\\daily\\'
-                     'msgSISD_daily_global_radiation\\netcdf\\'
-                     'Geosatclim\\*.nc'),
+                     'griddata', 'verified', 'daily',
+                     'msgSISD_daily_global_radiation', 'netcdf',
+                     'Geosatclim', '*.nc'),
         combine='by_coords')
     gsc = gsc.SIS
 
@@ -758,10 +761,11 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
 
         try:
             cirrus = utils.CirrusClient()
+            # "?[!y]" is to exclude RhydchprobD
             r, _ = cirrus.sync_files(
                 '/data/griddata', write_to,
-                globpattern='*{}/daily/{}*[!swissgrid]/netcdf/*'.format(mode,
-                                                                        var))
+                globpattern='*{}/daily/{}?[!y]*[!swissgrid]/netcdf/*'
+                    .format(mode, var))
         except OSError:  # no VPN: try to get them from the FTP server...sigh!
             # list of retrieved
             r = []
@@ -837,6 +841,8 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
             sda.encoding['zlib'] = True
             sda.to_netcdf(all_file)
         elif how == 'update':
+            # a file might arrive 2x on FTP; order should be ok (take latest)
+            r = np.unique(r)
             log.info('Updating with {} {} {} files...'
                      .format(len(r), var, mode))
             old = utils.read_netcdf(all_file, chunks={'time': 50})
@@ -1089,6 +1095,7 @@ def update_climate(gdir, clim_all=None):
         need_close = False
     last_day_clim = clim_all.time[-1]
     # todo: radiation still not operational -> take last 62 days to be sure
+    #  can be removed when radiation is operational
     last_day = last_day_clim - pd.Timedelta(days=62)
 
     use_tgrad = cfg.PARAMS['temp_use_local_gradient']
@@ -1115,8 +1122,8 @@ def update_climate(gdir, clim_all=None):
         # todo: save ilat/ilon as gdir attributes!?
         # todo: save tgrad/pgrad in climate_all.nc? (is vectorizing it faster?)
         # we need to add tgrad and pgrad (not in climate file)
-        ilon = np.argmin(np.abs(clim_all.lon - gdir.cenlon)).item()
-        ilat = np.argmin(np.abs(clim_all.lat - gdir.cenlat)).item()
+        ilon = np.argmin(np.abs(clim_all.lon.values - gdir.cenlon)).item()
+        ilat = np.argmin(np.abs(clim_all.lat.values - gdir.cenlat)).item()
         # todo: handing over clim_all_tsel is bullshit, since we take a 30 day
         #  rolling mean to fill gradient gaps
         # selection [0] for tgrad ([1] is uncertainty)
@@ -1502,9 +1509,9 @@ class GlacierMeteo(object):
             heights = self.heights.copy()
 
         temp_at_hgts = self.get_tmean_at_heights(date, heights)
-        # todo: simplify by clipping(t_melt, None) or using t[t lt t_melt] = 0.
         above_melt = temp_at_hgts - t_melt
-        return np.clip(above_melt, 0, None)
+        above_melt[above_melt < 0.] = 0.
+        return above_melt
 
     def get_positive_tmax_sum_between(self, date1, date2, heights):
         """
@@ -1590,7 +1597,8 @@ class GlacierMeteo(object):
         return self.meteo.temp.resample(time='MS').mean(dim='time')
 
     def get_precipitation_solid_liquid(self, date, heights=None, method=None,
-                                       tmean=None, random_seed=None, **kwargs):
+                                       tmean=None, prcp_fac=1.,
+                                       random_seed=None, **kwargs):
         """
         Get solid and liquid fraction of precipitation.
 
@@ -1610,6 +1618,9 @@ class GlacierMeteo(object):
             An option to give (random) values for tmean, which will determine
             the fraction of solid precipitation and the total precipitation.
             Default: None (generate (random) temperature).
+        prcp_fac: float, optional
+            Precipitation correction factor. It is applied before applying the
+            gradient. Default: 1. (no correction).
         random_seed: int or None, optional
             Whether to put a random seed, i.e. make the results reproducible.
         **kwargs: keyword, value pairs, optional
@@ -1631,7 +1642,7 @@ class GlacierMeteo(object):
             method = cfg.PARAMS['precip_ratio_method']
 
         date_index = self.get_loc(date)
-        prcp = self.prcp[date_index]
+        prcp = self.prcp[date_index] * prcp_fac
         pgrad = self.pgrad[date_index]
         prcptot = get_precipitation_at_heights(prcp, pgrad, self.ref_hgt,
                                                heights)

@@ -7,23 +7,20 @@ import logging
 # Python imports
 import os
 # Libs
-import geopandas as gpd
-import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
 import datetime as dt
+import numpy as np
+import copy
 # Locals
-import crampon.cfg as cfg
-from crampon import workflow, tasks, graphics, utils, entity_task
+from crampon import cfg
+from crampon import utils, entity_task
 # only temporary, until process_spinup_climate is a task
 from crampon.core.preprocessing import climate, calibration
-from crampon.workflow import execute_entity_task
 from crampon.utils import lazy_property
 from crampon.core.models.massbalance import MassBalance, BraithwaiteModel, \
     PellicciottiModel, OerlemansModel, HockModel, SnowFirnCover, \
     get_rho_fresh_snow_anderson, ParameterGenerator, MassBalanceModel
-import numpy as np
-import copy
 
 # Logging options
 logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
@@ -467,59 +464,67 @@ def make_mb_current_mbyear(
     else:
         mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
 
-    if (snowcover is None) and (first_day is None):
-        try:
-            snowcover = gdir.read_pickle('snow_daily')
-        except FileNotFoundError:
-            log.warning(
-                'No initial snow cover given and no snow cover file found. '
-                'Initializing snow cover with assumptions defined in '
-                'massbalance.DailyMassBalanceModelWithSnow.')
-            snowcover = None
-
     if last_day is None:
         last_day = utils.get_cirrus_yesterday()
 
+    # we need it often later
+    mbyear_begin = utils.get_begin_last_flexyear(pd.Timestamp.now())
+
     # if first day is not given, take begin of current MB year
     if first_day is None:
-        first_day = utils.get_begin_last_flexyear(pd.Timestamp.now())
+        first_day = mbyear_begin
     else:
-        with gdir.read_pickle('mb_current') as mbc:
-            # first day for us is the last day of the existing file plus one
-            last_day_mbc = mbc.time.values[-1]
-        # todo: check also for end date of snow_current?
-
-        # file might be already up to date
-        if (last_day_mbc == last_day) and (reset_file is False):
-            return
-
-        if last_day_mbc < first_day:
-            # try to make the time series fit
-            log.info('Existing current MB time series is not long enough. '
-                     'Making it...')
-            make_mb_current_mbyear(
-                gdir=gdir, write=write, mb_model=mb_model, snowcover=snowcover,
-                suffix=suffix, reset_file=reset_file,
-                use_snow_redist=use_snow_redist)
-        elif last_day_mbc == first_day:
-            pass
-        else:
-            raise NotImplementedError(
-                'At the moment, the snow status is only written to file at the'
-                ' beginning of the season and on the last day.')
-
         if reset_file is True:
-            log.warning(
-                "`reset_file` is `True`, but the time span for making the "
-                "current mass balance is set to only update the mass balance. "
-                "Setting `reset_file` to `False` and continuing...")
-            reset_file = False
-        # still respect argument over retrieval
-        if snowcover is None:
+            first_day = mbyear_begin
+        else:
+            # we can be anywhere in the MB year...
+            try:
+                with gdir.read_pickle('mb_current') as mbc:
+                    # first day for us is the last day of the existing file + 1
+                    last_day_mbc = mbc.time.values[-1]
+            except FileNotFoundError:  # e.g. because it has no calibration
+                # this is ok for the moment: either
+                # 1) file doesn't exist, bcz of a first time call -> create
+                # 2) file doesn't exist, bcz no cali -> fail when fetching cali
+                last_day_mbc = mbyear_begin - pd.Timedelta(days=1)
+            # todo: check also for end date of snow_current?
+
+            # file might be already up to date
+            if (last_day_mbc == last_day) and (reset_file is False):
+                return
+
+            # there might be a gap between last_day and what is there already
+            if (last_day_mbc + pd.Timedelta(days=1)) == first_day:
+                # we have it until the day before `first_day`, that's fine
+                pass
+            elif (last_day_mbc + pd.Timedelta(days=1)) < first_day:
+                # we start one day after the present time series ends
+                first_day = last_day_mbc + pd.Timedelta(days=1)
+            else:
+                # tprobably no snow cover from that day: start from scratch
+                log.info("We don't have a starting snowcover for the first da"
+                         " chosen. We make the time series again...")
+                first_day = mbyear_begin
+
+    # still respect argument over retrieval
+    if snowcover is None:
+        if first_day == mbyear_begin:
+            # take "snow_daily"
+            try:
+                snowcover = gdir.read_pickle('snow_daily' + suffix)
+            except FileNotFoundError:
+                pass
+        else:
             try:
                 snowcover = gdir.read_pickle('snow_current' + suffix)
             except FileNotFoundError:
                 pass
+        # none of the two was successful:
+        if snowcover is None:
+            log.warning(
+                'No initial snow cover given and no snow cover file found. '
+                'Initializing snow cover with assumptions defined in '
+                'massbalance.DailyMassBalanceModelWithSnow.')
 
     # if begin more than one year ago, clip to make current MB max 1 year long
     max_end = pd.Timestamp('{}-{}-{}'.format(
@@ -563,7 +568,7 @@ def make_mb_current_mbyear(
 
         # no parameters found, e.g. when using latest_climate = True for A50I06
         if param_prod.size == 0:
-            log.error('With current settings (`latest_climate=True`, no '
+            log.error('With current settings (`latest_climate=True`), no '
                       'parameters were found to produce current MB.')
             return
 
@@ -579,14 +584,23 @@ def make_mb_current_mbyear(
                 try:
                     # it's snow_current with a time and members
                     sc = SnowFirnCover.from_dataset(
-                        snowcover.sel(
-                            model=mbm.__name__, time=curr_year_span[0])
+                        snowcover.sel(model=mbm.__name__,
+                                      time=curr_year_span[0] -
+                                           pd.Timedelta(days=1))
                             .isel(member=it-1))
                 except (KeyError, ValueError):
                     # it's snow_daily
-                    sc = SnowFirnCover.from_dataset(
-                        snowcover.sel(model=mbm.__name__,
-                                      time=curr_year_span[0]))
+                    try:
+                        # day before is not written (change upstream!)
+                        sc = SnowFirnCover.from_dataset(
+                            snowcover.sel(model=mbm.__name__,
+                                          time=curr_year_span[0] -
+                                               pd.Timedelta(days=1)))
+                    except KeyError:
+                        # be tolerant
+                        sc = SnowFirnCover.from_dataset(
+                            snowcover.sel(model=mbm.__name__,
+                                          time=curr_year_span[0]))
             else:
                 sc = None
 

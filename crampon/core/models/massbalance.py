@@ -140,35 +140,23 @@ class DailyMassBalanceModel(MassBalanceModel):
         self.temp_bias = 0.
         self.prcp_bias = 1.
 
-        # Read file
-        fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
-        with netCDF4.Dataset(fpath, mode='r') as nc:
-            # time as nc time variable
-            self.nc_time = nc.variables['time']
-            self.nc_time_units = self.nc_time.units
-            # time as array of datetime instances
-            time = netCDF4.num2date(self.nc_time[:], self.nc_time.units)
-
-            # identify the time span
-            self.tspan_meteo = time
-            self.tspan_meteo_dtindex = pd.DatetimeIndex(time)
-
-            # Read timeseries
-            self.temp = nc.variables['temp'][:]
-            self.prcp_unc = nc.variables['prcp'][:]
-            if isinstance(self.prcp_fac, pd.Series):
-                self.prcp = nc.variables['prcp'][:] * \
-                            self.prcp_fac.reindex(index=time,
-                                                  method='nearest')\
-                                .fillna(value=self.param_ep_func(self.prcp_fac)).values
-            else:
-                # todo: this is to check out whether we can pass several correction factors at once
-                self.prcp = nc.variables['prcp'][:] * np.atleast_2d(self.prcp_fac).T
-            self.tgrad = nc.variables['tgrad'][:]
-            self.pgrad = nc.variables['pgrad'][:]
-            self.ref_hgt = nc.ref_hgt
-
+        # Read meteo data
         self.meteo = climate.GlacierMeteo(self.gdir, filename=filename)
+        self.tspan_meteo = self.meteo.meteo.time.values
+        self.tspan_meteo_dtindex = pd.DatetimeIndex(self.meteo.index)
+        self.temp = self.meteo.tmean
+        if isinstance(self.prcp_fac, pd.Series):
+            self.prcp = \
+                self.meteo.prcp * self.prcp_fac.reindex(
+                    index=self.tspan_meteo_dtindex, method='nearest')\
+                    .fillna(value=self.param_ep_func(self.prcp_fac)).values
+        else:
+            # todo: check out whether we can pass several corr. factors at once
+            self.prcp = self.meteo.prcp * np.atleast_2d(self.prcp_fac).T
+
+        self.tgrad = self.meteo.tgrad
+        self.pgrad = self.meteo.pgrad
+        self.ref_hgt = self.meteo.ref_hgt
 
         self._time_elapsed = None
 
@@ -184,6 +172,27 @@ class DailyMassBalanceModel(MassBalanceModel):
                                          prcp_fac_cyc_winter_mean
 
     @property
+    def temp_bias(self):
+        """Temperature bias to add to the original series."""
+        return self._temp_bias
+
+    @temp_bias.setter
+    def temp_bias(self, value):
+        """Temperature bias to change the ELA."""
+        #self.ela_h = self.orig_ela_h + value * 150  # OGGM
+        self._temp_bias = value
+
+    @property
+    def prcp_bias(self):
+        """Precipitation factor to apply to the original series."""
+        return self._prcp_bias
+
+    @prcp_bias.setter
+    def prcp_bias(self, value):
+        """Precipitation factor to apply to the original series."""
+        self._prcp_bias = value
+
+    @property
     def time_elapsed(self):
         return self._time_elapsed
 
@@ -197,11 +206,43 @@ class DailyMassBalanceModel(MassBalanceModel):
                 self._time_elapsed = date
             else:
                 try:
-                    self._time_elapsed = pd.DatetimeIndex(start=date, end=date,
+                    self._time_elapsed = pd.DatetimeIndex(np.array([date]),
                                                           freq='D')
                 except TypeError:
                     raise TypeError('Input date type ({}) for elapsed time not'
                                     ' understood'.format(type(date)))
+
+    def get_params(self, date):
+        """
+        Get model parameters at specific date.
+
+        Parameters
+        ----------
+        date: pd.Timestamp
+            The date for which to get the model parameters.
+
+        Returns
+        -------
+        p_now_list: list
+            List with parameters in the order of `self.cali_params_list`.
+        """
+        p_now_list = []
+
+        for p in self.cali_params_list:
+            model_param = getattr(self, p)
+
+            # todo: maybe go back to 'get_loc' with option "nearest"? (takes
+            #  200µs longer)
+            if isinstance(model_param, pd.Series):
+                try:
+                    p_now = model_param.loc[model_param.index == date].item()
+                except KeyError:
+                    p_now = self.param_ep_func(model_param).item()
+            else:
+                p_now = model_param
+            p_now_list.append(p_now)
+
+        return p_now_list
 
     def get_prcp_sol_liq(self, iprcp, ipgrad, heights, temp):
         # Compute solid precipitation from total precipitation
@@ -220,7 +261,8 @@ class DailyMassBalanceModel(MassBalanceModel):
     def get_tempformelt(self, temp):
         # Compute temperature available for melt
         tempformelt = temp - self.t_melt
-        tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
+        tempformelt[tempformelt < 0.] = 0.
+        assert (tempformelt >= 0.).all()
         return tempformelt
 
     def get_daily_mb(self, heights, date=None):
@@ -263,19 +305,13 @@ class DailyMassBalanceModel(MassBalanceModel):
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
-        if isinstance(self.prcp_fac, pd.Series):
-            try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
-            except KeyError:
-                iprcp_fac = self.param_ep_func(self.prcp_fac)
-            if pd.isnull(iprcp_fac):
-                iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
-        else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+        mu_star, iprcp_fac = self.get_params(date)
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
         itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
 
         # For each height pixel:
         # Compute temp tempformelt (temperature above melting threshold)
@@ -283,20 +319,8 @@ class DailyMassBalanceModel(MassBalanceModel):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
-
-        # TODO: What happens when `date` is out of range of the cali df index?
-        # THEN should it take the mean or raise an error?
-        if isinstance(self.mu_star, pd.Series):
-            try:
-                mu_star = self.mu_star.iloc[self.mu_star.index.get_loc(
-                    date, **kwargs)]
-            except KeyError:
-                mu_star = self.param_ep_func(self.mu_star)
-            if pd.isnull(mu_star):
-                mu_star = self.param_ep_func(self.mu_star)
-        else:
-            mu_star = self.mu_star
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[self.bias.index.get_loc(date)]
@@ -521,7 +545,10 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('Snow redist factors not found')
+                # todo: move this warning somehwre else (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -650,51 +677,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         self.bias = bias
         self.prcp_fac = prcp_fac
 
-        #if snow_init is None:
-        #    self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
-        #else:
-        #    self.snow_init = np.atleast_2d(snow_init)
-
-        ## todo: REPLACE THIS! It's just for testing
-        #rho_init = np.zeros_like(self.snow_init)
-        #rho_init.fill(100.)
-        #origin_date = dt.datetime(1961, 1, 1)
-        #if snowcover is None:
-        #    self.snowcover = SnowFirnCover(self.heights, self.snow_init,
-        #                                   rho_init, origin_date)
-        #else:
-        #    self.snowcover = snowcover
-
-        #self._snow = np.nansum(self.snowcover.swe, axis=1)
-
-        # Read file
-        fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
-        with netCDF4.Dataset(fpath, mode='r') as nc:
-            # time as nc time variable
-            self.nc_time = nc.variables['time']
-            self.nc_time_units = self.nc_time.units
-            # time as array of datetime instances
-            time = netCDF4.num2date(self.nc_time[:], self.nc_time.units)
-
-            # identify the time span
-            self.tspan_meteo = time
-            self.tspan_meteo_dtindex = pd.DatetimeIndex(time)
-            # self.years = np.unique([y.year for y in self.nc_time])
-
-            # Read timeseries
-            self.temp = nc.variables['temp'][:]
-            if isinstance(self.prcp_fac, pd.Series):
-                self.prcp = nc.variables['prcp'][:] * \
-                            self.prcp_fac.reindex(index=time,
-                                                  method='nearest').fillna(
-                                value=self.param_ep_func(self.prcp_fac)).values
-            else:
-                # todo: this is to check out whether we cann pass several correction factors at once
-                self.prcp = nc.variables['prcp'][:] * np.atleast_2d(self.prcp_fac).T
-            self.tgrad = nc.variables['tgrad'][:]
-            self.pgrad = nc.variables['pgrad'][:]
-            self.ref_hgt = nc.ref_hgt
-
         if snow_redist is True:
             try:
                 self.snowdistfac = xr.open_dataset(
@@ -773,16 +755,18 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         else:
             iprcp_fac = self.prcp_fac
 
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
         npix = len(heights)
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
-
-        prcpsol *= iprcp_fac
-        prcpsol *= self.prcp_bias
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
 
         # redistribute prcpsol if given
         if self.snowdistfac is not None:
@@ -798,8 +782,6 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                                       'constant', constant_values=(1., 1.))
                 except ValueError:
                     prcpsol *= self.snowdistfac.sel(time=date).D.values[:npix]
-
-        prcpsol *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
@@ -960,7 +942,10 @@ class HockModel(DailyMassBalanceModelWithSnow):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('Snow redist factors not found')
+                # todo: move this warning to a better place (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -1030,17 +1015,18 @@ class HockModel(DailyMassBalanceModelWithSnow):
         else:
             iprcp_fac = self.prcp_fac
 
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
         npix = len(heights)
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(date, heights)
-
-        # todo: does this make sense now?
-        prcpsol *= iprcp_fac
-        prcpsol *= self.prcp_bias
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
 
         # redistribute if given
         if self.snowdistfac is not None:
@@ -1056,8 +1042,6 @@ class HockModel(DailyMassBalanceModelWithSnow):
                                       'constant', constant_values=(1., 1.))
                 except ValueError:
                     prcpsol *= self.snowdistfac.sel(time=date).D.values[:npix]
-
-        prcpsol *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
@@ -1278,7 +1262,10 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('Snow redist factors not found')
+                # todo: move this warning to a better place (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -1354,40 +1341,17 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             pass
 
         # index of the date of MB calculation
-        # Todo: Timeit and compare with solution where the dtindex becomes a parameter
         ix = self.meteo.get_loc(date)
 
         # Read timeseries
-        # Todo: what to do with the bias? We don't calculate temp this way anymore
         isis = self.meteo.sis[ix] + self.sis_bias
 
         if self.sis_scale_factor is not None:
             doy = date.dayofyear
             isis = isis * self.sis_scale_factor[:, doy-1]
 
-        tmean = self.meteo.get_tmean_at_heights(date, heights) + self.temp_bias
-        prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
-                                                                   heights)
-        prcpsol_unc *= self.prcp_bias
-
-        # redistribute if snowdistfac is given
-        if self.snowdistfac is not None:
-            try:
-                prcpsol_unc *= self.snowdistfac.sel(time=date).D.values
-            except KeyError:
-                pass
-            except ValueError:
-                try:
-                    prcpsol_unc *= np.pad(
-                        self.snowdistfac.sel(time=date).D.values, (0, len(
-                            heights) - self.snowdistfac.sel(
-                            time=date).D.values.size), 'constant',
-                        constant_values=(1., 1.))
-                except ValueError:
-                    prcpsol_unc *= self.snowdistfac.sel(time=date).D.values[
-                                   :len(heights)]
-
-        prcpsol_unc *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        itemp = self.temp[ix] + self.temp_bias
+        itgrad = self.tgrad[ix]
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
@@ -1397,9 +1361,37 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp_corr = prcpsol_unc * iprcp_fac
         else:
-            iprcp_corr = prcpsol_unc * self.prcp_fac
+            iprcp_fac = self.prcp_fac
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
+        # For each height pixel:
+        # Compute temp and tempformelt (temperature above melting threshold)
+        # doing it here is faster than in GlacierMeteo...
+        npix = len(heights)
+        tmean = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
+
+        # redistribute if snowdistfac is given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(
+                        self.snowdistfac.sel(time=date).D.values, (0, len(
+                            heights) - self.snowdistfac.sel(
+                            time=date).D.values.size), 'constant',
+                        constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[
+                                   :len(heights)]
 
         if isinstance(self.tf, pd.Series):
             try:
@@ -1444,17 +1436,17 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
             # todo: getting efficiently pos t sum between doesn't work with arrays???
             if self.albedo_method == 'brock':
-                self.tpos_since_snowfall[iprcp_corr >
+                self.tpos_since_snowfall[prcpsol >
                                          self.reset_alpha_swe] = 0.
                 tmax = climate.get_temperature_at_heights(self.meteo.tmax[ix],
                                                        self.meteo.tgrad[ix],
                                                        self.meteo.ref_hgt,
                                                        heights)
-                self.tpos_since_snowfall[iprcp_corr <=
+                self.tpos_since_snowfall[prcpsol <=
                                          self.reset_alpha_swe] += \
-                    np.clip(tmax[iprcp_corr <= self.reset_alpha_swe], 0., None)
+                    np.clip(tmax[prcpsol <= self.reset_alpha_swe], 0., None)
                 # prcp not yet included
-                swe = np.nansum(self.snowcover.swe, axis=1) + iprcp_corr
+                swe = np.nansum(self.snowcover.swe, axis=1) + prcpsol
                 icedist = (swe <= self.reset_alpha_swe / 1000.)
                 albedo = self.update_albedo(swe, self.tpos_since_snowfall,
                                             icedist)
@@ -1472,11 +1464,13 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         # todo: where to put the bias here?
         # Pellicciotti(2005): melt really only occurs when temp is above Tt
-        Tt = 1.  # Todo: Is this true? I think it should be -1! Ask Francesca if it's a typo in her paper!
+        Tt = 1.
+
+        # SIS: doesn't matter when tmean<=Tt => calc. melt possible also w/o!
         melt_day = tf_now * tmean + srf_now * (1 - albedo) * isis
         melt_day[tmean <= Tt] = 0.
 
-        mb_day = iprcp_corr - melt_day
+        mb_day = prcpsol - melt_day
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
@@ -1591,7 +1585,10 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
                 except Exception:
                     self.snowdistfac = None
             except FileNotFoundError:
-                print('Snow redist factors not found')
+                # todo: move this warning to a better place (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
                 self.snowdistfac = None
         else:
             self.snowdistfac = None
@@ -1675,31 +1672,10 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             doy = date.dayofyear
             isis = isis * self.sis_scale_factor[:, doy-1]
 
-        tmean = self.meteo.get_tmean_at_heights(date, heights) + self.temp_bias
-
-        # Todo: make precip calculation method a member of cfg.PARAMS
-        prcpsol_unc, _ = self.meteo.get_precipitation_solid_liquid(date,
-                                                                   heights)
-        prcpsol_unc *= self.prcp_bias
-
-        # redistribute prcpsol if given
-        if self.snowdistfac is not None:
-            try:
-                prcpsol_unc *= self.snowdistfac.sel(time=date).D.values
-            except KeyError:
-                pass
-            except ValueError:
-                try:
-                    prcpsol_unc *= np.pad(
-                        self.snowdistfac.sel(time=date).D.values, (0, len(
-                            heights) - self.snowdistfac.sel(
-                            time=date).D.values.size), 'constant',
-                        constant_values=(1., 1.))
-                except ValueError:
-                    prcpsol_unc *= self.snowdistfac.sel(time=date).D.values[
-                                   :len(heights)]
-
-        prcpsol_unc *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        itemp = self.temp[ix] + self.temp_bias
+        itgrad = self.tgrad[ix]
+        npix = len(heights)
+        tmean = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
@@ -1709,9 +1685,33 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp_corr = prcpsol_unc * iprcp_fac
         else:
-            iprcp_corr = prcpsol_unc * self.prcp_fac
+            iprcp_fac = self.prcp_fac
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
+        # Todo: make precip calculation method a member of cfg.PARAMS
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
+
+        # redistribute prcpsol if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(
+                        self.snowdistfac.sel(time=date).D.values, (0, len(
+                            heights) - self.snowdistfac.sel(
+                            time=date).D.values.size), 'constant',
+                        constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[
+                                   :len(heights)]
 
         if isinstance(self.c0, pd.Series):
             try:
@@ -1757,15 +1757,15 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
             # todo: getting efficiently pos t sum between doesn't work with arrays???
             if self.albedo_method == 'brock':
-                self.tpos_since_snowfall[iprcp_corr >
+                self.tpos_since_snowfall[prcpsol >
                                          self.reset_alpha_swe] = 0.
                 self.tpos_since_snowfall[
-                    iprcp_corr <= self.reset_alpha_swe] += np.clip(
+                    prcpsol <= self.reset_alpha_swe] += np.clip(
                     climate.get_temperature_at_heights(self.meteo.tmax[ix],
                                                        self.meteo.tgrad[ix],
                                                        self.meteo.ref_hgt,
                                                        heights)[
-                        iprcp_corr <= self.reset_alpha_swe], 0., None)
+                        prcpsol <= self.reset_alpha_swe], 0., None)
                 icedist = self.snowcover.get_total_height() <= 0.
                 swe = np.nansum(self.snowcover.swe, axis=1)
                 albedo = self.update_albedo(swe, self.tpos_since_snowfall,
@@ -1786,6 +1786,29 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         qmelt = (1 - albedo) * isis + c0 + c1 * tmean
         # melt only happens where qmelt > 0.:
         qmelt = np.clip(qmelt, 0., None)
+
+        # kg m-2 d-1 = W m-2 * s * J-1 kg
+        # we want ice flux, so we drop RHO_W for the first...!?
+        melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
+
+        # kg m-2 = kg m-2 - kg m-2
+        mb_day = prcpsol - melt
+
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            tmean + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+        self.time_elapsed = date
+
+        # remove old snow to make model faster
+        if date.day == 1:  # this is a good compromise in terms of time
+            oldsnowdist = np.where(self.snowcover.age_days > 365)
+            self.snowcover.remove_layer(ix=oldsnowdist)
+
+        # return kg m-2 s-1 kg-1 m3 = m ice s-1
+        icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
+        return icerate
+
 
 class EnsembleMassBalanceModel(object):
     """A wrapper around mass balance models to get model mass balances at once.
@@ -2059,7 +2082,6 @@ class ParameterGenerator(object):
         # todo: this is a complicated mixture of constrain_with_bw_prcp_fac and bw_constrain_year
         param_prod = np.array(list(param_prod.values))
         if self.constrain_with_bw_prcp_fac:
-            log.info('PRCP_FAC is constrained with BW prcp_fac.')
             constrain_pfac = self.get_constraining_prcp_fac(cali_sel)
             if ~np.isnan(constrain_pfac):
                 param_prod[:, self.mb_model.cali_params_list.index(
@@ -2198,7 +2220,8 @@ class ParameterGenerator(object):
                     ' GLAMOS calibration file is is missing.')
                 # todo: this is not a good idea!?
                 constr_pfac = np.nan
-        log.info("Winter MB is constrained with PRCP_FAC of ", constr_pfac)
+        log.info("PRCP_FAC is constrained with PRCP_FAC of {}."
+                 .format(constr_pfac))
         return constr_pfac
 
     def generate_output(self, params):
@@ -4563,7 +4586,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         self.append_to_gdir(gdir, basename, reset=False)
 
-    def make_cumsum_quantiles(self, bg_month=10, bg_day=1, quantiles=None):
+    def make_cumsum_quantiles(self, bg_month=None, bg_day=None, quantiles=None):
         """
         Apply cumulative sum and then quantiles to the mass balance data.
 
@@ -4571,6 +4594,12 @@ class MassBalance(object, metaclass=SuperclassMeta):
         -------
         None
         """
+
+        if bg_month is None:
+            bg_month = cfg.PARAMS['bgmon_hydro']
+        if bg_day is None:
+            bg_day= cfg.PARAMS['bgday_hydro']
+
         save_attrs = self._obj.attrs  # needed later
 
         hyears = self.make_hydro_years(bg_month, bg_day)

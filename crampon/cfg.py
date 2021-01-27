@@ -6,11 +6,11 @@ COMMENT: the CRAMPON-specific BASENAMES  and PATHS get the prefix "C" in order
 to make sure they come from CRAMPON. Later on, they are merged with the
 respective OGGM dictionaries.
 """
-from __future__ import absolute_import, division
 
 from oggm.cfg import PathOrderedDict, DocumentedDict, set_intersects_db, \
     pack_config, unpack_config, oggm_static_paths, get_lru_handler, \
-    set_logging_config
+    set_logging_config, ResettingOrderedDict, ParamsLoggingDict, set_manager, \
+    initialize_minimal
 from oggm.cfg import initialize as oggminitialize
 import oggm.cfg as oggmcfg
 
@@ -20,13 +20,29 @@ import os
 import shutil
 import sys
 import glob
+import json
 from collections import OrderedDict
 from distutils.util import strtobool
+import warnings
 
 import numpy as np
 import pandas as pd
-import geopandas as gpd
+try:
+    from scipy.signal.windows import gaussian
+except AttributeError:
+    # Old scipy
+    from scipy.signal import gaussian
 from configobj import ConfigObj, ConfigObjError
+try:
+    import geopandas as gpd
+except ImportError:
+    pass
+try:
+    import salem
+except ImportError:
+    pass
+
+from oggm.exceptions import InvalidParamsError
 
 # Defaults
 logging.basicConfig(format='%(asctime)s: %(name)s: %(message)s',
@@ -45,19 +61,24 @@ CONFIG_FILE = os.path.join(os.path.expanduser('~'), '.oggm_config')
 # config was changed, indicates that multiprocessing needs a reset
 CONFIG_MODIFIED = False
 
+# Share state accross processes
+DL_VERIFIED = dict()
+DEM_SOURCE_TABLE = dict()
+
+# Machine epsilon
+FLOAT_EPS = np.finfo(float).eps
+
 # Globals
 IS_INITIALIZED = False
-CONTINUE_ON_ERROR = False
-CPARAMS = OrderedDict()
-PARAMS = OrderedDict()
+CPARAMS = ParamsLoggingDict()
+PARAMS = ParamsLoggingDict()
 NAMES = OrderedDict()
 CPATHS = PathOrderedDict()
 PATHS = PathOrderedDict()
 CBASENAMES = DocumentedDict()
 BASENAMES = DocumentedDict()
-RGI_REG_NAMES = False
-RGI_SUBREG_NAMES = False
-LRUHANDLERS = OrderedDict()
+LRUHANDLERS = ResettingOrderedDict()
+DATA = ResettingOrderedDict
 
 # Constants
 SEC_IN_YEAR = 365*24*3600
@@ -81,7 +102,7 @@ SEALEVEL_PRESSURE = 101325  # Pa
 MOLAR_MASS_DRY_AIR = 0.02896968  # kg/mol
 FLUX_TO_DAILY_FACTOR = (86400 * RHO) / RHO_W  # m ice s-1 to m w.e. d-1
 
-G = 9.81  # gravity
+G = oggmcfg.G  # gravity
 N = 3.  # Glen's law's exponent
 A = 2.4e-24  # Glen's default creep's parameter
 FS = 5.7e-20  # Default sliding parameter from Oerlemans - OUTDATED
@@ -92,6 +113,11 @@ ONE_FIFTH = 1./5.
 # the mass balance models ready to use - order might matter!
 MASSBALANCE_MODELS = ['BraithwaiteModel', 'HockModel',
                       'PellicciottiModel', 'OerlemansModel']
+
+GAUSSIAN_KERNEL = dict()
+for ks in [5, 7, 9]:
+    kernel = gaussian(ks, 1)
+    GAUSSIAN_KERNEL[ks] = kernel / kernel.sum()
 
 # Added from CRAMPON:
 _doc = 'CSV output from the calibration for the different models, including' \
@@ -217,6 +243,7 @@ for bn in oggmcfg.BASENAMES:
     BASENAMES[bn] = (bn, oggmcfg.BASENAMES.doc_str(bn))
 for cbn in CBASENAMES:
     BASENAMES[cbn] = (cbn, CBASENAMES.doc_str(cbn))
+    oggmcfg.BASENAMES[cbn] = (cbn, CBASENAMES.doc_str(cbn))
 
 # some more standard names, for less hardcoding
 NAMES['DHM25'] = 'dhm25'
@@ -245,11 +272,11 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     global IS_INITIALIZED
     global BASENAMES
+    global CPARAMS
     global PARAMS
     global PATHS
     global NAMES
-    global CONTINUE_ON_ERROR
-    global GRAVITY_CONST
+    global DATA
     global E_FIRN
     global ZERO_DEG_KELVIN
     global R
@@ -262,11 +289,187 @@ def initialize(file=None, logging_level='INFO', params=None):
     global RGI_REG_NAMES
     global RGI_SUBREG_NAMES
 
-    set_logging_config(logging_level=logging_level)
+    # Do not spam
+    PARAMS.do_log = False
+    oggmcfg.PARAMS.do_log = False
 
     # This is necessary as OGGM still refers to its own initialisation
-    #oggminitialize(file=file)
     oggminitialize()
+
+    set_logging_config(logging_level=logging_level)
+
+    is_default = False
+    if file is None:
+        file = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                            'params.cfg')
+        is_default = True
+    try:
+        cp = ConfigObj(file, file_error=True)
+    except (ConfigObjError, IOError) as e:
+        log.critical('Config file could not be parsed (%s): %s', file, e)
+        sys.exit()
+
+    if is_default:
+        log.workflow('Reading default parameters from the CRAMPON `params.cfg` '
+                     'configuration file.')
+    else:
+        log.workflow('Reading parameters from the user provided '
+                     'configuration file: %s', file)
+
+    # Static Paths
+    oggm_static_paths()
+
+    # Apply code-side manual params overrides
+    if params:
+        for k, v in params.items():
+            cp[k] = v
+
+    # Paths
+    PATHS['working_dir'] = cp['working_dir']
+    PATHS['dem_file'] = cp['dem_file']
+    PATHS['climate_file'] = cp['climate_file']
+
+    # Ephemeral paths overrides
+    env_wd = os.environ.get('OGGM_WORKDIR')
+    if env_wd and not PATHS['working_dir']:
+        PATHS['working_dir'] = env_wd
+        log.workflow(
+            "PATHS['working_dir'] set to env variable $OGGM_WORKDIR: " + env_wd)
+
+    # Multiprocessing pool
+    try:
+        use_mp = bool(int(os.environ['OGGM_USE_MULTIPROCESSING']))
+        msg = 'ON' if use_mp else 'OFF'
+        log.workflow('Multiprocessing switched {} '.format(
+            msg) + 'according to the ENV variable OGGM_USE_MULTIPROCESSING')
+    except KeyError:
+        use_mp = cp.as_bool('use_multiprocessing')
+        msg = 'ON' if use_mp else 'OFF'
+        log.workflow('Multiprocessing switched {} '.format(
+            msg) + 'according to the parameter file.')
+    PARAMS['use_multiprocessing'] = use_mp
+
+    # Spawn
+    try:
+        use_mp_spawn = bool(int(os.environ['OGGM_USE_MP_SPAWN']))
+        msg = 'ON' if use_mp_spawn else 'OFF'
+        log.workflow('MP spawn context switched {} '.format(
+            msg) + 'according to the ENV variable OGGM_USE_MP_SPAWN')
+    except KeyError:
+        use_mp_spawn = cp.as_bool('use_mp_spawn')
+    PARAMS['use_mp_spawn'] = use_mp_spawn
+
+    # Number of processes
+    mpp = cp.as_int('mp_processes')
+    if mpp == -1:
+        try:
+            mpp = int(os.environ['SLURM_JOB_CPUS_PER_NODE'])
+            log.workflow('Multiprocessing: using slurm allocated '
+                         'processors (N={})'.format(mpp))
+        except (KeyError, ValueError):
+            import multiprocessing
+            mpp = multiprocessing.cpu_count()
+            log.workflow('Multiprocessing: using all available '
+                         'processors (N={})'.format(mpp))
+    else:
+        log.workflow('Multiprocessing: using the requested number of '
+                     'processors (N={})'.format(mpp))
+    PARAMS['mp_processes'] = mpp
+
+    # Size of LRU cache
+    try:
+        lru_maxsize = int(os.environ['LRU_MAXSIZE'])
+        log.workflow('Size of LRU cache set to {} '.format(
+            lru_maxsize) + 'according to the ENV variable LRU_MAXSIZE')
+    except KeyError:
+        lru_maxsize = cp.as_int('lru_maxsize')
+    PARAMS['lru_maxsize'] = lru_maxsize
+
+    # Some non-trivial params
+    PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
+    PARAMS['grid_dx_method'] = cp['grid_dx_method']
+    PARAMS['topo_interp'] = cp['topo_interp']
+    PARAMS['use_intersects'] = cp.as_bool('use_intersects')
+    PARAMS['use_compression'] = cp.as_bool('use_compression')
+    PARAMS['border'] = cp.as_int('border')
+    PARAMS['mpi_recv_buf_size'] = cp.as_int('mpi_recv_buf_size')
+    PARAMS['use_multiple_flowlines'] = cp.as_bool('use_multiple_flowlines')
+    PARAMS['filter_min_slope'] = cp.as_bool('filter_min_slope')
+    PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
+    PARAMS['correct_for_neg_flux'] = cp.as_bool('correct_for_neg_flux')
+    PARAMS['filter_for_neg_flux'] = cp.as_bool('filter_for_neg_flux')
+    PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
+    PARAMS['rgi_version'] = cp['rgi_version']
+    PARAMS['use_rgi_area'] = cp.as_bool('use_rgi_area')
+    PARAMS['compress_climate_netcdf'] = cp.as_bool(
+        'compress_climate_netcdf')
+    PARAMS['use_tar_shapefiles'] = cp.as_bool('use_tar_shapefiles')
+    PARAMS['clip_mu_star'] = cp.as_bool('clip_mu_star')
+    PARAMS['clip_tidewater_border'] = cp.as_bool('clip_tidewater_border')
+    PARAMS['dl_verify'] = cp.as_bool('dl_verify')
+    PARAMS['calving_line_extension'] = cp.as_int('calving_line_extension')
+    PARAMS['use_kcalving_for_inversion'] = cp.as_bool(
+        'use_kcalving_for_inversion')
+    PARAMS['use_kcalving_for_run'] = cp.as_bool('use_kcalving_for_run')
+    PARAMS['calving_use_limiter'] = cp.as_bool('calving_use_limiter')
+    PARAMS['use_inversion_params_for_run'] = cp.as_bool(
+        'use_inversion_params_for_run')
+    k = 'error_when_glacier_reaches_boundaries'
+    PARAMS[k] = cp.as_bool(k)
+
+    # Climate
+    PARAMS['baseline_climate'] = cp['baseline_climate'].strip().upper()
+    PARAMS['hydro_month_nh'] = cp.as_int('hydro_month_nh')
+    PARAMS['hydro_month_sh'] = cp.as_int('hydro_month_sh')
+    PARAMS['climate_qc_months'] = cp.as_int('climate_qc_months')
+    PARAMS['temp_use_local_gradient'] = cp.as_int(
+        'temp_use_local_gradient')
+
+    # Delete non-floats
+    ltr = ['working_dir', 'dem_file', 'climate_file', 'climate_dir',
+       'wgms_rgi_links', 'glathida_rgi_links', 'firncore_dir', 'lfi_dir',
+       'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method', 'data_dir',
+       'mp_processes', 'use_multiprocessing', 'use_divides',
+       'temp_use_local_gradient', 'prcp_use_local_gradient',
+       'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
+       'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
+       'precip_ratio_method', 'topo_interp', 'use_compression',
+       'use_tar_shapefiles', 'bed_shape', 'continue_on_error',
+       'use_optimized_inversion_params', 'invert_with_sliding',
+       'optimize_inversion_params', 'use_multiple_flowlines',
+       'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
+       'tstar_search_window', 'use_bias_for_run', 'run_period',
+       'prcp_scaling_factor', 'tminmax_available', 'use_intersects',
+       'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
+       'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
+       'run_mb_calibration', 'albedo_method', 'glamos_ids',
+       'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
+       'alpha_bounds', 'tacc_bounds', 'nwp_file', 'use_mp_spawn', 'working_dir', 'dem_file', 'climate_file', 'use_tar_shapefiles',
+           'grid_dx_method', 'run_mb_calibration',
+           'compress_climate_netcdf', 'mp_processes',
+           'use_multiprocessing', 'climate_qc_months',
+           'temp_use_local_gradient', 'temp_local_gradient_bounds',
+           'topo_interp', 'use_compression', 'bed_shape',
+           'continue_on_error', 'use_multiple_flowlines',
+           'tstar_search_glacierwide', 'border', 'mpi_recv_buf_size',
+           'hydro_month_nh', 'clip_mu_star', 'tstar_search_window',
+           'use_bias_for_run', 'hydro_month_sh', 'use_intersects',
+           'filter_min_slope', 'clip_tidewater_border', 'auto_skip_task',
+           'correct_for_neg_flux', 'filter_for_neg_flux', 'rgi_version',
+           'dl_verify', 'use_mp_spawn', 'calving_use_limiter',
+           'use_shape_factor_for_inversion', 'use_rgi_area',
+           'use_shape_factor_for_fluxbasedmodel', 'baseline_climate',
+           'calving_line_extension', 'use_kcalving_for_run', 'lru_maxsize',
+           'free_board_marine_terminating', 'use_kcalving_for_inversion',
+           'error_when_glacier_reaches_boundaries',
+           'glacier_length_method', 'use_inversion_params_for_run',
+           'ref_mb_valid_window', 'tidewater_type']
+    for k in ltr:
+        cp.pop(k, None)
+
+    # Other params are floats
+    for k in cp:
+        PARAMS[k] = cp.as_float(k)
 
     # Add the CRAMPON-specific keys to the dicts
     oggmcfg.BASENAMES.update(CBASENAMES)
@@ -317,6 +520,7 @@ def initialize(file=None, logging_level='INFO', params=None):
     oggmcfg.PATHS['plots_dir'] = os.path.join(cp['working_dir'], 'plots')
 
     # run params
+    oggmcfg.PARAMS.do_log = False
     oggmcfg.PARAMS['run_period'] = [int(vk) for vk in cp.as_list('run_period')]
     k = 'glamos_ids'
     oggmcfg.PARAMS[k] = [str(vk) for vk in cp.as_list(k)]
@@ -339,9 +543,6 @@ def initialize(file=None, logging_level='INFO', params=None):
     oggmcfg.PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
     oggmcfg.PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
     oggmcfg.PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
-
-    # Mass balance
-    oggmcfg.PARAMS['ratio_mu_snow_ice'] = cp['ratio_mu_snow_ice']
 
     # Climate
     oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_int(
@@ -385,12 +586,92 @@ def initialize(file=None, logging_level='INFO', params=None):
     oggmcfg.PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
                          cp.as_list(k)]
 
+
+    # run params
+    PARAMS['run_period'] = [int(vk) for vk in cp.as_list('run_period')]
+    k = 'glamos_ids'
+    PARAMS[k] = [str(vk) for vk in cp.as_list(k)]
+
+    # Multiprocessing pool
+    PARAMS['use_multiprocessing'] = cp.as_bool('use_multiprocessing')
+    PARAMS['mp_processes'] = cp.as_int('mp_processes')
+
+    # Some non-trivial params
+    PARAMS['grid_dx_method'] = cp['grid_dx_method']
+    PARAMS['topo_interp'] = cp['topo_interp']
+    PARAMS['use_divides'] = cp.as_bool('use_divides')
+    PARAMS['use_intersects'] = cp.as_bool('use_intersects')
+    PARAMS['use_compression'] = cp.as_bool('use_compression')
+    PARAMS['use_tar_shapefiles'] = cp.as_bool('use_tar_shapefiles')
+    PARAMS['mpi_recv_buf_size'] = cp.as_int('mpi_recv_buf_size')
+    PARAMS['use_multiple_flowlines'] = cp.as_bool(
+        'use_multiple_flowlines')
+    PARAMS['optimize_thick'] = cp.as_bool('optimize_thick')
+    PARAMS['filter_min_slope'] = cp.as_bool('filter_min_slope')
+    PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
+    PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
+    PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
+
+    # Climate
+    PARAMS['temp_use_local_gradient'] = cp.as_int(
+        'temp_use_local_gradient')
+    k = 'temp_local_gradient_bounds'
+    PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
+    PARAMS['prcp_use_local_gradient'] = cp.as_int(
+        'prcp_use_local_gradient')
+    k = 'prcp_local_gradient_bounds'
+    PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
+    PARAMS['precip_ratio_method'] = cp['precip_ratio_method']
+    k = 'tstar_search_window'
+    PARAMS[k] = [int(vk) for vk in cp.as_list(k)]
+    PARAMS['use_bias_for_run'] = cp.as_bool('use_bias_for_run')
+    _factor = cp['prcp_scaling_factor']
+    if _factor not in ['stddev', 'stddev_perglacier']:
+        _factor = cp.as_float('prcp_scaling_factor')
+    PARAMS['prcp_scaling_factor'] = _factor
+    PARAMS['tminmax_available'] = cp.as_int('tminmax_available')
+    PARAMS['begin_mbyear_month'] = cp.as_int('begin_mbyear_month')
+    PARAMS['begin_mbyear_day'] = cp.as_int('begin_mbyear_day')
+    PARAMS['albedo_method'] = cp['albedo_method']
+
+    # Inversion
+    PARAMS['invert_with_sliding'] = cp.as_bool('invert_with_sliding')
+    _k = 'optimize_inversion_params'
+    PARAMS[_k] = cp.as_bool(_k)
+
+    # Flowline model
+    _k = 'use_optimized_inversion_params'
+    PARAMS[_k] = cp.as_bool(_k)
+
+    # bounds
+    k = 'swe_bounds'
+    PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
+                         cp.as_list(k)]
+    k = 'alpha_bounds'
+    PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
+                         cp.as_list(k)]
+    k = 'tacc_bounds'
+    PARAMS[k] = [float(vk) if type(vk) == float else vk for vk in
+                         cp.as_list(k)]
+
     # Make sure we have a proper cache dir
     from oggm.utils import download_oggm_files
     download_oggm_files()
 
     CPARAMS['bgday_hydro'] = cp.as_int('bgday_hydro')
     CPARAMS['bgmon_hydro'] = cp.as_int('bgmon_hydro')
+    PARAMS['bgday_hydro'] = cp.as_int('bgday_hydro')
+    PARAMS['bgmon_hydro'] = cp.as_int('bgmon_hydro')
+
+    try:
+        use_mp_spawn = bool(int(os.environ['OGGM_USE_MP_SPAWN']))
+        msg = 'ON' if use_mp_spawn else 'OFF'
+        log.workflow('MP spawn context switched {} '.format(
+            msg) + 'according to the ENV variable OGGM_USE_MP_SPAWN')
+    except KeyError:
+        use_mp_spawn = cp.as_bool('use_mp_spawn')
+    oggmcfg.PARAMS['use_mp_spawn'] = use_mp_spawn
+    PARAMS['use_mp_spawn'] = use_mp_spawn
 
     # Delete non-floats
     ltr = ['working_dir', 'dem_file', 'climate_file', 'climate_dir',
@@ -411,26 +692,26 @@ def initialize(file=None, logging_level='INFO', params=None):
            'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
            'run_mb_calibration', 'albedo_method', 'glamos_ids',
            'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
-           'alpha_bounds', 'tacc_bounds', 'nwp_file']
+           'alpha_bounds', 'tacc_bounds', 'nwp_file', 'use_mp_spawn']
     for k in ltr:
         cp.pop(k, None)
 
-    # Other params are floats
-    for k in cp:
-        oggmcfg.PARAMS[k] = cp.as_float(k)
-
-    # Empty defaults
-    from oggm.utils import get_demo_file
-    set_intersects_db(get_demo_file('rgi_intersect_oetztal.shp'))
-    IS_INITIALIZED = True
-
     # Update the dicts in case there are changes
     oggmcfg.PATHS.update(CPATHS)
-    oggmcfg.PARAMS.update(CPARAMS)
+    oggmcfg.PARAMS.update(PARAMS)
 
     BASENAMES = oggmcfg.BASENAMES
     PATHS = oggmcfg.PATHS
     PARAMS = oggmcfg.PARAMS
 
-    # Always call this one! Creates tmp_dir etc.
-    oggm_static_paths()
+    # Empty defaults
+    # MUST COME AFTER UPDATING THE OGGM PARAMS WITH CPARAMS
+    set_intersects_db()
+    # Empty defaults
+    from oggm.utils import get_demo_file
+    set_intersects_db(get_demo_file('rgi_intersect_oetztal.shp'))
+
+    IS_INITIALIZED = True
+
+    # Do not spam
+    PARAMS.do_log = True

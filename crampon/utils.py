@@ -2,43 +2,42 @@
 A collection of some useful miscellaneous functions.
 """
 from __future__ import absolute_import, division
-from typing import Union, Iterable
 
-from joblib import Memory
-import posixpath
-import salem
-import os
-import pandas as pd
-import numpy as np
-import logging
-import paramiko as pm
-import ftplib
-import xarray as xr
-import rasterio
-import subprocess
-from rasterio.merge import merge as merge_tool
-from rasterio.warp import transform as transform_tool
-from rasterio.mask import mask as riomask
-import geopandas as gpd
-import shapely
-import datetime as dt
-from configobj import ConfigObj, ConfigObjError
-from itertools import product
-import tarfile
-import zipfile
-import dask
-import sys
-import glob
 import fnmatch
+import ftplib
+import logging
+import posixpath
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
 import netCDF4
-from scipy import stats
-from salem import lazy_property, read_shapefile
-from functools import partial, wraps
-import crampon.cfg as cfg
-from oggm.utils import *
-from oggm.utils._workflow import _timeout_handler
+from oggm.utils import GlacierDirectory, global_task, SuperclassMeta, mkdir, \
+    filter_rgi_name, parse_rgi_meta, tolist, pipe_log, get_demo_file, \
+    nicenumber, haversine, entity_task
+import time
+import zipfile
+from functools import wraps
+from itertools import product
 # Locals
 from pathlib import Path
+from typing import Union, Iterable
+
+import geopandas as gpd
+import pandas as pd
+import paramiko as pm
+import salem
+import shapely
+import shapely.geometry as shpg
+import xarray as xr
+from configobj import ConfigObj, ConfigObjError
+from joblib import Memory
+from oggm.utils._workflow import _timeout_handler
+from salem import lazy_property, read_shapefile
+from scipy import stats
+
+from crampon.core.holfuytools import *
 
 
 # I should introduce/alter:
@@ -52,103 +51,6 @@ log = logging.getLogger(__name__)
 # Joblib
 MEMORY = Memory(cfg.CACHE_DIR, verbose=0)
 SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
-
-
-# seems there is no way around copying this from OGGM (it uses cfg in OGGM)
-class entity_task(object):
-    """Decorator for common job-controlling logic.
-
-    All tasks share common operations. This decorator is here to handle them:
-    exceptions, logging, and (some day) database for job-controlling.
-    """
-
-    def __init__(self, log, writes=[], fallback=None):
-        """Decorator syntax: ``@oggm_task(log, writes=['dem', 'outlines'])``
-
-        Parameters
-        ----------
-        log: logger
-            module logger
-        writes: list
-            list of files that the task will write down to disk (must be
-            available in ``cfg.BASENAMES``)
-        fallback: python function
-            will be executed on gdir if entity_task fails
-        """
-        self.log = log
-        self.writes = writes
-        self.fallback = fallback
-
-        cnt = ['    Notes']
-        cnt += ['    -----']
-        cnt += ['    Files writen to the glacier directory:']
-
-        for k in sorted(writes):
-            cnt += [cfg.BASENAMES.doc_str(k)]
-        self.iodoc = '\n'.join(cnt)
-
-    def __call__(self, task_func):
-        """Decorate."""
-
-        # Add to the original docstring
-        if task_func.__doc__ is None:
-            raise RuntimeError('Entity tasks should have a docstring!')
-
-        task_func.__doc__ = '\n'.join((task_func.__doc__, self.iodoc))
-
-        @wraps(task_func)
-        def _entity_task(gdir, *, reset=None, print_log=True, **kwargs):
-
-            if reset is None:
-                reset = not cfg.PARAMS['auto_skip_task']
-
-            task_name = task_func.__name__
-
-            # Filesuffix are typically used to differentiate tasks
-            fsuffix = (kwargs.get('filesuffix', False) or
-                       kwargs.get('output_filesuffix', False))
-            if fsuffix:
-                task_name += fsuffix
-
-            # Do we need to run this task?
-            s = gdir.get_task_status(task_name)
-            if not reset and s and ('SUCCESS' in s):
-                return
-
-            # Log what we are doing
-            if print_log:
-                self.log.info('(%s) %s', gdir.rgi_id, task_name)
-
-            # Run the task
-            try:
-                if cfg.PARAMS['task_timeout'] > 0:
-                    signal.signal(signal.SIGALRM, _timeout_handler)
-                    signal.alarm(cfg.PARAMS['task_timeout'])
-                ex_t = time.time()
-                out = task_func(gdir, **kwargs)
-                ex_t = time.time() - ex_t
-                if cfg.PARAMS['task_timeout'] > 0:
-                    signal.alarm(0)
-                if task_name != 'gdir_to_tar':
-                    gdir.log(task_name, task_time=ex_t)
-            except Exception as err:
-                # Something happened
-                out = None
-                gdir.log(task_name, err=err)
-                pipe_log(gdir, task_name, err=err)
-                if print_log:
-                    self.log.error('%s occurred during task %s on %s: %s',
-                                   type(err).__name__, task_name,
-                                   gdir.rgi_id, str(err))
-                if not cfg.PARAMS['continue_on_error']:
-                    raise
-
-                if self.fallback is not None:
-                    self.fallback(gdir)
-            return out
-
-        _entity_task.__dict__['is_entity_task'] = True
-        return _entity_task
 
 
 dpm = {'noleap': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
@@ -1550,10 +1452,15 @@ def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
                            coords={'time': ('time', climate.time)})
     grad_unc_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad_unc,
                            coords={'time': ('time', climate.time)})
-    grad_rmean = grad_ds.rolling(time=30, center=True).mean(
+    grad_rmean = grad_ds.rolling(time=30, center=True, min_periods=5).mean(
         skipna=True).groupby('time.dayofyear').mean(skipna=True)
-    grad_unc_rmean = grad_unc_ds.rolling(time=30, center=True).mean(
-        skipna=True).groupby('time.dayofyear').mean(skipna=True)
+    grad_unc_rmean = grad_unc_ds.rolling(time=30, center=True, min_periods=5)\
+        .mean(skipna=True).groupby('time.dayofyear').mean(skipna=True)
+
+    # fill NaNs - to be sure
+    grad_rmean = grad_rmean.fillna(default_tgrad)
+    # todo: define a mean tgrad uncertainty?
+    grad_unc_rmean = grad_unc_rmean.fillna(np.nanmean(itgrad_unc))
 
     # days with nan should be the same in both itgrad and itgrad_unc
     nan_doys = [pd.Timestamp(x).dayofyear for x in
@@ -2012,8 +1919,6 @@ def get_local_dems(gdir):
     # TODO: Replace with real acquisition dates!
     d_acq_dates = dt.datetime(1970, 1, 1)
     d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates, dx)
-    #d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
-    #                group=cfg.NAMES['DHM25'])
     d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w',
                     group=cfg.NAMES['DHM25'])
 
@@ -2038,11 +1943,11 @@ def get_local_dems(gdir):
 def get_cirrus_yesterday():
     """Check if data has already been delivered."""
     try:
-        climate = xr.open_dataset(cfg.PATHS['climate_file'])
-        yesterday = pd.Timestamp(climate.time.values[-1])
-    except Exception as e:
-        log.warning('Can\'t determine the \'s yesterday from climate file, '
-                    'because:' + str(e))
+        with xr.open_dataset(cfg.PATHS['climate_file']) as climate:
+            yesterday = pd.Timestamp(climate.time.values[-1])
+    except Exception:
+        log.warning('Can\'t determine the Cirrus yesterday from climate file.'
+                    ' Trying it with logic...')
         now = dt.datetime.now()
         if now.hour >= 12 and now.minute >= 30:
             yesterday = (now - dt.timedelta(1))
