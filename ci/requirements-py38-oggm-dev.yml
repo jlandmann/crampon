@@ -37,6 +37,7 @@ dependencies:
   - selenium
   - geckodriver
   - firefox
+  - pytables
   - pip
   - pip:
     - git+https://github.com/OGGM/oggm.git
