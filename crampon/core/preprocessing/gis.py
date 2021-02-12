@@ -130,7 +130,8 @@ def utm_grid(center_ll=None, extent=None, ny=600, nx=None,
 
 
 @entity_task(log, writes=['glacier_grid', 'homo_dem_ts', 'outlines'])
-def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None, reset_dems=False):
+def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None,
+                                  reset_dems=False):
     """
     Define the local grid for a glacier entity.
 
@@ -200,15 +201,6 @@ def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None, reset
     # For tidewater glaciers we force border to 10
     if gdir.is_tidewater and cfg.PARAMS['clip_tidewater_border']:
         border = 10
-
-    # Make a local glacier map
-    #proj_params = dict(name='tmerc', lat_0=0., lon_0=gdir.cenlon,
-    #                   k=0.9996, x_0=0, y_0=0, datum='WGS84')
-    #proj4_str = "+proj={name} +lat_0={lat_0} +lon_0={lon_0} +k={k} " \
-    #            "+x_0={x_0} +y_0={y_0} +datum={datum}".format(**proj_params)
-    #proj_in = pyproj.Proj("+init=EPSG:4326", preserve_units=True)
-    #proj_out = pyproj.Proj(proj4_str, preserve_units=True)
-    #project = partial(pyproj.transform, proj_in, proj_out)
 
     # Corners, incl. a buffer of N pix
     ulx = np.min(xx) - cfg.PARAMS['border']
@@ -303,7 +295,7 @@ def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None, reset
                                     0].item()))
 
             # Set up profile for writing output
-            profile = {'crs': proj4_str,
+            profile = {'crs': utm_proj.srs,
                        'nodata': np.nan,
                        'dtype': np.float32,
                        'count': 1,
@@ -329,7 +321,7 @@ def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None, reset
                     # Destination parameters
                     destination=dst_array,
                     dst_transform=dst_transform,
-                    dst_crs=proj4_str,
+                    dst_crs=utm_proj.srs,
                     dst_nodata=np.nan,
                     # Configuration
                     resampling=resampling)
@@ -440,7 +432,7 @@ def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None, reset
                                  dst_transform[4], ny),
                 'time': homo_dates},
         attrs={'id': gdir.rgi_id, 'name': gdir.name, 'res': dx,
-               'pyproj_srs': proj4_str, 'transform': dst_transform})
+               'pyproj_srs': utm_proj.srs, 'transform': dst_transform})
     homo_dem_ts = homo_dem_ts.sortby('time')
     homo_dem_ts.to_netcdf(gdir.get_filepath('homo_dem_ts'))
 
