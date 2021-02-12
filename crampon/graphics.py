@@ -321,7 +321,8 @@ def make_mb_popup_map(
         gdirs = workflow.init_glacier_regions(glc_gdf)
     else:
         crs_int = 4326
-        glc_gdf = gpd.GeoDataFrame(crs='epsg:{}'.format(crs_int))
+        glc_gdf = gpd.GeoDataFrame(crs='epsg:{}'.format(crs_int),
+                                   columns=['geometry'])
         for gd in gdirs:
             ol_path = gd.get_filepath('outlines')
             gd_gdf = gpd.GeoDataFrame.from_file(ol_path)
