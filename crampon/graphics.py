@@ -432,23 +432,29 @@ def make_mb_popup_map(
         html: str
             HTML string.
         """
+
+        # a little less hardcoding
         pure_sgi_id = point.RGIId.split('.')[1]
+        fs = 18
         clickable_mb_dist = \
             '<a href="https://crampon.glamos.ch/plots/mb_dist/{}_mb_dist_' \
-            'ensemble.png" target="_blank"><p>Mass Balance Distribution</p>' \
+            'ensemble.png" target="_blank"><p style="font-size:{}px;"> Mass ' \
+            'Balance Distribution (click to enlarge)</p>' \
             '<img src="https://crampon.glamos.ch/plots/mb_dist/{}_mb_dist_' \
-            'ensemble_prev.png" style="max-width:100%; position:relative; ' \
+            'ensemble_prev.png" style="max-width:150%; position:relative; ' \
             'display:inline; overflow:hidden; margin:0;" /></a>'.format(
-                pure_sgi_id, pure_sgi_id)
+                pure_sgi_id, fs, pure_sgi_id)
         other_clickables = \
             '<a href="https://crampon.glamos.ch/plots/mb_spaghetti/{}_intera' \
-            'ctive_mb_spaghetti.html" target="_blank"><p>MB Spaghetti</p></a' \
-            '>'.format(pure_sgi_id)
+            'ctive_mb_spaghetti.html" target="_blank"><p style="font-size:{}' \
+            'px;"> Mass Balance Spaghetti</p></a>'.format(pure_sgi_id, fs)
 
-        html = '<b> ' + point.Name + ' (' + pure_sgi_id + ')</b><br><br>'
-        html += '<div style="width:5000; height:1000; text-align: center">{}' \
-                '</div>'.format(clickable_mb_dist)
-        html += 'Further information:<br>'
+        html = '<p style="font-size:{}px;"> '.format(fs) + point.Name + ' (' \
+               + pure_sgi_id + ')</p><br>'
+        html += '<div style="width:420px; height:250px; text-align: ' \
+                'center">{}</div>'.format(clickable_mb_dist)
+        html += '<p style="font-size:{}px;"> Further information: ' \
+                '</p>'.format(fs)
         html += other_clickables
         return html
 
@@ -484,7 +490,10 @@ def make_mb_popup_map(
 
     # Save
     if plot_dir is not None:
-        m.save(os.path.join(plot_dir, 'status_map',
+        final_dir = os.path.join(plot_dir, 'status_map')
+        if not os.path.isdir(final_dir):
+            os.mkdir(final_dir)
+        m.save(os.path.join(final_dir,
                             'status_map{}.html'.format(save_suffix)))
 
 
@@ -815,7 +824,7 @@ def plot_cumsum_climatology_and_current(
         if plot_dir is None:
             return
         if not os.path.exists(os.path.join(plot_dir, 'mb_dist')):
-            os.mkdirs(os.path.join(plot_dir, 'mb_dist'))
+            os.makedirs(os.path.join(plot_dir, 'mb_dist'))
         bname = os.path.join(plot_dir, 'mb_dist',
                              gdir.rgi_id.split('.')[1] + '_')
         plt.savefig(bname + 'mb_dist_{}.png'.format('ensemble' + suffix),
@@ -891,8 +900,10 @@ def plot_animated_swe(mb_model):
 
 
 @entity_task(log)
-def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
-                                       show=False):
+def plot_interactive_mb_spaghetti_html(
+        gdir: utils.GlacierDirectory, plot_dir: Optional[str] = None,
+        mb_models: Optional[list] = None, fontsize: Optional[int] = 18,
+        show: Optional[bool] = False):
     """
     Makes an interactive spaghetti plot of all available mass balance years.
 
@@ -910,6 +921,8 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
         None, optional
         Mass balance models to plot. If None, all model in `mb_clim` and
         `mb_current`, respectively, are used.
+    fontsize: int, optional
+        Basic font size to use. Default: 18.
     show: bool
         whether to show the plot once done (i.e. open the HTML file in a
         browser). Default: False (not handy during the operational runs).
@@ -1018,13 +1031,21 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
         model=models,
         color=color,
         alpha=alpha,
+        date=np.array(pd.date_range(mb_curr.time[0].item(), freq='D',
+                                    periods=mbcarr.shape[0]),
+                      dtype=np.datetime64)
     ))
 
     plot = bkfigure(plot_width=1200, plot_height=800)
     plot.title.text = 'Cumulative Mass Balance of {} ({})'.\
         format(mb_clim.attrs['id'].split('.')[1], mb_clim.attrs['name'])
+    plot.title.text_font_size = '{}pt'.format(fontsize)
+
     plot.xaxis.axis_label = 'Days of Hydrological Year'
+    plot.xaxis.axis_label_text_font_size = '{}pt'.format(fontsize)
     plot.yaxis.axis_label = 'Cumulative Mass Balance'
+    plot.yaxis.axis_label_text_font_size = '{}pt'.format(fontsize)
+
     if utils.leap_year(mb_curr.time[0].dt.year.item()+1):
         dim = cfg.DAYS_IN_MONTH_LEAP
     else:
@@ -1035,6 +1056,8 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
         xlabel_dict[str(i)] = s
     plot.xaxis.ticker = xticks
     plot.xaxis.major_label_overrides = xlabel_dict
+    plot.xaxis.major_label_text_font_size = '{}pt'.format(fontsize)
+    plot.yaxis.major_label_text_font_size = '{}pt'.format(fontsize)
     plot.grid.ticker = FixedTicker(ticks=xticks)
 
     r = plot.multi_line('xs', 'ys', source=source,
@@ -1052,11 +1075,14 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
 
     legend = Legend(
         items=[LegendItem(label=le, renderers=[r], index=leg_idx(i)) for
-               i, le in enumerate(legendentries)])
+               i, le in enumerate(legendentries)],
+        title_text_font_size='{}pt'.format(fontsize),
+        label_text_font_size='{}pt'.format(fontsize))
     plot.add_layout(legend)
     plot.legend.location = "top_left"
 
     TOOLTIPS = [
+        ("date", "@date{%F}"),
         ("year", "@desc"),
         ("(HYD-DOY,CUM-MB)", "($x{0.}, $y)"),
         ("MODEL", "@model"),
@@ -1064,6 +1090,7 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
     plot.add_tools(HoverTool(
         tooltips=TOOLTIPS,
         mode='mouse',
+        formatters={'date': 'datetime'}
     ))
 
     # Add a note to say when it was last updated
@@ -1072,17 +1099,22 @@ def plot_interactive_mb_spaghetti_html(gdir, plot_dir=None, mb_models=None,
                        border_line_color='black', border_line_alpha=1.0,
                        background_fill_color='white',
                        background_fill_alpha=0.5,
-                       text='Last updated: {}'.format(date_str))
+                       text='Last updated: {}'.format(date_str)
+                       )
     plot.add_layout(update_txt)
 
     plot.add_tools(UndoTool())
     plot.add_tools(RedoTool())
 
+    pure_id = gdir.rgi_id.split('.')[1]
     if plot_dir is not None:
-        output_file(os.path.join(plot_dir, 'mb_spaghetti', gdir.rgi_id +
+        if not os.path.exists(os.path.join(plot_dir, 'mb_spaghetti')):
+            os.makedirs(os.path.join(plot_dir, 'mb_spaghetti'))
+        output_file(os.path.join(plot_dir, 'mb_spaghetti', pure_id +
                                  '_interactive_mb_spaghetti.html'))
-        export_png(plot, filename=os.path.join(plot_dir, gdir.rgi_id +
-                                      '_interactive_mb_spaghetti.png'))
+        export_png(plot, filename=os.path.join(
+            plot_dir, 'mb_spaghetti',
+            pure_id + '_interactive_mb_spaghetti.png'))
         save(plot)
     if show is True:
         bkshow(plot)
