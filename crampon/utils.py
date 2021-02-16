@@ -1238,6 +1238,13 @@ def climate_files_from_netcdf(tfile, pfile, hfile, outfile, tminfile=None,
 
     # Units cannot be checked anymore at this place (lost in xarray...)
 
+    # it can be that one retrieval was not successful (file not on FTP yet)
+    # todo: include 'sis' once it is delivered operationally
+    for var in ['temp', 'tmin', 'tmax', 'prcp']:
+        if np.isnan(nc_ts[var].isel(time=-1)).all():
+            raise FileNotFoundError("Variable '{}' not (yet) on server for "
+                                    "{}.".format(var, nc_ts.time[-1]))
+
     # ensure it's compressed when exporting
     nc_ts.encoding['zlib'] = True
     nc_ts.to_netcdf(outfile)
@@ -1283,7 +1290,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
         List with paths to the files to be read.
     dim: str
         Dimension along which to concatenate the files.
-    tfunc: function
+    tfunc: callable
         Transformation function for the data, e.g. 'lambda ds: ds.mean()'
     chunks: dict
         Chunk sizes as can be specified to xarray.open_dataset.
