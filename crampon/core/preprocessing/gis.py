@@ -130,7 +130,7 @@ def utm_grid(center_ll=None, extent=None, ny=600, nx=None,
 
 
 @entity_task(log, writes=['glacier_grid', 'homo_dem_ts', 'outlines'])
-def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None,
+def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source='SRTM',
                                   reset_dems=False):
     """
     Define the local grid for a glacier entity.
@@ -158,8 +158,8 @@ def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source=None,
         Like in OGGM: the glacier geometry to process - DEPRECATED. It is now
         ignored
     oggm_dem_source: str, optional
-        Preferred source for basic OGGM DEM. For available option see OGGM
-        docs.
+        Preferred source for basic OGGM DEM. At the moment, this is set to
+        "SRTM", because the SGI IDs are not in the DEFAULT_DEM_SOURCE table.
     reset_dems: bool
         Whether to reassemble DEMs from sources or not (time-consuming!). If
         DEMs are not yet present, they will be assembled anyway. Default:
