@@ -4,10 +4,12 @@ Let's try schedule as the lightweight version of python-crontab....
 from typing import List
 
 import os
+import shutil
 import schedule
 import time
 import xarray as xr
 import numpy as np
+import pandas as pd
 import geopandas as gpd
 import datetime
 import logging
@@ -130,6 +132,14 @@ def daily_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
     log.info('Trying to make a backup...')
     try_backup(gdirs)
 
+    # make a copy of the status map (for archiving purposes)
+    shutil.copyfile(os.path.join(plot_dir, 'status_map', 'status_map.html'),
+                    os.path.join(plot_dir, 'status_map',
+                                 'status_map_{}.html'.format(
+                                     pd.Timestamp.now().strftime('%Y%m%d'))))
+
+    log.info('Daily tasks done...')
+
 
 # retry for almost one day every half an hour, if fails
 @retry(Exception, tries=45, delay=1800, backoff=1, log_to=log)
@@ -183,6 +193,11 @@ def try_backup(gdirs: List[utils.GlacierDirectory]) -> None:
 
     backup_dir_1 = cfg.PATHS['modelrun_backup_dir_1']
     backup_dir_2 = cfg.PATHS['modelrun_backup_dir_2']
+
+    # stupid
+    if (len(backup_dir_1) == 0) and (len(backup_dir_1) == 0.):
+        log.info('No backup made, because no backup directory was provided.')
+        return
 
     try:
         execute_entity_task(tasks.copy_to_basedir, gdirs,
