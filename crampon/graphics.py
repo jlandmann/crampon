@@ -709,7 +709,7 @@ def plot_cumsum_climatology_and_current(
 
     # make cumsum and quantiles
     cq = clim.mb.make_cumsum_quantiles(bg_month=clim_begin[0],
-                                       bg_day=clim_begin[0])
+                                       bg_day=clim_begin[1])
     nq = current.mb.make_cumsum_quantiles(bg_month=current_begin[0],
                                           bg_day=current_begin[1])
 
