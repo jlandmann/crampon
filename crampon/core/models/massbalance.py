@@ -4614,7 +4614,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
         # todo: EMERGENCY SOLUTION as long as we are not able to calculate
         #  cumsum with NaNs correctly
         mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
-        if quantiles:
+        if quantiles is not None:
             quant = mb_cumsum.groupby(hdoys) \
                 .apply(lambda x: self.custom_quantiles(x, qs=quantiles))
         else:
