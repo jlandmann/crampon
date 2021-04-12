@@ -826,9 +826,9 @@ def cross_validate_percentile_extrapolation(mb_suffix=''):
         climdoys = model_cmelt.mb.make_hydro_doys(
             climhyears, bg_month=first_date_assim.month,
             bg_day=first_date_assim.day)
-        mbcsclim = model_cmelt.groupby(climhyears).apply(
+        mbcsclim = model_cmelt.groupby(climhyears).map(
             MassBalance.nan_or_cumsum)
-        climquant = mbcsclim.groupby(climdoys).apply(
+        climquant = mbcsclim.groupby(climdoys).map(
             lambda x: MassBalance.custom_quantiles(
                 x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
 
@@ -1027,7 +1027,7 @@ def validate_percentile_extrapolation_at_glamos_glaciers(
         climdoys = model_cmelt.mb.make_hydro_doys(
             climhyears, bg_month=first_date_assim.month,
             bg_day=first_date_assim.day)
-        mbcsclim = model_cmelt.groupby(climhyears).apply(
+        mbcsclim = model_cmelt.groupby(climhyears).map(
             MassBalance.nan_or_cumsum)
         climquant = mbcsclim.groupby(climdoys).apply(
             lambda x: MassBalance.custom_quantiles(

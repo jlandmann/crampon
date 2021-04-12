@@ -1024,7 +1024,7 @@ class MeteoTSAccessor(object):
 
         # whatever coordinate that is
         if "crs" in self._obj.data_vars:
-            self._obj = self._obj.drop(['crs'])
+            self._obj = self._obj.drop_vars(['crs'])
 
         # whatever coordinate that is
         if 'dummy' in self._obj.coords:
@@ -1032,14 +1032,14 @@ class MeteoTSAccessor(object):
 
         # whatever coordinate that is
         if 'latitude_longitude' in self._obj.coords:
-            self._obj = self._obj.drop(['latitude_longitude'])
+            self._obj = self._obj.drop_sel(['latitude_longitude'])
         if 'latitude_longitude' in self._obj.variables:
-            self._obj = self._obj.drop(['latitude_longitude'])
+            self._obj = self._obj.drop_vars(['latitude_longitude'])
 
         if 'longitude_latitude' in self._obj.coords:
-            self._obj = self._obj.drop(['longitude_latitude'])
+            self._obj = self._obj.drop_sel(['longitude_latitude'])
         if 'longitude_latitude' in self._obj.variables:
-            self._obj = self._obj.drop(['longitude_latitude'])
+            self._obj = self._obj.drop_vars(['longitude_latitude'])
 
         # this is the case for the operational files
         if 'x' in self._obj.coords:
@@ -1777,7 +1777,7 @@ def _local_dem_to_xr_dataset(to_merge, acq_date, dx, calendar_startyear=0,
 
     # coord/dim changes
     merged = merged.squeeze(dim='band')
-    merged = merged.drop('band')
+    merged = merged.drop_sel('band')
     # Replaces -9999.0 with NaN: See here:
     # https://github.com/pydata/xarray/issues/1749
     merged = merged.where(merged != -9999.0)
