@@ -437,15 +437,15 @@ def make_mb_popup_map(
         pure_sgi_id = point.RGIId.split('.')[1]
         fs = 18
         clickable_mb_dist = \
-            '<a href="https://crampon.glamos.ch/plots/mb_dist/{}_mb_dist_' \
+            '<a href="static/plots/mb_dist/{}_mb_dist_' \
             'ensemble.png" target="_blank"><p style="font-size:{}px;"> Mass ' \
             'Balance Distribution (click to enlarge)</p>' \
-            '<img src="https://crampon.glamos.ch/plots/mb_dist/{}_mb_dist_' \
+            '<img src="static/plots/mb_dist/{}_mb_dist_' \
             'ensemble_prev.png" style="max-width:150%; position:relative; ' \
             'display:inline; overflow:hidden; margin:0;" /></a>'.format(
                 pure_sgi_id, fs, pure_sgi_id)
         other_clickables = \
-            '<a href="https://crampon.glamos.ch/plots/mb_spaghetti/{}_intera' \
+            '<a href="static/plots/mb_spaghetti/{}_intera' \
             'ctive_mb_spaghetti.html" target="_blank"><p style="font-size:{}' \
             'px;"> Mass Balance Spaghetti</p></a>'.format(pure_sgi_id, fs)
 
