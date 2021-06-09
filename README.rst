@@ -25,7 +25,7 @@ CRAMPON - Cryospheric Monitoring and Prediction Online
 CRAMPON is a Python project to monitor and predict glacier mass balance in near real-time. To obtain daily analyses, we use predictions from a mass balance model ensemble and assimilate both in situ and remotely sensed observations. Some of the code infrastructure builds upon `OGGM <http://github.com/OGGM/oggm>`_.
 
 
-.. image:: https://crampon.glamos.ch/plots/mb_dist/B4312n-1_mb_dist_ensemble.png
+.. image:: https://crampon.glamos.ch/static/plots/mb_dist/B4312n-1_mb_dist_ensemble.png
          :height: 400px
          :width: 800px
          :scale: 100%
