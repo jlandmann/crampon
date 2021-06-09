@@ -827,7 +827,7 @@ class WSLSFTPClient():
 
 def copy_to_webpage_dir(src_dir: str, glob_pattern='*') -> None:
     """
-    Copy folder content to the CRAMPON webpage directory on the WEBBI04 server.
+    Copy folder content to the CRAMPON webpage directory on the web server.
 
     Uses SFTP as protocol.
 
@@ -850,12 +850,14 @@ def copy_to_webpage_dir(src_dir: str, glob_pattern='*') -> None:
     client.load_system_host_keys()
     client.set_missing_host_key_policy(pm.AutoAddPolicy())
     cred = parse_credentials_file()
-    # first connect to login.ee.ethz.ch, then ssh to webbi04
-    client.connect(cred['webbi04']['login_host'], cred['webbi04']['port'],
-                   cred['webbi04']['user'], cred['webbi04']['password'])
-    _ = client.exec_command(cred['webbi04']['remote_cmd'])
+    # first connect to login.ee.ethz.ch, then ssh to web server
+    client.connect(cred['webpage_server']['login_host'],
+                   cred['webpage_server']['port'],
+                   cred['webpage_server']['user'],
+                   cred['webpage_server']['password'])
+    _ = client.exec_command(cred['webpage_server']['remote_cmd'])
 
-    # now we're on webbi04
+    # now we're on webpage server
     sftp = client.open_sftp()
     for tp in to_put:
         common = os.path.commonpath([src_dir, tp])
