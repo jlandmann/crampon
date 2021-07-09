@@ -954,22 +954,26 @@ class MeteoTSAccessor(object):
         if not freq:
             freq = pd.infer_freq(self._obj.time.values)
 
-        # still a TO DO in xarray 0.11: if not monotonic, error is thrown
-        # https://github.com/pydata/xarray/blob/6d55f99905d664ef73cb708cfe8c52c2c651e8dc/xarray/core/groupby.py#L234
-        self._obj = self._obj.sortby('time')
-        resampled = self._obj.resample(time=freq, keep_attrs=True,
-                                       **kwargs).mean()
+        # index must be monotonic and should not have gaps
+        dti = pd.DatetimeIndex(self._obj.time.values)
+        if not dti.is_monotonic:
+            self._obj = self._obj.sortby('time')
+        if dti.inferred_freq is None:
+            # .mean() = fill with NaN
+            self._obj = self._obj.resample(
+                time=freq, keep_attrs=True, **kwargs).mean()
+
         if "R" in self._obj.variables:  # fill gaps with zero
-            resampled.fillna(0.)
-        else: # interpolate linearly # todo also for sunshine?
-            resampled = resampled.interpolate_na('time')  # mean = fill with NaN
-        diff_a = len(set(resampled.time.values) - set(self._obj.time.values))
-        diff_r = len(set(self._obj.time.values) - set(resampled.time.values))
+            self._obj.fillna(0.)
+        else:  # interpolate linearly # todo also for sunshine?
+            self._obj = self._obj.interpolate_na('time')
+        diff_a = len(set(self._obj.time.values) - set(dti.values))
+        diff_r = len(set(dti.values) - set(self._obj.time.values))
 
         log.info('{} time steps were added, {} removed during resampling.'
                  .format(diff_a, diff_r))
 
-        return resampled
+        return self._obj
 
     def cut_by_glacio_years(self, method='fixed'):
         """
