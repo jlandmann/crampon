@@ -53,14 +53,12 @@ nullfmt = NullFormatter()  # no labels
 
 # colors to display climatology
 CLIM_COLORS = [('b', 'cornflowerblue'), ('darkmagenta', 'magenta'),
-               ('deeppink', 'lightpink')]
+               ('deeppink', 'lightpink'), ('yellowgreen', 'darkolivegreen')]
 # colors to display current analysis
-CURR_COLORS = [('darkorange', 'orange'), ('darkgreen', 'forestgreen'),
-               ('darkcyan', 'cyan'), ('darkgoldenrod', 'gold'),
-               ('lightseagreen', 'turquoise'),
-               ('yellowgreen', 'darkolivegreen')]
+CURR_COLORS = [('darkorange', 'orange'), ('lightseagreen', 'turquoise'),
+               ('darkcyan', 'cyan'), ('darkgoldenrod', 'gold')]
 # colors to display mass balance forecasts
-FCST_COLORS = [('darkred', 'red')]
+FCST_COLORS = [('darkred', 'red'), ('darkgreen', 'forestgreen')]
 
 
 def rand_jitter(arr: np.ndarray, scale_fac: float = 0.01) -> np.ndarray:
