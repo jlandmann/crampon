@@ -91,8 +91,6 @@ def make_mb_clim(gdir: utils.GlacierDirectory,
         cali_dates = cali_frame[['date0', 'date1', 'date_s', 'date_f']].values
         # just for some test
         cali_dates = list(cali_dates.flatten())
-        cali_dates.extend([pd.Timestamp('2018-10-25'),
-                           pd.Timestamp('2018-10-05')])
         cali_dates = np.asarray(cali_dates)
     except (FileNotFoundError, IndexError):
         cali_dates = None
@@ -664,8 +662,8 @@ def make_mb_current_mbyear(
         {'id': gdir.rgi_id, 'name': gdir.name, 'units': 'm w.e.',
          'snow_redist': 'yes' if use_snow_redist is True else 'no',
          'suffix': suffix,
-         'start_snowcover_date': pd.Timestamp(curr_year_span[0]).strftime(
-             '%Y-%m-%d')})
+         'last_updated': pd.Timestamp.now().strftime(
+             '%Y-%m-%d %H:%M:%S')})
 
     if write:
         ens_ds.mb.append_to_gdir(gdir, 'mb_current' + suffix, reset=reset_file)
