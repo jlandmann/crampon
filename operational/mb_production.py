@@ -6,6 +6,7 @@ import logging
 
 # Python imports
 import os
+from glob import glob
 # Libs
 import pandas as pd
 import xarray as xr
@@ -888,3 +889,205 @@ def make_spinup_mb(gdir, param_method='guess', length=30):
                                             name='model'))
 
     gdir.write_pickle(sc_ds, 'snow_spinup')
+
+
+@entity_task(log, writes=['mb_prediction_cosmo', 'mb_prediction_ecmwf'])
+def make_mb_prediction(gdir: utils.GlacierDirectory,
+                       begin_date: pd.Timestamp or None = None,
+                       mb_model: MassBalanceModel or None = None,
+                       snowcover: SnowFirnCover or None = None,
+                       latest_climate: bool = True,
+                       constrain_with_bw_prcp_fac: bool = True,
+                       climate_suffix: str = '',
+                       cali_suffix: str = '', reset_file: bool = True,
+                       write: bool = True) -> None:
+    """
+    Create a mass balance prediction from numerical weather prediction.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        GlacierDirectory to calculate the forecast for.
+    begin_date: pd.Timestamp or None, optional
+        Date when forecast should begin. This is only needed for experiments.
+        Default: None (take date of today as begin).
+    mb_model: DailyMassBalanceModel or None
+        Mass balance model to generate the forecast with. If None,
+        cfg.MASSBALANCE_MODELS are used. Default: None.
+    snowcover: SnowFirnCover or None
+        The snow cover at the initialization date of the forecast. Default:
+        None.
+    latest_climate: bool, optional
+        Whether to use parameters from the last 30 years only or not.
+        # todo: In operational assimilation mode it should use the
+           parameters retrieved from the assimilation.
+    constrain_with_bw_prcp_fac: bool, optional
+        Whether to constrain the used parameters with the latest precipitation
+        correction factor as calibrated in the winter mass balance. Default:
+        True.
+        # todo: In operational assimilation mode it should use
+           the parameters retrieved from the assimilation.
+    climate_suffix: str, optional
+        Suffix used to retrieve the climate (NWP) file, called `climate_suffix`
+        for compatibility. Default: '' (no suffix).
+    cali_suffix: str, optional
+        Suffix used to retrieve the calibration parameters and current mass
+        balance files. Default: '' (no suffix).
+    reset_file: bool, optional
+        Whether to reset the file completely. Default: True (we want a new
+        prediction every day).
+    write: bool
+        Whether or not to write the forecast as netCDF file. Default: True
+        (write).
+
+    Returns
+    -------
+    None
+    """
+
+    now_timestamp = pd.Timestamp.today()
+    today_date = now_timestamp.date()
+    yesterday = today_date - pd.Timedelta(days=1)
+    day_before_yesterday = today_date - pd.Timedelta(days=2)
+    begin_mbyear = utils.get_begin_last_flexyear(now_timestamp)
+
+    if mb_model:
+        mb_models = [mb_model]
+    else:
+        mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
+
+    # meteo predictions
+    nwp = xr.open_dataset(gdir.get_filepath('nwp_daily' + climate_suffix))
+
+    for i, r in enumerate(nwp.member.values):
+        nwp.sel(member=r).to_netcdf(gdir.get_filepath(
+            'nwp_daily' + climate_suffix, filesuffix='_{}'.format(i)))
+
+    # make sure the NWP file is updated
+    nwp_beginday = pd.Timestamp(nwp.time.values[0])
+    nwp_time_timestamps = [pd.Timestamp(t) for t in nwp.time.values]
+    if ((climate_suffix == '_cosmo') and
+        (nwp_beginday not in [today_date, yesterday])) or \
+            ((climate_suffix == '_ecmwf') and
+             ((now_timestamp - nwp_beginday) > pd.Timedelta(days=4))):
+        # try and make a new one
+        nwp.close()
+        climate.make_nwp_files()
+        climate.process_nwp_data(gdir)
+        nwp = xr.open_dataset(gdir.get_filepath('nwp_daily' + climate_suffix))
+        nwp_beginday = pd.Timestamp(nwp.time.values[0])
+        nwp_time_timestamps = [pd.Timestamp(t) for t in nwp.time.values]
+
+    # if curr_mb doesn't reach to at least yesterday, first make current MB
+    curr = gdir.read_pickle('mb_current', filesuffix=cali_suffix)
+    curr_last_day = pd.Timestamp(curr.time[-1].values)
+    if (curr_last_day not in [today_date, yesterday]):
+        make_mb_current_mbyear(gdir, suffix=cali_suffix)
+
+    # snow cover realizations from the members of make_mb_current_mbyear
+    if snowcover is None:
+        curr_snow = gdir.read_pickle('snow_current', filesuffix=cali_suffix)
+        # COSMO, ECMWF and MeteoSwiss deliveries
+        if ((now_timestamp.hour <= 12) and (now_timestamp.minute <= 21)) and \
+                ((now_timestamp.hour >= 7) and (now_timestamp.minute >= 40)):
+            # NWP has to be update by then
+            try:
+                snowcover = curr_snow.sel(time=nwp_beginday-pd.Timedelta(days=2))
+            except KeyError:
+                # NWP not updated yet
+                nwp.close()
+                climate.make_nwp_files()
+                climate.process_nwp_data(gdir)
+                nwp = xr.open_dataset(
+                    gdir.get_filepath('nwp_daily' + climate_suffix))
+                nwp_beginday = pd.Timestamp(nwp.time.values[0])
+                nwp_time_timestamps = [pd.Timestamp(t) for t in
+                                       nwp.time.values]
+        else:
+            if climate_suffix == '_cosmo':
+                # todo: problem if before 12:21: COSMO there, but analyses not!
+                if (now_timestamp.hour <= 12) and (now_timestamp.minute <= 30):
+                    snowcover = curr_snow.sel(
+                        time=nwp_beginday - pd.Timedelta(days=2))
+                else:
+                    snowcover = curr_snow.sel(
+                        time=nwp_beginday - pd.Timedelta(days=1))
+            elif climate_suffix == '_ecmwf':
+                snowcover = curr_snow.isel(time=-1)
+
+    # clip ECMWF forecast (it might be some days old)
+    if climate_suffix == '_ecmwf':
+        # read again (it might be updated)
+        curr = gdir.read_pickle('mb_current', filesuffix=cali_suffix)
+        nwp = nwp.sel(time=slice(pd.Timestamp(curr.time[-1].values) +
+                                 pd.Timedelta(days=1), None))
+        nwp_beginday = pd.Timestamp(nwp.time.values[0])
+        nwp_time_timestamps = [pd.Timestamp(t) for t in nwp.time.values]
+
+    # make the actual prediction
+    stacked = None
+    heights, widths = gdir.get_inversion_flowline_hw()
+    n_param_sets = 0
+
+    for mbm in mb_models:
+        print(mbm.__name__)
+
+        # get parameters from past
+        # todo: retrieve current parameters from assimilation!
+        pg = ParameterGenerator(
+            gdir, mbm, latest_climate=latest_climate, only_pairs=True,
+            constrain_with_bw_prcp_fac=constrain_with_bw_prcp_fac,
+            bw_constrain_year=begin_mbyear.year + 1, narrow_distribution=0.,
+            output_type='array', suffix=cali_suffix)
+        param_prod = pg.from_single_glacier()
+
+        # no parameters found, e.g. when using latest_climate = True for A50I06
+        if param_prod.size == 0:
+            log.error('With current settings (`latest_climate=True`, no '
+                      'parameters were found to produce current MB.')
+            return
+        print('found params with shape: ', param_prod.shape)
+        n_param_sets += param_prod.shape[0]
+
+        for ip, params in enumerate(param_prod):
+            print(ip)
+
+            # todo: let GlacierMeteo/DailyMassBalanceModelWithSnow handle ensemble input
+            # init conditions of snow and params
+            pdict = dict(zip(mbm.cali_params_list, params))
+            sc = SnowFirnCover.from_dataset(snowcover.sel(model=mbm.__name__)
+                                            .isel(member=ip))
+
+            for ir in range(nwp.member.values.size):
+                day_model = mbm(
+                    gdir, snowcover=sc, bias=0.,
+                    filename='nwp_daily' + climate_suffix,
+                    filesuffix='_{}'.format(ir), **pdict)
+
+                mb_pred = []
+                for date in nwp_time_timestamps:
+                    # Get the mass balance and convert to m per day
+                    tmp = day_model.get_daily_specific_mb(heights, widths,
+                                                          date=date)
+
+                    mb_pred.append(tmp)
+
+                if stacked is not None:
+                    stacked = np.vstack((stacked, mb_pred))
+                else:
+                    stacked = mb_pred
+
+    mb_for_ds = np.atleast_2d(stacked).T
+    var_dict = {**{'MB': (['time', 'member'], mb_for_ds)}}
+    mb_ds = xr.Dataset(var_dict, coords={'member': (['member'], np.arange(
+        len(mb_models) * param_prod.shape[0] * nwp.member.values.size)),
+                                         'time': (
+                                         ['time'], nwp_time_timestamps)},
+                       attrs={'id': gdir.rgi_id, 'name': gdir.name,
+                              'units': 'm w.e.'})
+
+    if write:
+        mb_ds.mb.append_to_gdir(
+            gdir, 'mb_prediction' + climate_suffix + cali_suffix,
+            reset=reset_file)
+
