@@ -475,7 +475,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
     def __init__(self, gdir, mu_star=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
-                 filename='climate_daily',
+                 filename='climate_daily', param_ep_func=np.nanmedian,
                  filesuffix='', cali_suffix='', snow_redist=True):
         """
         Instantiate.
@@ -516,7 +516,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
 
         super().__init__(gdir, mu_star=mu_star, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
-                         filesuffix=filesuffix, param_ep_func=np.nanmean,
+                         filesuffix=filesuffix, param_ep_func=param_ep_func,
                          cali_suffix=cali_suffix)
 
         if snow_init is None:
