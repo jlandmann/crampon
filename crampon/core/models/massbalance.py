@@ -840,6 +840,11 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
             oldsnowdist = np.where(self.snowcover.age_days > 365)
             self.snowcover.remove_layer(ix=oldsnowdist)
 
+        if date.day == cfg.PARAMS['bgday_hydro'] and \
+                date.month == cfg.PARAMS['bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
+
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
@@ -1109,10 +1114,10 @@ class HockModel(DailyMassBalanceModelWithSnow):
             temp + cfg.ZERO_DEG_KELVIN)
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
 
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -1479,11 +1484,10 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
 
-        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -1911,10 +1915,10 @@ class EnsembleMassBalanceModel(object):
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
 
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return kg m-2 s-1 kg-1 m3 = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
