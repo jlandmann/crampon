@@ -887,14 +887,34 @@ def plot_cumsum_climatology_and_current(
     # todo: get labels correct for plotting more mb models
     entry_one = AnyObject()
     entry_two = AnyObject()
-    ax.legend([entry_one, entry_two],
-              ['Climatology Median, IQR, IDR',
-               'Current Year Median, IQR, IDR'], fontsize=fs,
-              loc=loc,
-              handler_map={entry_one: AnyObjectHandler(
-                  color='b', facecolor='cornflowerblue'),
-                           entry_two: AnyObjectHandler(
-                  color='darkorange', facecolor='orange')})
+
+    handles = [entry_one, entry_two]
+    labels = ['Climatology Median, IQR, IDR', 'Current Year Median, IQR, IDR']
+    handler_map = {
+        entry_one: AnyObjectHandler(
+            color=CLIM_COLORS[model_ix][0],
+            facecolor=CLIM_COLORS[model_ix][1]),
+        entry_two: AnyObjectHandler(
+            color=CURR_COLORS[model_ix][0],
+            facecolor=CURR_COLORS[model_ix][1])
+    }
+
+    if pred_cosmo is not None:
+        entry_three = AnyObject()
+        handles.append(entry_three)
+        labels.append('COSMO Prediction Median, IQR, IDR')
+        handler_map.update({entry_three: AnyObjectHandler(
+            color=FCST_COLORS[cosmo_color_ix][0],
+            facecolor=FCST_COLORS[cosmo_color_ix][1])})
+    if pred_ecmwf is not None:
+        entry_three = AnyObject()
+        handles.append(entry_three)
+        labels.append('ECMWF Prediction Median, IQR, IDR')
+        handler_map.update({entry_three: AnyObjectHandler(
+            color=FCST_COLORS[ecmwf_color_ix][0],
+            facecolor=FCST_COLORS[ecmwf_color_ix][1])})
+
+    ax.legend(handles, labels, fontsize=fs, loc=loc, handler_map=handler_map)
     # say when we have updated
     date_str = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     bprops = dict(facecolor='w', alpha=0.5)
