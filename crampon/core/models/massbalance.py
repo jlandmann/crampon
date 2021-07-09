@@ -832,6 +832,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
             temp + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date,
+                                      temperature=temp+cfg.ZERO_DEG_KELVIN)
 
         if date.day == cfg.PARAMS['bgday_hydro'] and \
                 date.month == cfg.PARAMS['bgmon_hydro']:
