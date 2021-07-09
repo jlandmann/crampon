@@ -2187,7 +2187,6 @@ class ParameterGenerator(object):
              which it shall be atken is not there).
         """
         # todo: this is maybe too hard-coded
-        print(self.suffix)
         if not ('fischer' in self.suffix.lower()):
 
             if self.bw_constrain_year is None:
@@ -2326,7 +2325,7 @@ class SnowFirnCover(object):
         rho: np.array, same shape swe or None
             Density of an initial layer (kg m-3). If None, the inital density
             is set to NaN. # Todo: make condition for rho=None: if swe >0, then determine initial density from temperature
-        origin: datetime.datetime or np.array with same shape as swe
+        origin: datetime.datetime, pd.Timestamp or np.array with shape as SWE
             Origin date of the initial layer.
         temperatures: np.array, same shape as swe, optional
             Temperatures of initial layer (K). If not given, they will be set
@@ -2354,6 +2353,7 @@ class SnowFirnCover(object):
         self.init_rho = np.full_like(swe, np.nan) if rho is None else rho
         self.init_sh = self.init_swe * (cfg.RHO_W / self.init_rho)
         if isinstance(origin, dt.datetime):
+            origin = pd.Timestamp(origin)
             self.init_origin = [origin] * self.n_heights
         else:
             self.init_origin = origin
@@ -2568,8 +2568,9 @@ class SnowFirnCover(object):
 
         """
 
-        self._status = np.empty_like(self.swe)  # ensure size
-        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = CoverTypes['snow'].value
+        self._status = np.full_like(self.swe, np.nan)  # ensure size
+        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = \
+            CoverTypes['snow'].value
         self._status[(cfg.PARAMS['snow_firn_threshold'] <= self.rho) &
                      (self.rho < cfg.PARAMS['pore_closeoff'])] = \
             CoverTypes['firn'].value
@@ -3343,19 +3344,42 @@ class SnowFirnCover(object):
 
         return ret_val
 
-    def remove_ice_layers(self):
+    def remove_ice_layers(self, by: Optional[str] = 'type',
+                          transform_years: Optional[int] = 15):
         """
         Removes layers a the bottom (only there!) that have exceeded the
         threshold density for ice.
 
+        Parameters
+        ----------
+        by: str, optional
+            Whether to remove the ice layers by type or by age. Default:
+            "type".
+        transform_years: int, optional
+            How many years it shall take for snow to become ice. Only relevant
+            if `by` is set to `age`. Default: 15 (rough value from [1]_,
+            p. 17).
+
         Returns
         -------
         None
+
+        References
+        ----------
+        [1].. Cuffey, K. M., & Paterson, W. S. B. (2010). The physics of
+              glaciers. Academic Press.
         """
 
-        # this sets values to NaN
-        ice_ix = self.get_type_indices('ice')
+        if by == 'type':
+            # this sets values to NaN
+            ice_ix = self.get_type_indices('ice')
+        elif by == 'age':
+            ice_ix = np.where(self.age_days > transform_years * 365)
+        else:
+            raise ValueError('Way to remove ice layers by `{}` is not '
+                             'accepted.'.format(by))
         # todo: a check that the layers to be removed are at the bottom!
+        # todo: check if remove layers are transferred to ice_melt?
         self.remove_layer(ice_ix)
 
     def update_temperature(self, date, airtemp, max_depth=15., deltat=86400,
@@ -3428,7 +3452,8 @@ class SnowFirnCover(object):
         temp = np.ones_like(depth)
         temp[np.isnan(depth)] = np.nan
         slope = (surface_temp - max_depth_temp) / (-max_depth)
-        temp = slope * depth + surface_temp + cfg.ZERO_DEG_KELVIN
+        temp = np.atleast_2d(slope).T*depth + np.atleast_2d(surface_temp).T + \
+               cfg.ZERO_DEG_KELVIN
         temp[temp > cfg.ZERO_DEG_KELVIN] = cfg.ZERO_DEG_KELVIN
         # temperature is now the layer temperature at the center depth
         self.temperature = temp
@@ -3873,7 +3898,7 @@ class SnowFirnCover(object):
         deltat = target_dt
 
         rho_old = self.rho
-        temperature = self.temperature
+        #temperature = self.temperature
 
         # create cumsum, then subtract top layer swe, clip and convert to mass
         ovb_mass = self.get_overburden_mass()
@@ -3912,6 +3937,124 @@ class SnowFirnCover(object):
                     temperature_sub) - etab * rho_old) + deltat * rho_old *
                    snda * np.exp(sndb * (temperature_sub) - sndc * clippie))
         return rho_new
+
+    def merge_by_age(self, period: Optional[str] = 'M',
+                     keep_last_days: Optional[int] = 365):
+        """
+        Merge layers by age using a pandas freq string.
+
+        Parameters
+        ----------
+        period : str, optional
+            To which frequency should old layers be merged? Default: 'MS'
+            (merge to monthly frequency and assign month start date).
+        keep_last_days: int, optional
+            How many days in the recent history shall be preserved at high
+            frequency? Default: 365 (keep last year).
+
+        Returns
+        -------
+        None
+        """
+        # todo: remove ice layers first here?
+        # todo: MonthBegin is now hard coded
+        try:
+            periods_to_be_merged = pd.interval_range(
+                min(self.origin[~pd.isnull(self.origin)]) - pd.offsets.MonthBegin(
+                    2),
+                max(self.origin[~pd.isnull(self.origin)]) + pd.offsets.MonthBegin(
+                    1) - pd.Timedelta(days=keep_last_days), freq=period)
+        except ValueError:
+            # no snow/firn left
+            return
+
+        # we're at the very beginning
+        if len(periods_to_be_merged) == 0:
+            return
+
+        # just roughly: in fact there are less layers, we crop later
+        shape_0 = self.swe.shape[0]
+        shape_1 = self.swe.shape[1]
+
+        new_arr = np.full((shape_0, shape_1), np.nan)
+        new_swe = new_arr.copy()
+        new_rho = new_arr.copy()
+        new_origin = new_arr.copy().astype(object)
+        new_temperature = new_arr.copy()
+        new_liq_content = new_arr.copy()
+        new_last_update = new_arr.copy().astype(object)
+        new_age_days = new_arr.copy()
+        new_status = new_arr.copy()
+
+        # some pandas to numpy time conversion bullshit
+        orig_copy = self.origin.copy()
+        last_up_copy = self.last_update.copy()
+
+        def conv_func(x):
+            return x.to_numpy()
+
+        conv_func = np.vectorize(conv_func)
+        orig_copy[pd.isnull(orig_copy)] = pd.NaT
+        last_up_copy[pd.isnull(last_up_copy)] = pd.NaT
+        orig_np = conv_func(orig_copy)
+        last_up_np = conv_func(last_up_copy)
+
+        for ti in periods_to_be_merged:
+            begin = ti.left
+            end = ti.right
+            ti_range = pd.date_range(begin, end, freq='D')
+            merge = np.where(np.isin(orig_np, ti_range))
+
+            if merge[0].size == 0:
+                continue
+
+            # todo: is i a good choice? (there might be gaps between the layers! rather use self.top_layer+1?
+            layers_bool = np.logical_or(np.isin(new_swe, [0.]), np.isnan(new_swe))
+            ins_y = np.argmax(layers_bool, axis=1)[np.unique(merge[0])]
+            ins_x = np.unique(merge[0])
+
+            # there is not other way than iterating!?
+            new_swe[ins_x, ins_y] = [np.nansum(self.swe[u, merge[1][np.where(merge[0] == u)]]) for u in ins_x]
+            new_rho[ins_x, ins_y] = [np.nanmean(self.rho[u, merge[1][np.where(merge[0] == u)]]) for u in ins_x]
+            weights = self.swe[merge]
+            # this can happen at the initial year when there is now snow left
+            if (weights == 0.).all():
+                weights[:] = 1.
+            new_origin[ins_x, ins_y] = pd.Timestamp(np.average(orig_np.astype(np.int64)[merge], weights=weights, axis=0), unit='ns').round('D'),  # average dates!?
+            new_last_update[ins_x, ins_y] = pd.Timestamp(np.average(last_up_np.astype(np.int64)[merge], weights=weights, axis=0), unit='ns').round('D'),  # average dates!?  # average dates!?
+            new_age_days[ins_x, ins_y] = np.average(self.age_days[merge], axis=0, weights=weights).astype(int)
+
+            # TODO: MAKE TEMPERATURE CALCULATION CORRECT
+            new_temperature[ins_x, ins_y] = [np.nanmean(self.temperature[u, merge[1][np.where(merge[0]==u)]]) for u in ins_x]
+            new_liq_content[ins_x, ins_y] = [np.nansum(self.liq_content[u, merge[1][np.where(merge[0]==u)]]) for u in ins_x]
+
+        # insert the stuff we still want to have in high res
+        hires_ix = np.where(orig_np > periods_to_be_merged[-1].right)
+        layers_bool = np.logical_or(np.isin(new_swe, [0.]), np.isnan(new_swe))
+        top = np.argmax(layers_bool, axis=1)
+        for hiu in np.unique(hires_ix[0]):
+            top_hiu = top[hiu]
+            hi_clip_y = hires_ix[1][np.where(hires_ix[0]==hiu)]
+            hi_ins_y = np.arange(top_hiu, top_hiu + len(hi_clip_y))
+            new_swe[hiu, hi_ins_y] = self.swe[hiu, hi_clip_y]
+            new_rho[hiu, hi_ins_y] = self.rho[hiu, hi_clip_y]
+            new_origin[hiu, hi_ins_y] = self.origin[hiu, hi_clip_y]
+            new_last_update[hiu, hi_ins_y] = self.last_update[hiu, hi_clip_y]
+            new_age_days[hiu, hi_ins_y] = self.age_days[hiu, hi_clip_y]
+            new_temperature[hiu, hi_ins_y] = self.temperature[hiu, hi_clip_y]
+            new_liq_content[hiu, hi_ins_y] = self.liq_content[hiu, hi_clip_y]
+
+        # status first, because it depends on the others
+        #self._status = new_status
+        self._swe = new_swe
+        self._rho = new_rho
+        self._origin = new_origin
+        self._temperature = new_temperature
+        self._liq_content = new_liq_content
+        self._last_update = new_last_update
+        self._age_days = new_age_days
+
+        self.remove_unnecessary_array_space()
 
     def merge_firn_layers(self, date):
         """
@@ -4509,9 +4652,14 @@ class MassBalance(object, metaclass=SuperclassMeta):
         if hydro_years is None:
             hydro_years = self.make_hydro_years(bg_month=bg_month,
                                                 bg_day=bg_day)
+        # time series might start later than begin of MB year (MB prediction!)
+        ts_begin = pd.Timestamp(hydro_years.time[0].values)
+        mbyear_begin = utils.get_begin_last_flexyear(
+            ts_begin, start_month=bg_month, start_day=bg_day)
+        days_diff = (ts_begin - mbyear_begin).days
         _, cts = np.unique(hydro_years, return_counts=True)
         doys = [list(range(1, c + 1)) for c in cts]
-        doys = [i for sub in doys for i in sub]
+        doys = np.array([i for sub in doys for i in sub]) + days_diff
         hydro_doys = xr.DataArray(doys, dims='time', name='hydro_doys',
                                   coords={'time': hydro_years.time})
         return hydro_doys
