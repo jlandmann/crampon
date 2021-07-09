@@ -2022,7 +2022,8 @@ class ParameterGenerator(object):
         # important: be sure columns match the "order" of the params
         cali_sel = cali_sel[[self.mb_model.__name__ + '_' + i for i in
                              self.mb_model.cali_params_list]]
-        cali_sel.dropna(inplace=True)
+        # how = 'all' keeps the rows with precipitation correction factor only
+        cali_sel.dropna(inplace=True, how='all')
         return cali_sel
 
     @lazy_property
