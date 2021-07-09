@@ -37,7 +37,7 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
-                 heights_widths=(None, None), param_ep_func=np.nanmean,
+                 heights_widths=(None, None), param_ep_func=np.nanmedian,
                  cali_suffix=''):
 
         """
@@ -59,7 +59,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         param_ep_func: numpy arithmetic function
             Method to use for extrapolation when there are no calibrated
             parameters available for the time step where the mass balance
-            should be calcul
+            should be calculated. Default: np.nanmedian.
 
         Attributes
         ----------
