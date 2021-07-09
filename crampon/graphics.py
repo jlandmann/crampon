@@ -604,9 +604,9 @@ class AnyObjectHandler(object):
 
 @entity_task(log)
 def plot_cumsum_climatology_and_current(
-        gdir=None, clim=None, current=None, suffix='', mb_model=None,
-        clim_begin=None, current_begin=None, abs_deviations=False, fs=14,
-        loc=0, plot_dir=None):
+        gdir=None, clim=None, current=None, pred_cosmo=None, pred_ecmwf=None,
+        suffix='', mb_model=None, clim_begin=None, current_begin=None,
+        abs_deviations=False, fs=14, loc=0, plot_dir=None):
     """
     Make the standard plot containing the MB climatology in the background and
     the current MB year on top.
@@ -634,6 +634,10 @@ def plot_cumsum_climatology_and_current(
         balance model class and mass balance should have two coordinates (e.g.
         'time' and 'n' (some experiment)). This parameter is mutually exclusive
         with `gdir`. Default: None.
+    pred_cosmo: xarray.Dataset or None, optional
+        Mass balance prediction from COSMO numerical weather predictions.
+    pred_ecmwf: xarray.Dataset or None, optional
+        Mass balance prediction from ECMWF extended range predictions.
     suffix : str, optional
         Which climate and current files with which suffix exactly to look for.
         Only valid, when `gdir` is passed and thus mutually exclusive with
@@ -670,12 +674,11 @@ def plot_cumsum_climatology_and_current(
     """
 
     # some initial check
-    if (gdir is not None) and ((clim is not None) or (current is not None)):
-        raise ValueError('Parameters `gdir` and [`clim`, `current`] are '
-                         'mutually exclusive.')
-    if (gdir is None) and ((clim is None) or (current is None)):
-        raise ValueError('Either `gdir` or [`clim` and `current`] must be '
-                         'given.')
+    if (gdir is not None) and ((clim is not None) or (current is not None) or
+                               (pred_cosmo is not None) or
+                               (pred_ecmwf is not None)):
+        raise ValueError('Parameters `gdir` and [`clim`, `current`, '
+                         '`pred_cosmo`, `pred_ecmwf`] are mutually exclusive.')
 
     if gdir is not None:
         try:
@@ -687,6 +690,18 @@ def plot_cumsum_climatology_and_current(
                      ' and mb_current{} files found).'.format(gdir.rgi_id,
                                                              suffix, suffix))
             return
+        # be gentle here:
+        no_pred_msg = 'No mass balance prediction from {} data found for {}.'
+        try:
+            pred_cosmo = gdir.read_pickle('mb_prediction_cosmo',
+                                          filesuffix=suffix)
+        except FileNotFoundError:
+            log.warning(no_pred_msg.format('COSMO', gdir.id))
+        try:
+            pred_ecmwf = gdir.read_pickle('mb_prediction_ecmwf',
+                                          filesuffix=suffix)
+        except FileNotFoundError:
+            log.warning(no_pred_msg.format('ECMWF', gdir.id))
     else:
         pass
 
@@ -710,6 +725,29 @@ def plot_cumsum_climatology_and_current(
                                        bg_day=clim_begin[1])
     nq = current.mb.make_cumsum_quantiles(bg_month=current_begin[0],
                                           bg_day=current_begin[1])
+    pred_outdated_msg = \
+        '{} prediction is outdated (last day of current MB is later than ' \
+        'prediction start). Continuing without prediction...'
+    if pred_cosmo is not None:
+        pq_cosmo = pred_cosmo.mb.make_cumsum_quantiles(
+            bg_month=current_begin[0], bg_day=current_begin[1])
+
+        # make sure current and prediction do not overlap
+        pq_cosmo.sel(hydro_doys=slice(nq.hydro_doys.max(), None))
+        if pq_cosmo.hydro_doys.size == 0.:
+            log.warning(pred_outdated_msg.format('COSMO'))
+            pred_cosmo = None
+            pq_cosmo = None
+    if pred_ecmwf is not None:
+        pq_ecmwf = pred_ecmwf.mb.make_cumsum_quantiles(
+            bg_month=current_begin[0], bg_day=current_begin[1])
+
+        # make sure current and prediction do not overlap
+        pq_ecmwf.sel(hydro_doys=slice(nq.hydro_doys.max(), None))
+        if pq_ecmwf.hydro_doys.size == 0.:
+            log.warning(pred_outdated_msg.format('ECMWF'))
+            pred_ecmwf = None
+            pq_ecmwf = None
 
     # todo: kick out all variables except MB (e.g. saved along cali params)
     if abs_deviations:
@@ -721,7 +759,7 @@ def plot_cumsum_climatology_and_current(
 
     # Say if time on x axis is 365 or 366 long
     xtime = pd.date_range(
-        dt.datetime(current.isel(time=0).time.dt.year, 10, 1),
+        dt.datetime(current.isel(time=0).time.dt.year.item(), 10, 1),
         periods=366)
     if ((xtime.month == 2) & (xtime.day == 29)).any():
         xvals = np.arange(366)
@@ -729,6 +767,11 @@ def plot_cumsum_climatology_and_current(
         xtime = xtime[:-1]
         xvals = np.arange(365)
         cq = cq.sel(hydro_doys=slice(None, 365))
+        if pred_cosmo is not None:
+            pq_cosmo = pq_cosmo.sel(hydro_doys=slice(None, 365))
+        # todo: extend plot over the boundaries of the end of the MB year
+        if pred_ecmwf is not None:
+            pq_ecmwf = pq_ecmwf.sel(hydro_doys=slice(None, 365))
 
     # Say how much we would have to pad in front/back to match this time frame
     pad_f = (pd.Timestamp(current.isel(time=0).time.item()) -
@@ -755,6 +798,30 @@ def plot_cumsum_climatology_and_current(
             nq.MB.values, ((0, len(xvals) - nq.MB.shape[0]), (0, 0)),
             'constant', constant_values=(np.nan, np.nan))
 
+    # pad prediction easier - might work for others as well?
+    if pred_cosmo is not None:
+        pq_cosmo_pad = np.full((pq_cosmo.MB.shape[1], len(xvals)), np.nan)
+        pq_cosmo_pad[:, pq_cosmo.hydro_doys.values - 1] = pq_cosmo.MB.values
+
+        # shift prediction to the last quantiles of current
+        last_day_mb_current = mb_now_cs_pad[nq.MB.shape[0] - 1, :]
+        pq_cosmo_pad += np.atleast_2d(last_day_mb_current).T
+        # insert last day of mb_current as well (make visual transition nice)
+        pq_cosmo_pad[:, pq_cosmo.hydro_doys.values[0] - 2] = \
+            last_day_mb_current
+        pq_cosmo_pad = pq_cosmo_pad.T
+    if pred_ecmwf is not None:
+        # todo: probably too much transposing here...
+        pq_ecmwf_pad = np.full((len(xvals), pq_ecmwf.MB.shape[1]), np.nan)
+        pq_ecmwf_pad[pq_ecmwf.hydro_doys.values - 1, :] = pq_ecmwf.MB.values
+
+        # shift prediction to the last quantiles of current
+        last_day_mb_current = mb_now_cs_pad[nq.MB.shape[0] - 1, :]
+        pq_ecmwf_pad += np.atleast_2d(last_day_mb_current)
+        # insert last day of mb_current as well (make visual transition nice)
+        pq_ecmwf_pad[pq_ecmwf.hydro_doys.values[0] - 2, :] = \
+            last_day_mb_current
+
     # plot median
     climvals = cq.MB.values
     model_ix = 0  # this can be used later if we plot models individually
@@ -774,6 +841,25 @@ def plot_cumsum_climatology_and_current(
     # plot 10th to 90th pctl
     ax.fill_between(xvals, mb_now_cs_pad[:, 0], mb_now_cs_pad[:, 4],
                     facecolor=CURR_COLORS[model_ix][1], alpha=0.3)
+    # plot MB prediction - ECMWF first, so that COSMO is on top
+    ecmwf_color_ix = 1
+    if pred_ecmwf is not None:
+        p5, = ax.plot(xvals, pq_ecmwf_pad[:, 2],
+                      c=FCST_COLORS[ecmwf_color_ix][0], label='Median')
+        ax.fill_between(xvals, pq_ecmwf_pad[:, 1], pq_ecmwf_pad[:, 3],
+                        facecolor=FCST_COLORS[ecmwf_color_ix][1], alpha=0.5)
+        # plot 10th to 90th pctl
+        ax.fill_between(xvals, pq_ecmwf_pad[:, 0], pq_ecmwf_pad[:, 4],
+                        facecolor=FCST_COLORS[ecmwf_color_ix][1], alpha=0.3)
+    cosmo_color_ix = 0
+    if pred_cosmo is not None:
+        p6, = ax.plot(xvals, pq_cosmo_pad[:, 2],
+                      c=FCST_COLORS[cosmo_color_ix][0], label='Median')
+        ax.fill_between(xvals, pq_cosmo_pad[:, 1], pq_cosmo_pad[:, 3],
+                        facecolor=FCST_COLORS[cosmo_color_ix][1], alpha=0.5)
+        # plot 10th to 90th pctl
+        ax.fill_between(xvals, pq_cosmo_pad[:, 0], pq_cosmo_pad[:, 4],
+                        facecolor=FCST_COLORS[cosmo_color_ix][1], alpha=0.3)
     ax.set_xlabel('Months', fontsize=16)
     ax.set_ylabel('Cumulative Mass Balance (m w.e.)', fontsize=fs)
     ax.set_xlim(xvals.min(), xvals.max())
