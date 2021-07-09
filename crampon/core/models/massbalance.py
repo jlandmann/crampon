@@ -141,7 +141,8 @@ class DailyMassBalanceModel(MassBalanceModel):
         self.prcp_bias = 1.
 
         # Read meteo data
-        self.meteo = climate.GlacierMeteo(self.gdir, filename=filename)
+        self.meteo = climate.GlacierMeteo(self.gdir, filename=filename,
+                                          filesuffix=self.filesuffix)
         self.tspan_meteo = self.meteo.meteo.time.values
         self.tspan_meteo_dtindex = pd.DatetimeIndex(self.meteo.index)
         self.temp = self.meteo.tmean
