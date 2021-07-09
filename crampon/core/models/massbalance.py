@@ -1453,7 +1453,10 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
                 albedo = self.update_albedo(swe, self.tpos_since_snowfall,
                                             icedist)
                 # important: set ice value for next day
-                self.tpos_since_snowfall[icedist] = cfg.PARAMS['tacc_ice']
+                # todo: is the change correct
+                self.tpos_since_snowfall[icedist] = \
+                    np.clip(self.tpos_since_snowfall[icedist],
+                            cfg.PARAMS['tacc_ice'], None)
             elif self.albedo_method == 'oerlemans':
                 age_days = self.snowcover.age_days[np.arange(
                     self.snowcover.n_heights), self.snowcover.top_layer]
@@ -1772,8 +1775,10 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
                 swe = np.nansum(self.snowcover.swe, axis=1)
                 albedo = self.update_albedo(swe, self.tpos_since_snowfall,
                                             icedist)
-                # important: set ice value for next day
-                self.tpos_since_snowfall[icedist] = cfg.PARAMS['tacc_ice']
+                # todo: change ok?
+                self.tpos_since_snowfall[icedist] = \
+                    np.clip(self.tpos_since_snowfall[icedist],
+                            cfg.PARAMS['tacc_ice'], None)
             elif self.albedo_method == 'oerlemans':
                 age_days = self.snowcover.age_days[np.arange(
                     self.snowcover.n_heights), self.snowcover.top_layer]
