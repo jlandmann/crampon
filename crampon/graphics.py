@@ -5,7 +5,8 @@ from oggm.graphics import *
 from crampon.utils import entity_task
 from crampon import utils, workflow
 from crampon.core.preprocessing.climate import GlacierMeteo
-from crampon.core.models.massbalance import MassBalance, DailyMassBalanceModel
+from crampon.core.models.massbalance import MassBalance, DailyMassBalanceModel, \
+    CurrentYearMassBalance
 from crampon.core import holfuytools
 import xarray as xr
 from matplotlib.ticker import NullFormatter
@@ -1081,7 +1082,8 @@ def plot_interactive_mb_spaghetti_html(
             years.append(y)
             models.append(model)
 
-    mb_curr_cs = MassBalance.time_cumsum(mb_curr)
+    # CurrentYearMassBalance cut off radiation models when SIS is not delivered
+    mb_curr_cs = CurrentYearMassBalance.time_cumsum(mb_curr)
     # todo: EMERGENCY SOLUTION as long as we are not able to calculate cumsum
     #  with NaNs correctly
     mb_curr_cs = mb_curr_cs.where(mb_curr_cs.MB != 0.)
@@ -1135,9 +1137,12 @@ def plot_interactive_mb_spaghetti_html(
         model=models,
         color=color,
         alpha=alpha,
-        date=np.array(pd.date_range(mb_curr.time[0].item(), freq='D',
-                                    periods=mbcarr.shape[0]),
-                      dtype=np.datetime64)
+        date=np.repeat(
+            np.atleast_2d(
+                np.array(pd.date_range(mb_curr.time[0].item(), freq='D',
+                                    periods=mbcarr.shape[1]),
+                      dtype=np.datetime64
+                         )), len(xs), axis=0)
     ))
 
     plot = bkfigure(plot_width=1200, plot_height=800)
