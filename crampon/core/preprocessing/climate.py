@@ -1,7 +1,7 @@
 """ Prepare the meteodata from netCDF4 """
 
 from __future__ import division
-
+from typing import Optional
 import os
 from glob import glob
 import crampon.cfg as cfg
@@ -20,6 +20,7 @@ import shutil
 import sys
 import datetime as dt
 import numba
+import cfgrib
 
 # Module logger
 log = logging.getLogger(__name__)
@@ -564,6 +565,85 @@ def process_spinup_climate_data(gdir):
         raise NotImplementedError('Climate data frequency not yet understood')
 
 
+@entity_task(log, writes=['nwp_daily_cosmo', 'nwp_daily_ecmwf'])
+def process_nwp_data(gdir: utils.GlacierDirectory):
+    """Distributes the data from the numerical weather prediction to glaciers.
+
+    Parameters
+    ----------
+    gdir : utils.GlacierDirectory
+        GlacierDirectory to process the prediction for.
+
+    Returns
+    -------
+    None
+    """
+
+    for pred_suffix in ['_cosmo', '_ecmwf']:
+        # read the file
+        fpath = cfg.PATHS['nwp_file' + pred_suffix]
+        nc_ts = xr.open_dataset(fpath)
+
+        # fake the names a bit - that make it compatible with the old routines
+        if pred_suffix == '_cosmo':
+             nc_ts = nc_ts.rename({'x': 'lon', 'y': 'lat'})
+        elif pred_suffix == '_ecmwf':
+
+            nc_ts['lon'] = nc_ts.longitude
+            nc_ts['lat'] = nc_ts.latitude
+            nc_ts.set_coords(['lat', 'lon'])
+            nc_ts = nc_ts.swap_dims({'latitude': 'lat', 'longitude': 'lon'})
+
+        # geoloc
+        lon = nc_ts.longitude.values
+        lat = nc_ts.latitude.values
+
+        # Gradient defaults
+        use_tgrad = cfg.PARAMS['temp_use_local_gradient']
+        def_tgrad = cfg.PARAMS['temp_default_gradient']
+        tg_minmax = cfg.PARAMS['temp_local_gradient_bounds']
+
+        use_pgrad = cfg.PARAMS['prcp_use_local_gradient']
+        def_pgrad = cfg.PARAMS['prcp_default_gradient']
+        pg_minmax = cfg.PARAMS['prcp_local_gradient_bounds']
+
+        if pred_suffix == '_cosmo':
+            # rotated grid: not entirely correct, but reasonable approximation
+            # see SLF: https://models.slf.ch/docserver/meteoio/html/gribio.html
+            hav = utils.haversine(lon, lat, gdir.cenlon, gdir.cenlat)
+            ilat, ilon = np.where(hav == np.min(hav))
+            ilat = ilat.item()
+            ilon = ilon.item()
+            ref_pix_lon = lon[ilat, ilon]
+            ref_pix_lat = lat[ilat, ilon]
+        elif pred_suffix == '_ecmwf':
+            ilon = np.argmin(np.abs(lon - gdir.cenlon))
+            ilat = np.argmin(np.abs(lat - gdir.cenlat))
+            ref_pix_lon = lon[ilon]
+            ref_pix_lat = lat[ilat]
+
+        # Some special things added in the crampon function
+        # we hand over the file directly, because of the fake lat/lon dimensions
+        iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ipgrad_unc, ihgt = \
+            utils.joblib_read_climate(
+                nc_ts, ilon, ilat, def_tgrad, tg_minmax, use_tgrad, def_pgrad,
+                pg_minmax, use_pgrad)
+
+        # get the uncertainties according to the functions describing them
+        time = [pd.Timestamp(t) for t in nc_ts.time.values]
+        gdir.write_monthly_climate_file(time, iprcp, itemp, itgrad, ipgrad,
+                                        ihgt, ref_pix_lon, ref_pix_lat,
+                                        tmin=itmin, tmax=itmax,
+                                        tgrad_sigma=itgrad_unc, sis=isis,
+                                        temp_sigma=None,
+                                        prcp_sigma=None,
+                                        sis_sigma=None,
+                                        pgrad_sigma = ipgrad_unc,
+                                        file_name='nwp_daily' + pred_suffix)
+
+        nc_ts.close()
+
+
 def make_spinup_climate_file(write_to=None, hfile=None, which=1901):
     """
     Process homogenized gridded data before 1961 [1]_ into a spinup climate.
@@ -892,20 +972,20 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
     return outfile
 
 
-def make_nwp_file(write_to=None):
+def make_nwp_file_cosmo(write_to: Optional[str] = None) -> None:
     """
-    Compile the numerical weather prediction file for mass balance predictions.
-
-    # todo: make prediction variable names exactly same as in the climate file
+    Compile the COSMO numerical weather prediction file.
 
     Parameters
     ----------
+    write_to: str
+        Path where to write the NWP file. Default: None (take `nwp_file_cosmo`
+        from configuration).
 
     Returns
     -------
 
     """
-    # todo: manage to get an environment with cfgrib running
     # todo: actually, compared to the other functions above, this function
     #  should distribute an existing nwp.nc to all gdirs - the processing
     #  below should happen before
@@ -914,152 +994,264 @@ def make_nwp_file(write_to=None):
         try:
             write_to = cfg.PATHS['climate_dir']
         except KeyError:
-            raise KeyError('Must supply write_to or initialize the crampon'
-                           'configuration.')
+            raise KeyError('Must supply target directory or initialize the '
+                           'crampon configuration.')
 
     cosmo_dir = os.path.join(write_to, 'cosmo')
+    ecmwf_dir = os.path.join(write_to, 'ecmwf')
 
     # current midnight modelrun
     midnight = dt.datetime.now().replace(hour=0, minute=0, second=0,
                                          microsecond=0)
     run_hour = '00'
-    run_day = midnight.strftime('%y%m%d')  # year w/o century for c7
+    run_day = midnight.strftime('%y%m%d')
 
-    # COSMO-7
-    ftp = utils.WSLSFTPClient()
-    ftp_dir = '/data/ftp/map/ezdods/almo7'
-    # we are not allowed to change directory
-    files = ftp.list_content(ftp_dir)
-    cfiles_c7 = [f for f in files if ((run_day + run_hour in f) and
-                                      f.endswith('.tgz'))]
-    for cfile in cfiles_c7:
-        ftp.get_file(cfile, os.path.join(cosmo_dir, os.path.basename(cfile)))
-    ftp.close()
-
-    # COSMO-1 and COSMO-E
-    ftp = utils.WSLSFTPClient(user='hyv-data')
-    ftp_dir = '/data/ftp/hyv_data/cosmo/cosmo1'
-    files = ftp.list_content(ftp_dir)
-    cfiles_c1 = [f for f in files if (('SZ90' in f) and
+    # COSMO-E
+    ftp_cosmo = utils.WSLSFTPClient(user='hyv-data')
+    ftp_dir_cosmo = '/data/ftp/hyv_data/cosmo/cosmoe'
+    files_cosmo = ftp_cosmo.list_content(ftp_dir_cosmo)
+    cfiles_ce = [f for f in files_cosmo if (('SZ91' in f) and
                                       ('{}{}'.format(run_day, run_hour) in f)
                                       and f.endswith('.zip'))]
-    for cfile in cfiles_c1:
-        ftp.get_file(cfile, os.path.join(cosmo_dir, os.path.basename(cfile)))
-    ftp_dir = '/data/ftp/hyv_data/cosmo/cosmoe'
-    files = ftp.list_content(ftp_dir)
-    cfiles_ce = [f for f in files if (('SZ91' in f) and
-                                      ('{}{}'.format(run_day, run_hour) in f)
-                                      and f.endswith('.zip'))]
+
+    # download latest COSMO-E file(s)
     for cfile in cfiles_ce:
-        ftp.get_file(cfile, os.path.join(cosmo_dir, os.path.basename(cfile)))
-    ftp.close()
-    cfiles_c_1_e = cfiles_c1 + cfiles_ce
+        local_file = os.path.join(cosmo_dir, os.path.basename(cfile))
+        ftp_cosmo.get_file(cfile, local_file)
+    ftp_cosmo.close()
 
-    to_untargz = [os.path.join(cosmo_dir, os.path.basename(r)) for r in
-                  cfiles_c7]
     to_unzip = [os.path.join(cosmo_dir, os.path.basename(r)) for r in
-                cfiles_c_1_e]
+                cfiles_ce]
 
     for dl_zipfile in to_unzip:
         utils.unzip_file(dl_zipfile)
         os.remove(dl_zipfile)
-    for dl_targzfile in to_untargz:
-        utils.untargz_file(dl_targzfile)
-        os.remove(dl_targzfile)
 
-    # COSMO-1
-    # this gets 10m wind speed (ws), 10m wind direction (p3031), t2m, d2m
-    cosmo1_instant = xr.open_dataset(
-        os.path.join(cosmo_dir, 'wsl_cosmo1_hydro-ch'), engine='cfgrib',
-        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
-                                           'stepType': 'instant'}})
-    cosmo1_instant_resampled = cosmo1_instant.resample(step='1D').mean()
-    # this gets total precipitation (tp)
-    cosmo1_accum = xr.open_dataset(
-        os.path.join(cosmo_dir, 'wsl_cosmo1_hydro-ch'), engine='cfgrib',
-        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface',
-                                           'stepType': 'accum'}})
-    cosmo1_accum_resampled = cosmo1_accum.resample(step='1D').sum()
-    cosmo1 = xr.merge([cosmo1_instant_resampled, cosmo1_instant_resampled])
-
-    # COSMO-7
-    # gets albedo, total cloud cover (0-1) & net SW rad. flux (not all times)
-    cosmo7_sinstant = xr.open_dataset(
-        os.path.join(cosmo_dir, '{}{}_955'.format(run_day, run_hour), 'grib',
-                     'iaceth7_00000000'), engine='cfgrib',
-        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface',
-                                           'stepType': 'instant'}})
-    # this gets 2m temperature
-    cosmo7_aginstant = xr.open_dataset(
-        os.path.join(cosmo_dir, 'iaceth7_03000000'), engine='cfgrib',
-        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
-                                           'stepType': 'instant'}})
-    # this gets total precipitation (tp)
-    cosmo7_saccum = xr.open_dataset(
-        os.path.join(cosmo_dir, 'iaceth7_00000000'), engine='cfgrib',
-        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface',
-                                           'stepType': 'accum'}})
-
-    # COSMO-E
-    # 20 runs + control
-    # open_mfdataset doesn't work yet
-    run_list_instant = []
-    run_list_accum = []
-
-    ce_globpath = '**/*wsl_cosmo-e_hydro-ch_*'
+    # we don't want leftover *.idx files
+    ce_globpath = '**/*wsl_cosmo-2e_hydro-ch_*[!.idx]'
     if sys.platform.startswith('win'):
         ce_globpath = ce_globpath.replace('/', '\\')
-    ce_paths = glob(cosmo_dir + ce_globpath,
-                    recursive=True)
+    ce_paths = glob(cosmo_dir + ce_globpath, recursive=True)
+
+    all_dsi = []
+    hgt = None
+    # 'unknown' is radiation
+    vars_of_interest = ['t2m', 'tp', 'unknown', 'p3008']
     for ce_p in ce_paths:
-        run_list_instant.append(
-            # gets 10m wind speed (ws), 10m wind direction (p3031) , t2m, d2m
-            xr.open_dataset(ce_p, engine='cfgrib', backend_kwargs={
-                'filter_by_keys': {'typeOfLevel': 'heightAboveGround',
-                                   'stepType': 'instant'}})
-        )
+        dss = cfgrib.open_datasets(ce_p)
+        run_dsi = []
+        for ids, ds in enumerate(dss):
+            for v in vars_of_interest:
+                # todo: hard code, bcz GRIB1 COSMO spec.def. not valid anymore!
+                if (ids == 2) and (v == 'unknown'):  # position should be same
+                    grad = ds[v]
+                    grad = grad.rename('grad')  # ECMWF name for global rad.
+                    grad.attrs['GRIB_missingValue'] = -0.99
+                    run_dsi.append(grad)
+                elif (v != 'unknown') and ('step' in ds.coords):
+                    if ds.step.values.size > 1:  # other shenanigans
+                        try:
+                            dsi = ds[v]
+                            run_dsi.append(dsi)
+                        except KeyError:
+                            continue
+                    elif (ds.step.values.size == 1) and (v == 'p3008') and \
+                            (v in ds.data_vars):
+                        hgt = ds[v]
+        all_dsi.append(run_dsi)
 
-        run_list_accum.append(
-            # gets total precipitation (tp)
-            xr.open_dataset(ce_p, engine='cfgrib', backend_kwargs={
-                'filter_by_keys': {'typeOfLevel': 'surface',
-                                   'stepType': 'accum'}})
-        )
+    # make one file
+    cosmo_ds = xr.concat([xr.merge(x) for x in all_dsi], dim='member')
 
-    # make one file each
-    ce_i_all = xr.concat(run_list_instant,
-                         pd.Index(np.arange(len(run_list_instant)),
-                                  name='run'))
-    ce_a_all = xr.concat(run_list_accum,
-                         pd.Index(np.arange(len(run_list_accum)), name='run'))
+    # rename variables to make them CRAMPON suitable
+    cosmo_ds = cosmo_ds.rename({'t2m': 'temp', 'tp': 'prcp', 'grad': 'sis'})
+    hgt = hgt.rename('hgt')
 
-    # variables are from 00 - 00; let's make 0-23 a day and waste the last bit
-    ce_i_all_r = ce_i_all.resample(time="1D").mean()
-    ce_a_all_r = ce_a_all.resample(time="1D").sum()
-
-    # rename variables to make the crampon suitable
-    ce_i_all_r.rename(name_dict={'t2m': 'tmean'}, inplace=True)
-    ce_a_all_r.rename(name_dict={'tp': 'prcp'}, inplace=True)
-
-    # merge the variables
-    cosmo_ds = xr.merge([ce_i_all_r, ce_a_all_r])
+    # some unit change
+    cosmo_ds['temp'] = cosmo_ds['temp'] - cfg.ZERO_DEG_KELVIN  # K to degC
 
     # make daily means/sums/max/mins for everything
-    # merge everything together in one xr.Dataset
-    # write out as cosmo_predictions.nc for mass balance prediction to access
-    cosmo_ds.to_netcdf(cfg.PATHS['nwp_file'])
+    # variables are from 00 - 00; let's make 0-23 a day and waste the last bit
+    xr.set_options(keep_attrs=True)
+    cosmo_ds = xr.merge([
+        cosmo_ds.temp.resample(step='1D').min().rename('tmin'),
+        cosmo_ds.temp.resample(step='1D').max().rename('tmax'),
+        cosmo_ds.temp.resample(step='1D').mean(),
+        cosmo_ds.sis.resample(step='1D').mean(),
+        cosmo_ds.prcp.resample(step='1D').sum(),
+        hgt
+    ])
 
-    # remove the previous files that were downloaded
-    second_last_midnight_run = midnight - pd.Timedelta(days=1)
-    remove_date_key = second_last_midnight_run.strftime('%y%m%d')
-    to_remove = glob(os.path.join(cfg.PATHS['climate_dir'],
-                                  'cosmo*{}*'.format(remove_date_key)),
-                     recursive=True)
-    for tr in to_remove:
+    # the last step (day 5) is only midnight for midnight run - cut it off
+    if run_hour == '00':
+        cosmo_ds = cosmo_ds.isel(step=slice(None, -1))
+    else:
+        raise ValueError('Forming daily aggregations not yet supported for '
+                         'COSMO runs other than 00 (midnight).')
+
+    # create time dimension in day steps
+    cosmo_ds['time'] = cosmo_ds.time + cosmo_ds.step
+    cosmo_ds = cosmo_ds.swap_dims({'step': 'time'})
+
+    # write out as cosmo_predictions.nc for mass balance prediction to access
+    cosmo_ds.to_netcdf(cfg.PATHS['nwp_file_cosmo'])
+
+
+def make_nwp_file_ecmwf(write_to: Optional[str] = None) -> None:
+    """
+    Compile the ECMWF numerical weather prediction file.
+
+    Parameters
+    ----------
+    write_to: str
+        Path where to write the NWP file. Default: None (take `nwp_file_ecmwf`
+        from configuration).
+
+    Returns
+    -------
+
+    """
+    # todo: actually, compared to the other functions above, this function
+    #  should distribute an existing nwp.nc to all gdirs - the processing
+    #  below should happen before
+
+    if not write_to:
         try:
-            os.remove(tr)
-        except FileNotFoundError:
-            pass
+            write_to = cfg.PATHS['climate_dir']
+        except KeyError:
+            raise KeyError('Must supply target directory or initialize the '
+                           'crampon configuration.')
+
+    ecmwf_dir = os.path.join(write_to, 'ecmwf')
+
+    # runs always come in on Monday and Thursdays
+    now = pd.Timestamp.now()
+    yesterday = now - pd.Timedelta(days=1)
+    # todo: 7.50 is CEST: understand the context when
+    if now.hour <= 7 and now.minute > 50:
+        search_date = now
+    else:
+        search_date = yesterday
+
+    last_monday = search_date - \
+                  pd.Timedelta(days=(search_date.weekday()) % 7, weeks=0)
+    last_thursday = search_date - \
+                    pd.Timedelta(days=(search_date.weekday() - 3) % 7, weeks=0)
+    run_day_str = max(last_monday, last_thursday).strftime('%Y%m%d')
+
+    # ECMWF monthly predictions
+    ftp_ecmwf = utils.WSLSFTPClient()
+    ftp_dir_ecmwf = '/data/ftp/map/monthlyENS'
+    files_ecmwf = ftp_ecmwf.list_content(ftp_dir_ecmwf)
+
+    # find the latest file
+    server_file = [f for f in files_ecmwf if
+                    ('vareps_grib_{}'.format(run_day_str) in f) and
+                    (f.endswith('.tar.gz'))][0]
+
+    # download latest file
+    local_file = os.path.join(ecmwf_dir, os.path.basename(server_file))
+    ftp_ecmwf.get_file(server_file, local_file)
+    ftp_ecmwf.close()
+
+    # tidy up old grib and index files
+    old_files = glob(os.path.join(ecmwf_dir, 'latest_*'))
+    for of in old_files:
+        os.remove(of)
+
+    utils.untargz_file(local_file)
+    os.remove(local_file)
+
+    # todo: include control run?
+    ens_globpath = '**/latest*.grb'
+    if sys.platform.startswith('win'):
+        ens_globpath = ens_globpath.replace('/', '\\')
+    ens_paths = glob(os.path.join(ecmwf_dir, ens_globpath), recursive=True)
+
+    vars_of_interest = ['t2m', 'ssr', 'tp']
+    runs = [cfgrib.open_dataset(e) for e in ens_paths if '_rm' in e]
+    control = [cfgrib.open_dataset(e) for e in ens_paths if '_ctr' in e][0]
+    hgt = control.z.isel(step=0)   # z is step-dependent in the file
+    # from MetPy: convert geopotential to altitude above sea level
+    hgt = (hgt * cfg.RE) / (cfg.G * cfg.RE - hgt)
+    hgt = hgt.drop('number')
+
+    # make one file
+    member_ix = pd.Index(np.arange(len(runs)), name='member')
+    run_ds = xr.concat(runs, dim=member_ix)
+
+    # select variables
+    run_ds = run_ds[vars_of_interest]
+    control = control[vars_of_interest]
+
+    # revert the cumsums of tp and ssr - last step needs to be cut off
+    run_ds['tp'] = run_ds.tp.diff('step') * 1000. # convert to mm
+    run_ds['ssr'] = run_ds.ssr.diff('step')
+    control['tp'] = control.tp.diff('step') * 1000. # convert to mm
+    control['ssr'] = control.ssr.diff('step')
+
+    # drop very last step - it would be a lost step when aggregating to days
+    run_ds = run_ds.isel(step=slice(None, -1))
+    control = control.isel(step=slice(None, -1))
+
+    # rename variables to make them CRAMPON suitable
+    rename_dict = {'t2m': 'temp', 'tp': 'prcp', 'ssr': 'sis'}
+    run_ds = run_ds.rename(rename_dict)
+    control = control.rename(rename_dict)
+    hgt = hgt.rename('hgt')
+
+    # some unit changes
+    run_ds['temp'] = run_ds['temp'] - cfg.ZERO_DEG_KELVIN  # K to degC
+    control['temp'] = control['temp'] - cfg.ZERO_DEG_KELVIN  # K to degC
+
+    # make daily means/sums/max/mins for everything
+    # variables are from 00 - 00; let's make 0-23 a day and waste the last bit
+    xr.set_options(keep_attrs=True)
+    run_ds = xr.merge(
+        [run_ds.temp.resample(step='1D').min().rename('tmin'),
+            run_ds.temp.resample(step='1D').max().rename('tmax'),
+            run_ds.temp.resample(step='1D').mean(),
+            run_ds.sis.resample(step='1D').sum(),  # sum because it's J m**-2
+            run_ds.prcp.resample(step='1D').sum(), hgt])
+    # todo: use control run
+    control = xr.merge([run_ds.temp.resample(step='1D').min().rename('tmin'),
+                       run_ds.temp.resample(step='1D').max().rename('tmax'),
+                       run_ds.temp.resample(step='1D').mean(),
+                       run_ds.sis.resample(step='1D').sum(),  # sum: J m**-2
+                       run_ds.prcp.resample(step='1D').sum(), hgt])
+
+    # change unit of SIS
+    run_ds['sis'] = run_ds['sis'] / cfg.SEC_IN_DAY  # J**m-2 to W**m-2
+    control['sis'] = control['sis'] / cfg.SEC_IN_DAY  # J**m-2 to W**m-2
+
+    # create time dimension in day steps
+    run_ds['time'] = run_ds.time + run_ds.step
+    run_ds = run_ds.swap_dims({'step': 'time'})
+
+    # write out as cosmo_predictions.nc for mass balance prediction to access
+    run_ds.to_netcdf(cfg.PATHS['nwp_file_ecmwf'])
+
+
+def make_nwp_files(write_to_cosmo: Optional[str] = None,
+                   write_to_ecmwf: Optional[str] = None) -> None:
+    """
+    Wrapper function to compile COSMO & ECMWF numerical weather predictions.
+
+    Parameters
+    ----------
+    write_to_cosmo: str
+        Path where to write the COSMO NWP file to. Default: None (take
+        `nwp_file_cosmo` from configuration).
+    write_to_ecmwf: str
+        Path where to write the NWP files to. Default: None (take
+        `nwp_file_ecmwf` from configuration).
+
+    Returns
+    -------
+
+    """
+    make_nwp_file_cosmo(write_to_cosmo)
+    make_nwp_file_ecmwf(write_to_ecmwf)
 
 
 # IMPORTANT: overwrite OGGM functions with same name:

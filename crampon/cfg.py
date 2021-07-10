@@ -103,6 +103,7 @@ MOLAR_MASS_DRY_AIR = 0.02896968  # kg/mol
 FLUX_TO_DAILY_FACTOR = (86400 * RHO) / RHO_W  # m ice s-1 to m w.e. d-1
 
 G = oggmcfg.G  # gravity
+RE = 6378000.  # average earth radius
 N = 3.  # Glen's law's exponent
 A = 2.4e-24  # Glen's default creep's parameter
 FS = 5.7e-20  # Default sliding parameter from Oerlemans - OUTDATED
@@ -287,6 +288,7 @@ def initialize(file=None, logging_level='INFO', params=None):
     global E_FIRN
     global ZERO_DEG_KELVIN
     global R
+    global RE
     global LATENT_HEAT_FUSION_WATER
     global HEAT_CAP_ICE
     global N

@@ -14,7 +14,7 @@ import geopandas as gpd
 import datetime
 import logging
 import crampon.cfg as cfg
-from crampon.core.preprocessing.climate import make_climate_file, make_nwp_file
+from crampon.core.preprocessing.climate import make_climate_file, make_nwp_files
 from crampon import utils
 from crampon.utils import retry
 from crampon import tasks
@@ -219,21 +219,30 @@ def try_backup(gdirs: List[utils.GlacierDirectory]) -> None:
                 backup_dir_1, backup_dir_2))
 
 
-def daily_cosmo_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
+def daily_nwp_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
     """
-    Daily tasks related to the COSMO prediction files.
+    Daily tasks related to the numerical weather prediction (NWP) files.
+
+    Parameters
+    ----------
+     gdirs : list
+        List of py:class:`crampon.GlacierDirectory` for which the NWP tasks
+        should be run.
 
     Returns
     -------
-
+    None
     """
-    log.info('Starting COSMO tasks...')
+    log.info('Starting NWP tasks...')
 
-    log.info('Making NWP file from COSMO data...')
-    make_nwp_file()
+    log.info('Making NWP files from COSMO/ECMWF data...')
+    make_nwp_files()
 
-    log.info('Making mass balance prediction from COSMO predictions...')
-    execute_entity_task(mb_production.make_mb_prediction, gdirs)
+    log.info('Making mass balance prediction from COSMO/ECMWF predictions...')
+    execute_entity_task(mb_production.make_mb_prediction, gdirs,
+                        climate_suffix='_cosmo')
+    execute_entity_task(mb_production.make_mb_prediction, gdirs,
+                        climate_suffix='_ecmwf')
 
 
 def weekly_tasks(gdirs: List[utils.GlacierDirectory]):
@@ -328,6 +337,10 @@ if __name__ == '__main__':
     log.info('Finished making initial climate file from scratch...')
     execute_entity_task(tasks.update_climate, gdirs)
 
+    # 2b) make NWP files and distribute to the glaciers
+    make_nwp_files()
+    execute_entity_task(tasks.process_nwp_data, gdirs)
+
     # 3) make MB climatology
     log.info('Making mass balance climatology...')
     execute_entity_task(mb_production.make_mb_clim, gdirs, reset_file=True)
@@ -343,10 +356,9 @@ if __name__ == '__main__':
 
     # Necessary in order not to have spikes anymore
     daily_tasks(gdirs)
-    # daily_cosmo_tasks(gdirs)
+    daily_nwp_tasks(gdirs)
 
-    # schedule.every().day.at("04:00").do(daily_cosmo_tasks, gdirs)
-    # .tag('daily-cosmo-tasks')
+    schedule.every().day.at("08:00").do(daily_nwp_tasks, gdirs).tag('daily-nwp-tasks')
     schedule.every().day.at("12:21").do(daily_tasks, gdirs).tag('daily-tasks')
 
     print('Finished setup tasks, switching to operational...')

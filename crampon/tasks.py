@@ -17,7 +17,7 @@ from crampon.core.preprocessing.centerlines import initialize_flowlines
 from crampon.core.preprocessing.centerlines import catchment_width_geom
 from crampon.core.preprocessing.centerlines import catchment_width_correction
 from crampon.core.preprocessing.climate import process_custom_climate_data
-from crampon.core.preprocessing.climate import update_climate
+from crampon.core.preprocessing.climate import update_climate, process_nwp_data
 from crampon.core.preprocessing.radiation import \
     get_potential_irradiation_with_toposhade, distribute_ipot_on_flowlines, \
     get_potential_irradiation_corripio, calculate_and_distribute_ipot
