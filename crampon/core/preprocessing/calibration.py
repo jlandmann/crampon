@@ -1,3 +1,7 @@
+"""
+Various calibration functions for the glaciers.
+"""
+
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -5,23 +9,83 @@ import geopandas as gpd
 import datetime as dt
 import glob
 import os
+import pickle
 import matplotlib.pyplot as plt
 import itertools
 import scipy.optimize as optimize
 import crampon.cfg as cfg
 from crampon import workflow
-from crampon import tasks
+from crampon import tasks, entity_task
 from crampon.core.models.massbalance import BraithwaiteModel, \
-    run_snowfirnmodel_with_options
+    run_snowfirnmodel_with_options, PellicciottiModel, HockModel, \
+    OerlemansModel, DailyMassBalanceModel, ReveilletModel, GiesenModel, \
+    SnowFirnCover
 from crampon.core.models import massbalance
 from collections import OrderedDict
 from crampon import utils
+import matplotlib
 import copy
-
+import multiprocessing as mp
+from crampon.core.preprocessing import radiation
+from crampon.core.models import assimilation
+from crampon.core.preprocessing import climate
+from crampon.core import holfuytools
 import logging
+import warnings
 
-# Module logger
+
+warnings.filterwarnings("ignore")
 log = logging.getLogger(__name__)
+
+
+class GlamosMassBalanceFile(object):
+    """ Interface to GLAMOS mass balance in the files.
+
+    This should sooner or later be the interface both to the mass balances
+    retrieved from the database as well as to the file mass balances. Should
+    have the function get_measured_mb_glamos as a method.
+    """
+
+    def __init__(self, gdir):
+        """
+        Instantiate.
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            Glacier directory to get the Glamos MB file for.
+        """
+
+        self.quality_flag_dict = {
+            0: "Not defined or unknown ",
+            1: "Analysis of seasonal stake observations (b_w & b_a)",
+            2: "Analysis of annual stake observations but not close to the end"
+               " of the period (b_w)",
+            3: "Analysis of annual stake observations (b_a)",
+            4: "Combined analysis of seasonal stake observations with volume "
+               "change (b_w & b_a & dV)",
+            5: "Combined analysis of annual stake observations within the "
+               "period with volume change (b_w & dV)",
+            6: "Combined analysis of annual stake observations with volume "
+               "change (b_a & dV)",
+            7: "Reconstruction from volume change analysis (dV)",
+            8: "Reconstruction from volume change with help of stake data "
+               "(dV & b_a/b_w)",
+            9: "No measurement, only model results",
+        }
+
+        self.bad_flags_default = [0, 7, 8, 9]
+        self.spring_max_date_name = 'date_s'
+        self.fall_min_date_name = 'date_f'
+        self.annual_field_date_name = 'date0'
+        self.winter_field_date_name = 'date1'
+        self.annual_mb_name = 'Annual'
+        self.winter_mb_name = 'Winter'
+
+        self.date_names = [self.spring_max_date_name, self.fall_min_date_name,
+                           self.annual_field_date_name,
+                           self.winter_field_date_name]
+        self.mb_names = [self.annual_mb_name, self.winter_mb_name]
 
 
 def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
@@ -30,6 +94,8 @@ def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
 
     Corrupt and missing data are eliminated, i.e. id numbers:
     0 : not defined / unknown source
+    3 :
+    6 : no b_w!!!
     7 : reconstruction from volume change analysis (dV)
     8 : reconstruction from volume change with help of stake data(dV & b_a/b_w)
     9 : No measurement, only model results
@@ -64,10 +130,24 @@ def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
         mb_file = glob.glob(
             os.path.join(cfg.PATHS['mb_dir'], '{}_*'.format(gdir.rgi_id)))[0]
 
-    # we have varying date formats (e.g. '19440000' for Silvretta)
     def date_parser(d):
+        """
+        Try to parse the dates.
+
+        We have varying date formats (e.g. '19440000' for Silvretta).
+
+        Parameters
+        ----------
+        d : str
+            Date as string.
+
+        Returns
+        -------
+        d: pd.Timestamp
+            Parsed date (if successful).
+        """
         try:
-            d = pd.datetime.strptime(str(d), '%Y%m%d')
+            d = dt.datetime.strptime(str(d), '%Y%m%d')
         except ValueError:
             raise
         return d
@@ -79,13 +159,13 @@ def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
         usecols = [0, 1, 2, 3, 4, 5, 6]
     else:
         # get from the header how many columns with elev bands there are, ARGH!
-        head = pd.read_csv(mb_file, sep=';', skiprows=range(1, 5),
-                                skipinitialspace=True, header=0,
-                                nrows=0).columns
-        elev_bands = np.linspace(int(head[5]), int(head[6]), int(head[4]) + 1)
+        head = pd.read_csv(
+            mb_file, sep=';', skiprows=range(1, 5), skipinitialspace=True,
+            header=0, nrows=0, encoding='latin1').columns
+        elev_bands = np.linspace(int(head[5]), int(head[6]), int(float(head[4])) + 1)
         elev_bands_mean = (elev_bands[1:] + elev_bands[:-1]) * 0.5
         usecols = np.concatenate([np.arange(5), np.arange(12,
-                                                          12 + int(head[4]))])
+                                                          12 + int(float(head[4])))])
         colnames = date_colnames + list(elev_bands_mean)
         mb_colnames = elev_bands_mean
 
@@ -118,7 +198,7 @@ def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
                                 str(row.date_s)[:2], str(row.date_s)[2:4]))
         except (ValueError, KeyError):  # date parsing fails or has "0000"
             measured = measured[measured.index != k]
-        # todo: we actually don't need date_f for the case where onl WB is available
+        # todo: we actually don't need date_f where only WB is available
         try:
             measured.loc[k, 'date_f'] = date_parser(
                 '{}{}{}'.format(measured.loc[k, 'date0'].year,
@@ -126,9 +206,15 @@ def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
         except (ValueError, KeyError):  # date parsing fails or has "0000"
             measured = measured[measured.index != k]
 
+    # finally, after all the date shenanigans
+    measured['date0'] = pd.DatetimeIndex(measured['date0'])
+    measured['date_f'] = pd.DatetimeIndex(measured['date_f'])
+    measured['date_s'] = pd.DatetimeIndex(measured['date_s'])
+    measured['date1'] = pd.DatetimeIndex(measured['date1'])
+
     # convert mm w.e. to m w.e.
     for c in mb_colnames:
-        measured[c] = measured[c] / 1000.
+        measured[c] /= 1000.
 
     return measured
 
