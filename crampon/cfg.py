@@ -559,8 +559,9 @@ def initialize(file=None, logging_level='INFO', params=None):
     oggmcfg.PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
 
     # Climate
+    oggmcfg.PARAMS['sis_delivery_delay'] = cp.as_bool('sis_delivery_delay')
     oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_int(
-        'temp_use_local_gradient')
+        'temp_use_local_gradient_cells')  # overwrite
     k = 'temp_local_gradient_bounds'
     oggmcfg.PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
     oggmcfg.PARAMS['prcp_use_local_gradient'] = cp.as_int(
@@ -628,7 +629,7 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     # Climate
     PARAMS['temp_use_local_gradient'] = cp.as_int(
-        'temp_use_local_gradient')
+        'temp_use_local_gradient_cells')  # overwrite
     k = 'temp_local_gradient_bounds'
     PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
     PARAMS['prcp_use_local_gradient'] = cp.as_int(
@@ -693,8 +694,9 @@ def initialize(file=None, logging_level='INFO', params=None):
            'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method', 'data_dir',
            'mp_processes', 'use_multiprocessing', 'use_divides',
            'temp_use_local_gradient', 'prcp_use_local_gradient',
-           'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
-           'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
+           'sis_delivery_delay', 'temp_local_gradient_bounds', 'mb_dir',
+           'modelrun_backup_dir_1', 'modelrun_backup_dir_2',
+           'prcp_local_gradient_bounds',
            'precip_ratio_method', 'topo_interp', 'use_compression',
            'use_tar_shapefiles', 'bed_shape', 'continue_on_error',
            'use_optimized_inversion_params', 'invert_with_sliding',
