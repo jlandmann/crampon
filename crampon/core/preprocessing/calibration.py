@@ -601,6 +601,32 @@ def to_minimize_mb_calibration_on_fischer(
     return err
 
 
+def abort_criterion_by_error_tolerance(error, value, thresh=0.01):
+    """
+    If an error is smaller than a percentage of a value, make it zero.
+
+    This is really just a pragmatic helper function.
+
+    Parameters
+    ----------
+    error: float
+        Error from some optimization.
+    value: float
+        Value that the error refers to.
+    thresh: float
+        Ratio of value below which error should become zero.
+
+    Returns
+    -------
+    float
+        Zero if error is smaller than percentage of the given value.
+    """
+    if np.abs(error) <= np.abs(thresh * value):
+        return 0.
+    else:
+        return error
+
+
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                           it_thresh=50, cali_suffix='',
                                           **kwargs):
