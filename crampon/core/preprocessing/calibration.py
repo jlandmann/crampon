@@ -749,6 +749,179 @@ def _make_hybrid_mb_or_not(gdir, actual_mb_model, to_calibrate_span, a_heights,
     return mb
 
 
+def to_minimize_mb_calibration_on_fischer_one_set(
+        x, gdir, mb_model, mb_total, min_date, max_date, a_heights,
+        a_widths, hw_years, *args, prcp_corr_only=False, scov=None,
+        run_hist=None, unc=None, early_model=HockModel, **kwargs):
+    """
+    Takes arrays of heights and widths for the single calibration years.
+
+    # todo: should be unnecessary as soon as dynamics are handled internally.
+
+    Parameters
+    ----------
+    x: tuple
+        Parameters to optimize. The parameters must be given exactly in the
+        order of the mb_model.cali_params attribute.
+    gdir: `py:class:crampon:GlacierDirectory`
+        The glacier directory to calibrate.
+    mb_model: `crampon.core.models.MassBalanceModel`
+        The model to use for calibration
+    mb_total: float
+        The mass balance value to calibrate on (m w.e.). This should be the
+        total MB as obtained from the geodetic mass balances in the dataset.
+    min_date: pd.Datetime, str
+        Start date of the calibration phase.
+    max_date: pd.Datetime, str
+        End date of the calibration phase.
+    a_heights: array
+        Annual heights of the flowlines.
+    a_widths: array
+        Annual widths of the flowlines.
+    hw_years:
+    *args:
+    prcp_corr_only: bool
+        Whether or not only the precipitation correction factor shall be
+        calibrated. Default: False (calibrate all parameters).
+    scov: SnowFirnCover or None
+        Snow cover to start the calibration phase with or None (let the model
+        try to find it). Default: None.
+    run_hist:
+    unc:
+    early_model: DailyMassBalanceModel
+        The mass balance model to use when the calibration period reaches
+        further back in time than the model can be calibrated. This is relevant
+        for the radiation-dependent models that can only be calibrated back
+        till 1984, but for geodetic period may begin earlier. This model is
+        used to bridge this early period so that a 'hybrid calibration' of the
+        radiation-dependent model is still possible. Default: HockModel.
+    **kwargs: dict
+        Keyword arguments accepted by the function.
+
+    Returns
+    -------
+    err: list
+        The residuals (squaring is done by scipy.optimize.least_squares).
+    """
+
+    # Here the awkward part comes:
+    # Pack x again to an OrderedDict that can be passed to the mb_model
+    if prcp_corr_only:
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], [v for k, v in kwargs.items() if (
+                        (k in mb_model.cali_params_guess.keys()) and (
+                            k not in ['prcp_fac']))]))
+    else:
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], [v for k, v in kwargs.items() if k in [
+                'prcp_fac']]))  # prcp_fac is the only excluded for annual cali
+
+    params = {**calip_dict, **other_dict}
+    print(params)
+    calispan = pd.date_range(min_date, max_date, freq='D')
+
+    # check if we need "hybrid calibration" (non radiation dep. model in the
+    # time when there is no radiation yet)
+    needs_early_model = False
+    if hasattr(mb_model, 'calibration_timespan'):
+        model_cali_begin = mb_model.calibration_timespan[0]
+    else:
+        model_cali_begin = pd.Timestamp(min_date).year
+    radiation_models = ['PellicciottiModel', 'OerlemansModel', 'GiesenModel']
+    early_day_model = None
+    if (pd.Timestamp(min_date).year < model_cali_begin) and (
+            mb_model.__name__ in radiation_models):
+        # try it with HockModel
+        needs_early_model = True
+        hindex_init = hw_years.index(
+            calispan[0].year if calispan[0].month < cfg.PARAMS[
+                'bgmon_hydro'] else calispan[0].year + 1)
+        # try HockModel with guess parameters
+        try:
+            hock_params = gdir.get_calibration('HockModel',
+                                               filesuffix='_fischer_unique')
+            hock_params.columns = [c.split('HockModel_')[1] for c in
+                                   hock_params.columns]
+            hock_params = OrderedDict(hock_params.mean().to_dict())
+        except:
+            hock_params = HockModel.cali_params_guess
+        early_day_model = HockModel(
+            gdir, bias=0., heights_widths=(a_heights[hindex_init],
+                                           a_widths[hindex_init]),
+            **HockModel.cali_params_guess)
+        if run_hist is not None:
+            early_day_model.time_elapsed = run_hist
+        if scov is not None:
+            early_day_model.snowcover = copy.deepcopy(scov)
+
+    # otherwise just start with the actual model and set snowcov and hist
+    day_model = mb_model(gdir, **params, bias=0.,
+                         heights_widths=(a_heights[0], a_widths[0]))
+    if early_day_model is None:
+        # IMPORTANT
+        if run_hist is not None:
+            day_model.time_elapsed = run_hist
+        if scov is not None:
+            day_model.snowcover = copy.deepcopy(scov)
+
+    mb = []
+    hw_index_old = 0
+    first_time_actual_model = True
+    for date in calispan:
+        hw_index = hw_years.index(date.year if date.month < cfg.PARAMS[
+            'bgmon_hydro'] else date.year + 1)
+
+        # use early model or not, depending on where we are in time
+        if (needs_early_model is True) and date.year < model_cali_begin:
+            # just check if we have the correct snow cover
+            if hw_index_old != hw_index:
+                early_day_model.snowcover.remove_height_nodes(
+                    np.arange(len(a_widths[hw_index]),
+                              early_day_model.snowcover.swe.shape[0]))
+                hw_index_old = hw_index
+            tmp = early_day_model.get_daily_specific_mb(a_heights[hw_index],
+                                                        a_widths[hw_index],
+                                                        date=date)
+        else:
+            if (first_time_actual_model is True) and \
+                    (needs_early_model is True):
+                first_time_actual_model = False
+                # IMPORTANT
+                day_model.time_elapsed = early_day_model.time_elapsed
+                day_model.snowcover = copy.deepcopy(early_day_model.snowcover)
+            # just check if we have the correct snow cover
+            if hw_index_old != hw_index:
+                day_model.snowcover.remove_height_nodes(
+                    np.arange(len(a_widths[hw_index]),
+                              day_model.snowcover.swe.shape[0]))
+                hw_index_old = hw_index
+            tmp = day_model.get_daily_specific_mb(a_heights[hw_index],
+                                                  a_widths[hw_index],
+                                                  date=date)
+
+        mb.append(tmp)
+    mb = np.array(mb)
+
+    # if prcp_fac is varied, acc_sum changes, otherwise the other way around
+    total_sum = np.sum(mb)
+
+    if unc:
+        err = (total_sum - mb_total) / unc
+    else:
+        err = (total_sum - mb_total)
+
+    thresholded_error = abort_criterion_by_error_tolerance(err, mb_total)
+
+    return thresholded_error
+
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                           it_thresh=50, cali_suffix='',
                                           **kwargs):
