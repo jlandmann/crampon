@@ -2878,6 +2878,63 @@ def fake_dynamics(gdir, dh_max=-5., da_chg=0.01):
     # take everything from the principle fowline
 
 
+
+
+def calibrate_cam_glaciers_on_point_mass_balances(point_data_path, out_path):
+    """
+    For experiments, we pretend that each camera glacier has one
+    intermediate measurement that we calibrate on.
+
+    Parameters
+    ----------
+    point_data_path : str
+        Path to the file with the point measurements on the three glaciers.
+    out_path : str
+        Path to which the dataframe with the calibrated parameters shall be
+        written.
+
+    Returns
+    -------
+
+    """
+
+    pdata = pd.read_csv(point_data_path, index_col=0, parse_dates=[4, 5])
+    results = pd.DataFrame(columns=['RGIId', 'stations'])
+    stations_per_glacier = {
+        'RGI50-11.A55F03': [1003],
+        'RGI50-11.B4312n-1': [1002, 1006, 1007, 1009],
+        'RGI50-11.B5616n-1': [1001, 1008]}
+    mb_models = [massbalance.BraithwaiteModel, massbalance.HockModel,
+                 massbalance.PellicciottiModel,
+                 massbalance.OerlemansModel]
+    it = 0
+    for k, v in stations_per_glacier.items():
+        print(k)
+        gdir = utils.GlacierDirectory(k)
+        for comb_length in range(1, len(v) + 1):
+            for combo in itertools.combinations(v, comb_length):
+                print(combo)
+                pdata_sel = pdata.loc[[c for c in combo]]
+                print(pdata_sel)
+                for model in mb_models:
+                    print(model.__name__)
+                    cali_result = calibrate_on_summer_point_mass_balance(
+                        gdir,
+                        pdata_sel.date0.values,
+                        pdata_sel.date_p.values,
+                        pdata_sel.z.values,
+                        pdata_sel.bp.values,
+                        list(pdata_sel.otype.values),
+                        model)
+                    results.loc[it, 'RGIId'] = k
+                    results.loc[it, 'stations'] = str(combo)
+                    for rk, rv in dict(cali_result).items():
+                        results.loc[it, model.__name__ + '_' + rk] = rv
+                it += 1
+                print('ITERATION NUMBER: ', it)
+    results.to_csv(out_path)
+
+
 if __name__ == '__main__':
 
     cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
