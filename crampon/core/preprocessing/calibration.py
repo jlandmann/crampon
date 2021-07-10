@@ -503,6 +503,104 @@ def to_minimize_point_mass_balance(x, gdir, mb_model, measured,
 
     return [e for e in err if ~np.isnan(e)]
 
+
+def to_minimize_mb_calibration_on_fischer(
+        x, gdir, mb_model, mb_annual, min_date, max_date, a_heights, a_widths,
+        *args, prcp_corr_only=False, scov=None, run_hist=None, unc=None,
+        **kwargs):
+    """
+    A try to generalize an objective function valid for all MassBalanceModels.
+
+    Parameters
+    ----------
+    x: tuple
+        Parameters to optimize. The parameters must be given exactly in the
+        order of the mb_model.cali_params attribute.
+    gdir: `py:class:crampon:GlacierDirectory`
+        The glacier directory to calibrate.
+    mb_model: `crampon.core.models.MassBalanceModel`
+        The model to use for calibration
+    mb_annual: float
+        The mass balance value to calibrate on (m w.e.). This should be an
+        annual MB as obtained from the disaggregated geodetic MBs.
+    min_date: pd.Datetime, str
+        Start date of the calibration phase.
+    max_date: pd.Datetime, str
+        End date of the calibration phase.
+    a_heights: np.array
+        Annual heights of the glacier surface.
+    a_widths: np.array
+        Annual geomtreicla widths fo the glacier.
+    *args: tuple
+    prcp_corr_only: bool, optional
+        Optimize only the precipitation correction factor. Default: False.
+    scov: crampon.core.models.massbalance.SnowFirnCover or None,
+        Snow cover to initiate. Default: None (use initalization from mass
+        balance model)
+    run_hist: pd.DatetimeIndex or None
+        Run history as Time index. Default: None (no history).
+    unc: float, optional
+        Uncertainty in observed mass balance (m w.e.). Default: None (do not
+        account for).
+    **kwargs: dict
+        Keyword arguments accepted by the function.
+
+    Returns
+    -------
+    err: list
+        The residuals (squaring is done by scipy.optimize.least_squares).
+    """
+
+    # Here the awkward part comes:
+    # Pack x again to an OrderedDict that can be passed to the mb_model
+    if prcp_corr_only:
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], [v for k, v in kwargs.items() if (
+                        (k in mb_model.cali_params_guess.keys()) and (
+                            k not in ['prcp_fac']))]))
+    else:
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], [v for k, v in kwargs.items() if k in [
+                'prcp_fac']]))  # prcp_fac is the only excluded for annual cali
+
+    params = {**calip_dict, **other_dict}
+    calispan = pd.date_range(min_date, max_date, freq='D')
+
+    day_model = mb_model(gdir, **params, bias=0.,
+                         heights_widths=(a_heights, a_widths))
+
+    # IMPORTANT
+    if run_hist is not None:
+        day_model.time_elapsed = run_hist
+    if scov is not None:
+        day_model.snowcover = copy.deepcopy(scov)
+
+    mb = []
+    for date in calispan:
+        tmp = day_model.get_daily_specific_mb(a_heights, a_widths, date=date)
+        mb.append(tmp)
+    mb = np.array(mb)
+
+    # if prcp_fac is varied, acc_sum changes, otherwise the other way around
+    acc_sum = np.sum(mb[mb > 0.])
+    abl_sum = np.sum(mb[mb < 0.])
+
+    if unc:
+        err = (acc_sum + abl_sum - mb_annual) / unc
+    else:
+        err = (acc_sum + abl_sum - mb_annual)
+
+    return err
+
+
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                           it_thresh=50, cali_suffix='',
                                           **kwargs):
