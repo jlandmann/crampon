@@ -1239,6 +1239,158 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
         log.info('ERROR to measured MB:{}'.format(error))
 
 
+
+def calculate_snow_dist_factor(gdir, mb_models=None, reset=True):
+    """
+    Calculate 1D snow redistribution factor from elevation band mass balances.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory to calculate the redistribution factor for.
+    mb_models: list of MassBalanceModel or None
+        The mass balance models for which to calculate the redistribution
+        factor. Default: None.
+    reset: bool
+        Whether the 'snow_redist' file shall be deleted and recalculated from
+        scratch. Default: False (do not delete).
+
+    Returns
+    -------
+    None
+    """
+
+    if reset is True:
+        d_path = gdir.get_filepath('snow_redist')
+        if os.path.exists(d_path):
+            os.remove(d_path)
+
+    measured_bw_distr = get_measured_mb_glamos(gdir, bw_elev_bands=True)
+    if mb_models is None:
+        mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
+    heights, widths = gdir.get_inversion_flowline_hw()
+    conv_fac = ((86400 * cfg.RHO) / cfg.RHO_W)  # m ice s-1 to m w.e. d-1
+
+    # this is copied code from cali on glamos
+    cmeta = xr.open_dataset(gdir.get_filepath('climate_daily'),
+                            drop_variables=['temp', 'prcp', 'hgt', 'grad'])
+    measured_bw_distr = measured_bw_distr[
+        (measured_bw_distr.date0 >= pd.Timestamp(np.min(cmeta.time).values)) &
+        (measured_bw_distr.date_f <= pd.Timestamp(np.max(cmeta.time).values))]
+
+    ds_list = []
+    for mbm, (i, row) in itertools.product(mb_models,
+                                           measured_bw_distr.iterrows()):
+        # get accumulation in period; snow init doesnt matter
+        drange = pd.date_range(row.date_f, row.date_s)
+        try:
+            day_model = mbm(gdir, bias=0., snow_redist=False)
+        except KeyError:  # no calibration for this MB models in cali file
+            print('Glacier not calibrated for {}. Skipping...'
+                  .format(mbm.__name__))
+            continue
+
+        if hasattr(mbm, 'calibration_timespan'):
+            if (mbm.calibration_timespan[0] is not None) and (
+                    row.date0.year < mbm.calibration_timespan[0]):
+                continue
+            if (mbm.calibration_timespan[1] is not None) and (
+                    row.date_f.year > mbm.calibration_timespan[1]):
+                continue
+
+        accum = []
+        ablat = []
+        total = []
+        gmet = climate.GlacierMeteo(gdir)
+        for date in drange:
+            # get MB an convert to m w.e. per day
+            tmp = day_model.get_daily_mb(heights, date=date)
+            tmp *= conv_fac
+            # todo: get accum from GlacierMeteo, not from modeling...
+            #  otherwise "D" gets smaller the more often it is calculated
+            #  (precip is already multiplied with D in the MB classes)
+            psol, _ = gmet.get_precipitation_solid_liquid(date, heights)
+            try:
+                iprcp_fac = day_model.prcp_fac[
+                    day_model.prcp_fac.index.get_loc(date,)]
+            except KeyError:
+                iprcp_fac = day_model.param_ep_func(day_model.prcp_fac)
+            acc = psol * iprcp_fac
+            # accum.append(np.clip(tmp, 0., None))
+            accum.append(acc/1000.)  # convert to m
+            ablat.append(np.clip(tmp, None, 0.))
+            total.append(tmp)
+
+        # get minimum index - after then we assume melt to be frozen and thus
+        # accounted for in the GLAMOS measurements
+        min_ix = np.argmin(np.cumsum(np.array(total), axis=0), axis=0)
+        ablat = np.array(ablat)
+        for n in range(min_ix.size):
+            ablat[(min_ix[n] + 1):, n] = 0.
+
+        curr_dist = measured_bw_distr[measured_bw_distr.date_f == row.date_f]
+
+        # drop unwanted columns and NaNs (glacier geometry changes)
+        curr_dist = curr_dist.drop(
+            columns=['id', 'date0', 'date_s', 'date_f', 'date1'])\
+            .dropna(axis=1)
+        elev_bands = np.array([float(c) for c in curr_dist.columns])
+        accum_sum = np.nansum(np.array(accum), axis=0)
+        ablat_sum = np.nansum(np.array(ablat), axis=0)
+
+        redist_fac = get_1d_snow_redist_factor(
+            elev_bands, curr_dist.values[0], heights, accum_sum,
+            mod_abl=ablat_sum)
+
+        # I'm convinced that this is not true anymore, at least after late
+        # spring....
+        if pd.isnull(row.date1):
+            end_insert = pd.Timestamp(row.date_f.year,
+                                      cfg.PARAMS['begin_mbyear_month'],
+                                      cfg.PARAMS['begin_mbyear_day']) - \
+                         pd.Timedelta(days=1)
+        else:
+            end_insert = row.date1 - dt.timedelta(days=1)
+        insert_range = pd.date_range(row.date_f, end_insert)
+        ds = xr.Dataset({'D': (['time', 'fl_id', 'model'],
+                               np.repeat(np.atleast_3d(redist_fac),
+                                         len(insert_range), axis=0))},
+                        coords={'time': (['time', ], insert_range),
+                                'model': (['model', ], [mbm.__name__]),
+                                'fl_id': (
+                                    ['fl_id', ], np.arange(heights.size))})
+        ds_list.append(ds)
+
+    # override necessary if dates overlap!?
+    ds_merge = xr.merge(ds_list, compat='override')
+    # fill all NaNs with 1.
+    # todo: is this a good idea or does this cause trouble?
+    ds_merge = ds_merge.fillna(1.)
+    ds_merge.attrs.update({'id': gdir.rgi_id, 'name': gdir.name})
+
+    redist_path = gdir.get_filepath('snow_redist')
+    if (reset is True) and (len(mb_models) == len(cfg.MASSBALANCE_MODELS)):
+        os.remove(redist_path)
+        ds_merge.to_netcdf(redist_path)
+    else:
+        if gdir.has_file('snow_redist'):
+            # load to avoid PermissionError
+            with xr.open_dataset(redist_path, autoclose=True).load() as old:
+                old_redist = old.copy(deep=True)
+            old_redist.load()
+            new_redist = ds_merge.combine_first(old_redist)
+            new_redist.load()
+            old_redist.close()
+            old.close()
+            old_redist = None
+            old = None
+            new_redist.to_netcdf(redist_path)
+        else:
+            ds_merge.to_netcdf(redist_path)
+    return ds_merge
+
+
+
 def visualize(mb_xrds, msrd, err, x0, ax=None):
     if not ax:
         fig, ax = plt.subplots()
