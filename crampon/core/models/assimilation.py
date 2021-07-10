@@ -1,11 +1,12 @@
-
 from crampon import cfg
 from crampon import utils
+from typing import Optional, Union
+from itertools import permutations, combinations
 import pandas as pd
 import numpy as np
 from crampon.core.models.massbalance import BraithwaiteModel, HockModel, \
     PellicciottiModel, OerlemansModel, SnowFirnCover, \
-    EnsembleMassBalanceModel, ParameterGenerator, MassBalanceModel
+    EnsembleMassBalanceModel, ParameterGenerator, DailyMassBalanceModel
 from crampon.core.preprocessing import climate
 from crampon import tasks
 import datetime as dt
@@ -13,19 +14,18 @@ import copy
 import xarray as xr
 import filterpy as fp
 from filterpy import monte_carlo
-from scipy import stats, optimize, special
+from scipy import stats, optimize, interpolate
 import scipy.linalg as spla
 from sklearn.neighbors import KernelDensity
 import glob
 import os
 from crampon.core.holfuytools import *
 import logging
-import numba
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from properscoring import crps_ensemble
 # _normpdf and _normcdf are are faster than scipy.stats.norm.pdf/cdf
-from properscoring._crps import _crps_ensemble_vectorized, _normpdf, _normcdf
+from properscoring._crps import _normpdf, _normcdf
 
 # todo: double code wit massbalance
 prcp_fac_annual_cycle = climate.prcp_fac_annual_cycle(
@@ -146,7 +146,7 @@ def get_prior_param_distributions(gdir, model, n_samples, fit='gauss',
     gdir: crampon.utils.GlacierDirectory
         The glacier directory to be processed.
     model: crampon.core.models.massbalance.DailyMassBalanceModel
-        The model to the the paramater prior for
+        The model to create the parameter prior for.
     n_samples: int
         Sample size to be drawn from the distribution fitted to the calibrated
         parameters.
@@ -157,7 +157,7 @@ def get_prior_param_distributions(gdir, model, n_samples, fit='gauss',
         Random seed for repeatable experiments. Default: None (no seed).
     std_scale_fac: float
         Factor to scale the standard deviation of the input distribution. This
-        helps if the number of calibrated paramaters is low. Default: 1.0 (
+        helps if the number of calibrated parameters is low. Default: 1.0 (
         do not extend).
 
     Returns
@@ -178,16 +178,19 @@ def get_prior_param_distributions(gdir, model, n_samples, fit='gauss',
 
     if fit == 'gauss':
         params_prior = np.random.multivariate_normal(
-            np.mean(calibrated, axis=0), np.cov(
-            calibrated.T) * std_scale_fac, size=n_samples)
+            np.mean(calibrated, axis=0),
+            np.cov(calibrated.T) * std_scale_fac,
+            size=n_samples
+        )
     elif fit == 'uniform':
         params_prior = np.array([np.random.uniform(
-            np.mean(calibrated[:, i]) - std_scale_fac * (
-                        np.mean(calibrated[:, i]) - np.min(calibrated[:, i])),
-                                           np.mean(
-            calibrated[:, i]) + std_scale_fac * (np.max(calibrated[:, i]) - np.mean(
-            calibrated[:, i])), n_samples)
-        for i in range(calibrated.shape[1])]).T  # .T to make compatible
+            np.mean(calibrated[:, i]) -
+            std_scale_fac * (np.mean(calibrated[:, i]) -
+                             np.min(calibrated[:, i])),
+            np.mean(calibrated[:, i]) +
+            std_scale_fac * (np.max(calibrated[:, i]) -
+                             np.mean(calibrated[:, i])), n_samples)
+            for i in range(calibrated.shape[1])]).T  # .T to make compatible
     elif fit == 'lognormal':
         # todo: is this multiplication with the scale factor correct?
         params_prior = np.random.multivariate_normal(
@@ -196,7 +199,7 @@ def get_prior_param_distributions(gdir, model, n_samples, fit='gauss',
             size=n_samples)
         params_prior = np.exp(params_prior)
     else:
-        raise NotImplementedError('Paramater fit == {} not allowed. We cannot '
+        raise NotImplementedError('Parameter fit == {} not allowed. We cannot '
                                   'fit anything else than Gauss at the '
                                   'moment.'.format(fit))
 
@@ -223,38 +226,42 @@ def get_prior_param_distributions_gabbi(model, n_samples, fit='gauss',
 
     """
 
-    #param_bounds = {
-    #    'mu_ice': (3.0, 10.0),
-    #    'mu_hock': (0.01, 3.6),
-    #    'a_ice': (0.01, 0.0264),
-    #    'tf': (0.01, 7.44),
-    #    'srf': (0.01, 0.29),
-    #    'c0': (-225., -5.),
-    #    'c1': (1., 33.),
-    #    'prcp_fac': (0.9, 2.1)
-    #}
+    # todo: check if correct
+    gabbi_param_bounds = {
+        'mu_ice': (3.0, 10.0),
+        'mu_hock': (0.01, 3.6),
+        'a_ice': (0.01, 0.0264),
+        'tf': (0.01, 7.44),
+        'srf': (0.01, 0.29),
+        'c0': (-225., -5.),
+        'c1': (1., 33.),
+        'prcp_fac': (0.9, 2.1)
+    }
 
     # todo: take over param bounds from model class/cfg
-    #theta_prior = np.array([np.random.uniform(param_bounds[p][0],
-    #                                          param_bounds[p][1], n_samples)
+    # theta_prior = np.array([np.random.uniform(gabbi_param_bounds[p][0],
+    #                                          gabbi_param_bounds[p][1],
+    #                                          n_samples)
     #                        for p in model.cali_params_list]).T
-    #theta_prior = np.array([np.abs(np.clip(np.random.normal(np.mean(
-    #    param_bounds[p]), np.abs(np.ptp(param_bounds[p])/4.), n_samples),
-    #    param_bounds[p][0], param_bounds[p][1]))
+    # theta_prior = np.array([np.abs(np.clip(np.random.normal(np.mean(
+    #    gabbi_param_bounds[p]), np.abs(np.ptp(gabbi_param_bounds[p])/4.),
+    #    n_samples),
+    #    gabbi_param_bounds[p][0], gabbi_param_bounds[p][1]))
     #        for p in model.cali_params_list]).T
     if fit == 'gauss':
         # th 6 is empirical: we want (roughly) to define sigma such that 99% of
         # values are within the bounds
         np.random.seed(seed)
         theta_prior = np.array([np.clip(np.random.normal(np.mean(
-            param_bounds[p]), np.abs(np.ptp(param_bounds[p]) / 6.), n_samples),
-            param_bounds[p][0], param_bounds[p][1])
+            gabbi_param_bounds[p]), np.abs(np.ptp(gabbi_param_bounds[p]) / 6.),
+            n_samples), gabbi_param_bounds[p][0], gabbi_param_bounds[p][1])
             for p in model.cali_params_list]).T
     elif fit == 'uniform':
         np.random.seed(0)
-        theta_prior = np.array([np.random.uniform(param_bounds[p][0],
-                                               param_bounds[p][1], n_samples)
-                            for p in model.cali_params_list]).T
+        theta_prior = np.array([np.random.uniform(gabbi_param_bounds[p][0],
+                                                  gabbi_param_bounds[p][1],
+                                                  n_samples)
+                                for p in model.cali_params_list]).T
     else:
         raise ValueError('Value {} for fit parameter is not allowed.',
                          format(fit))
@@ -285,7 +292,7 @@ def calculate_ensemble_ranks(obs: np.ndarray, ens_preds: np.ndarray):
 
     combined = np.vstack((obs[np.newaxis], ens_preds))
     ranks = np.apply_along_axis(lambda x: stats.rankdata(x, method='min'), 0,
-                                     combined)
+                                combined)
     ties = np.sum(ranks[0] == ranks[1:], axis=0)
     ranks = ranks[0]
     tie = np.unique(ties)
@@ -300,7 +307,7 @@ def calculate_ensemble_ranks(obs: np.ndarray, ens_preds: np.ndarray):
 
 def update_particle_filter(particles: np.ndarray, wgts: np.ndarray,
                            obs: float, obs_std: float,
-                           truncate: float or None=None) -> np.ndarray:
+                           truncate: float or None = None) -> np.ndarray:
     """
     Update the weights of the prior.
 
@@ -348,13 +355,13 @@ def update_particle_filter(particles: np.ndarray, wgts: np.ndarray,
             myclip_a = truncate
             myclip_b = np.inf  # right clipping boundary
         a, b = (myclip_a - obs) / obs_std, (myclip_b - obs) / obs_std
-        #w *= stats.truncnorm.pdf(particles, a, b, obs, obs_std)
+        # w *= stats.truncnorm.pdf(particles, a, b, obs, obs_std)
         w += np.log(stats.truncnorm.pdf(particles, a, b, obs, obs_std))
     else:
-        #w *= stats.norm(particles, obs_std).pdf(obs)
+        # w *= stats.norm(particles, obs_std).pdf(obs)
         w += np.log(stats.norm(particles, obs_std).pdf(obs))
     w += 1.e-300  # avoid round-off to zero
-    #new_wgts = w / np.sum(w)  # normalize
+    # new_wgts = w / np.sum(w)  # normalize
     new_wgts = np.exp(w) / np.sum(np.exp(w))  # normalize
     return new_wgts
 
@@ -476,20 +483,33 @@ def simple_resample(particles: np.ndarray, weights: np.ndarray) -> tuple:
     return particles, weights
 
 
-def stratified_resample(weights, n_samples=None, one_random_number=False,
-                        seed=None):
+def stratified_resample(weights: np.array, n_samples: Optional[int] = None,
+                        one_random_number: bool = False,
+                        seed: Optional[int] = None) -> np.array:
     """
-    Copied form filterpy, but extended by an own choice of N.
+    Copied stratified_resample from filterpy, but extended by own choice of N.
 
     todo: Try and make a PR at filterpy
     Parameters
     ----------
-    weights :
-    n_samples :
+    weights : np.array
+        Array with particle weights.
+    n_samples : int, optional
+        How many samples to generate during the resampling procedure. If None,
+        the amount of present weights will be sampled again. Default: None.
+    one_random_number: bool
+        Whether to use only one random number during the resampling to keep
+        frequency of particle j less than 1 away from expected value N * w_j.
+        Default: False
+    seed: int, optional
+        Which random number generator to use (for repeatable experiments).
+        Default: None (non-repeatable).
+
 
     Returns
     -------
-
+    indexes: np.array
+        Array with the indices to be resampled.
     """
 
     if n_samples is None:
@@ -501,7 +521,7 @@ def stratified_resample(weights, n_samples=None, one_random_number=False,
     if one_random_number is True:
         rn = np.random.random(1)  # version Hansruedi Künsch suggested to
         # keep frequency of particle j less than 1 away from expected value
-        # N*w_j
+        # N * w_j
     else:
         rn = np.random.random(n_samples)  # filterpy version
     positions = (rn + range(n_samples)) / n_samples
@@ -621,19 +641,21 @@ def resample_particles(particles, weights,
         print(len(need_resamp_ix))
         for nri in need_resamp_ix[0]:
             try:
-                #todo: try and replace this with the actual method keyword!!!???
+                # todo: try and replace this with the actual method keyword!?
                 indices = resamp_method(weights[:, nri])
             except IndexError:
                 worked = False
+                indices = None
                 while worked is False:
                     try:
                         # avoid some stupid precision error
-                        input = weights[:, nri] * (
+                        resamp_input = weights[:, nri] * (
                                     1. / np.cumsum(weights[:, nri])[-1])
-                        indices = resamp_method(input)
+                        indices = resamp_method(resamp_input)
                         worked = True
                         print('worked')
                     except IndexError:
+                        indices = None
                         print('did not work')
                         pass
             particles[:, nri], weights[:, nri] = resample_from_index(
@@ -642,8 +664,9 @@ def resample_particles(particles, weights,
     return particles, weights
 
 
-class State(np.ndarray):
+class State():
     """Basic class to represent the state of a system."""
+    # todo: inherit from np.ndarray?
     def __init__(self):
         self.n_spatial_dims = 0
         self.n_state_vars = 0
@@ -670,6 +693,7 @@ class AugmentedState(np.ndarray):
     """Basic class to represent the state of a system."""
     pass
 
+
 class GlacierState(State):
     """ Represent the state of a glacier in CRAMPON."""
     pass
@@ -686,7 +710,7 @@ class MultiModelGlacierState(GlacierState):
 
 
 class AugmentedMultiModelGlacierState(MultiModelGlacierState):
-    """Represent an aougmented multi-model glacier state."""
+    """Represent an augmented multi-model glacier state."""
     pass
 
 
@@ -721,7 +745,8 @@ class FilteringMethod(AssimilationMethod):
     """Interface to filtering assimilation methods."""
 
 
-#class ParticleFilter(FilteringMethod):
+
+# class ParticleFilter(FilteringMethod):
 #    """Interface to the Particle Filter."""
 
 
@@ -757,9 +782,9 @@ class ParticleFilter(object):
             The actual threshold of effective particles below which resampling
             is done. If None, the value defaults to half the number of
             particles. Default: None. (see _[1]).
-        save: bool
+        do_save: bool
             True if results should be saved when using the `step` method.
-        plot: bool
+        do_plot: bool
             True if results should be plotted when using the `step` method.
 
         References
@@ -878,7 +903,7 @@ class ParticleFilter(object):
                               particles=xr_ds.particles.values,
                               weights=xr_ds.weights.values,
                               n_eff_thresh=n_eff_thresh,
-                              save=save, plot=plot)
+                              do_save=save, do_plot=plot)
 
     def to_file(self, path: str) -> None:
         """
@@ -987,11 +1012,11 @@ class ParticleFilter(object):
         """
         w = copy.deepcopy(self.weights)
         # todo: w[:] = 1. was there in Labbe.
-        #w[:] = 1.
-        #w *= stats.norm(self.particles, obs_std).pdf(obs)
+        # w[:] = 1.
+        # w *= stats.norm(self.particles, obs_std).pdf(obs)
         w += np.log(stats.norm(self.particles, obs_std).pdf(obs))
         w += 1.e-300  # avoid round-off to zero
-        #self.weights = w / np.sum(w)  # normalize
+        # self.weights = w / np.sum(w)  # normalize
         self.weights = np.exp(w) / np.sum(np.exp(w))  # normalize
 
     def update_truncated_gaussian(self, obs: float, obs_std: float,
@@ -1037,7 +1062,7 @@ class ParticleFilter(object):
             clip_b = np.inf  # right clipping boundary
         a, b = (clip_a - obs) / obs_std, (clip_b - obs) / obs_std
         # todo: the truncnorm still needs to be normalized?
-        #w *= stats.truncnorm.pdf(self.particles, a, b, obs, obs_std)
+        # w *= stats.truncnorm.pdf(self.particles, a, b, obs, obs_std)
         w += np.log(stats.truncnorm.pdf(self.particles, a, b, obs, obs_std))
         w += 1.e-300  # avoid round-off to zero
         self.weights = np.exp(w) / np.sum(np.exp(w))  # normalize
@@ -1075,8 +1100,8 @@ class ParticleFilter(object):
         w = copy.deepcopy(self.weights)
         # todo: w[:] = 1. was there in Labbe.
         # w[:] = 1.
-        a = (mu / sigma) ** 2 # shape factor
-        #w *= stats.gamma.pdf(self.particles, a, obs, obs_std)
+        a = (mu / sigma) ** 2  # shape factor
+        # w *= stats.gamma.pdf(self.particles, a, obs, obs_std)
         w += np.log(stats.gamma.pdf(self.particles, a, obs, obs_std))
         w += 1.e-300  # avoid round-off to zero
         self.weights = np.exp(w) / np.sum(np.exp(w))  # normalize
@@ -1104,15 +1129,17 @@ class ParticleFilter(object):
         return estimate_state(self.particles, self.weights)
 
     def resample_if_needed(self, resamp_method=stratified_resample,
-                 n_eff_thresh: int or None = None) -> None:
+                           n_eff_thresh: int or None = None) -> None:
         """
         Resample the particles, if the effective n threshold is exceeded.
 
-        # todo: the handling of the condition (effective n thresh exceeded yes/no) is in the function resample_particles...this should probably be changed.
+        # todo: the handling of the condition (effective n thresh exceeded
+            yes/no) is in the function resample_particles...this should
+            probably be changed.
 
         Parameters
         ----------
-        method: method from filterpy.monte_carlo
+        resamp_method: method from filterpy.monte_carlo
             The method how to resample the particles. See _[1] for reference.
             Default: stratified_resample
         n_eff_thresh: int
@@ -1198,11 +1225,11 @@ class ParticleFilter(object):
             if update_method == 'gauss':
                 self.update_gaussian(obs, obs_std)
             elif update_method == 'truncgauss':
-                self.update_truncated_gaussian()
+                self.update_truncated_gaussian(obs, obs_std)
             elif update_method == 'random':
                 raise NotImplementedError
             elif update_method == 'gamma':
-                self.update_gamma()
+                self.update_gamma(obs, obs_std)
             else:
                 raise ValueError(
                     'Update method {} does not exist.'.format(update_method))
@@ -1215,23 +1242,29 @@ class ParticleFilter(object):
         # 4) save, if wanted
         if self.do_save is True:
             raise NotImplementedError
-            #self.to_file()
+            # self.to_file()
 
         # 5) plot, if wanted
         if self.do_plot is True:
             self.plot()
 
-        #if self.do_save:
+        # if self.do_save:
         #    self.save()
-        #if self.do_ani:
+        # if self.do_ani:
         #    self.ani()
 
-        #if self.plot_save:
+        # if self.plot_save:
         #    self.p_save()
 
     def plot(self):
-        pass
+        """
+        Plot the state somehow.
 
+        Returns
+        -------
+
+        """
+        pass
 
     """
     def reweight(self):
@@ -1396,7 +1429,7 @@ class ParticleFilter(object):
     """
 
 
-#class AugmentedEnsembleParticleFilter(object):
+# class AugmentedEnsembleParticleFilter(object):
 class AugmentedEnsembleParticleFilter(ParticleFilter):
     """
     The interface to a multiple model particle filter as CRAMPON uses it.
@@ -1440,6 +1473,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         None
         """
 
+        # todo: let the call to super make sense
         #super().__init__(n_particles, do_plot=False, do_save=False)
 
         self.models = models
@@ -1464,7 +1498,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         # todo: model prob. should be given as log right away
         if model_prob is None:
             self._model_prob_log = np.repeat(np.log(1. / self.n_models),
-            self.n_models)
+                                             self.n_models)
             self._n_model_particles = self.n_tot / self.n_models
         else:
             assert np.isclose(np.sum(model_prob), 1.)
@@ -1482,7 +1516,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         self.particle_ax = len(self.spatial_dims)
 
         self._log_weights = np.log(np.ones((*self.spatial_dims, self.n_tot)) /
-                                    self.n_tot)
+                                   self.n_tot)
 
         # todo: most stupid thing ever: the index where to retrieve the
         #  statistics from (particles per model etc)
@@ -1490,11 +1524,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
     @property
     def weights(self):
+        """The particle weights."""
         return np.exp(self.log_weights)
 
     @property
     def log_weights(self):
-        """Logarithm of the weights."""
+        """Logarithm of the particle weights."""
         return self._log_weights
 
     @log_weights.setter
@@ -1508,7 +1543,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
     @property
     def model_prob_log(self):
-        """Model proability in the logarithmic domain."""
+        """Model probability in the logarithmic domain."""
         self._model_prob_log = self.M_t_all + np.log(
             [np.sum(np.exp(self.model_weights_log[i] - self.M_t_all[i])) for
              i in self.model_range])
@@ -1550,9 +1585,9 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
     @property
     def model_weights_log(self):
-        """Logarithmic eights per model as a list."""
+        """Logarithmic weights per model as a list."""
         return [self.log_weights[self.stats_ix, mix] for mix in
-                         self.model_indices_all]
+                self.model_indices_all]
 
     @property
     def M_t_all(self):
@@ -1573,7 +1608,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
     @property
     def S_t_all(self):
         self._S_t_all = np.array([np.sum(np.exp(self.model_weights_log[i] -
-                                              self.M_t_all[i])) for i in
+                                                self.M_t_all[i])) for i in
                                   self.model_range])
         # this should not happen
         if np.isnan(self._S_t_all).any():
@@ -1608,7 +1643,6 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         p_m = [p[~np.isnan(p)] for p in p_m_nan]
         return p_m
 
-
     @property
     def param_covariance(self):
         """Get the state covariance of parameters."""
@@ -1623,7 +1657,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
             model_wgts = np.exp(
                 self.log_weights[self.stats_ix, mix[j]] -
-                    self.model_prob_log[j])
+                self.model_prob_log[j]
+            )
             big_covlist.append(np.cov(model_ptcls.T, aweights=model_wgts))
 
         return np.array(big_covlist)
@@ -1633,6 +1668,108 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         """Effective number of particles per model."""
         n_eff = [effective_n(w/np.sum(w)) for w in self.model_weights]
         return n_eff
+
+    @classmethod
+    def from_file(cls, path: str):
+        """
+        Generate an Augmented Ensemble Particle Filter object from netCDF file.
+
+        Parameters
+        ----------
+        path: str
+            Path to the netCDF file from which the class shall be instantiated.
+
+        Returns
+        -------
+        pf: AugmentedEnsembleParticleFilter
+            An AugmentedEnsembleParticleFilter object.
+        """
+        ds = xr.open_dataset(path)
+        return cls.from_dataset(ds)
+
+    @staticmethod
+    def from_dataset(xr_ds: xr.Dataset):
+        """
+        Generate a Particle Filter object from an xarray Dataset.
+
+        Parameters
+        ----------
+        xr_ds: xarray.Dataset
+            An xarray Dataset from which the class shall be instantiated.
+
+        Returns
+        -------
+        pf: AugmentedEnsembleParticleFilter
+            An AugmentedEnsembleParticleFilter object.
+        """
+
+        if 'model' in xr_ds.coords:
+            models = xr_ds.model.values
+        elif 'models' in xr_ds.attrs:
+            models = xr_ds.attrs['models']
+        else:
+            raise ValueError('Models must be given either in datasets coords '
+                             'or attributes.')
+        if 'save' in xr_ds.attrs:
+            save = xr_ds.attrs['save']
+        else:
+            save = None
+        if 'plot' in xr_ds.attrs:
+            plot = xr_ds.attrs['plot']
+        else:
+            plot = None
+        n_particles = len(xr_ds.particle_id.values)
+        #spatial_dims =
+        #n_phys_vars =
+        #n_aug_vars =
+        # todo: save log weights or weights?
+        return AugmentedEnsembleParticleFilter(
+            models=models, n_particles=n_particles,
+            particles=xr_ds.particles.values, weights=xr_ds.weights.values,
+            do_save=save, do_plot=plot, n_aug_vars=None, n_phys_vars=None,
+            spatial_dims=None)
+
+    def to_file(self, path: str) -> None:
+        """
+        Write to netCDF file.
+
+        Parameters
+        ----------
+        path: str
+            Path to write the object to.
+
+        Returns
+        -------
+        None
+        """
+        ds = self.to_dataset()
+        ds.encoding['zlib'] = True
+        # todo: set more encodings to save disk space?
+        ds.to_netcdf(path)
+
+    def to_dataset(self) -> xr.Dataset:
+        """
+        Export as xarray Dataset.
+
+        Returns
+        -------
+        ds: xarray.Dataset
+            A Dataset containing the class attributes as variables.
+        """
+        # todo: this is currently only possible for 1D in space
+        xr_ds = xr.Dataset(
+            {'particles': (['fl_id', 'particle_id', 'data'], self.particles),
+             'log_weights': (['fl_id', 'particle_id'], self.log_weights)},
+            coords={'particle_id': (['particle_id', ],
+                                    range(self.n_particles)),
+                    'fl_id': (range(self.particles.shape[0])),
+                    'data': (range(self.particles.shape[-1]))},
+            attrs={'models': self.models, 'plot': self.do_plot,
+                   'save': self.do_save, 'n_phys_vars': self.n_phys_vars,
+                   'n_aug_vars': self.n_aug_vars,
+                   'state_indices': self.state_indices})
+        return xr_ds
+
 
     def get_observation_quantiles_hansruedi(self, obs, obs_std, mb_ix,
                                             mb_init_ix, eval_ix,
@@ -1662,6 +1799,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         obs_first_dim : int
             This is a bullshit keyword. It is just temporary and tells that, at
             the moment, we are just able to look at the mass balance.
+        generate_n_obs: int, optional
+            How many observations to generate.
         by_model: bool
 
 
@@ -1672,9 +1811,9 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             distribution.
         """
 
-        # todo: the zeros are hard-coded (the keyword is stupid, but make it
+        #  todo: the zeros are hard-coded (the keyword is stupid, but make it
         #  easier afterwards
-        obs_quantiles = []#np.full_like(obs, np.nan)
+        obs_quantiles = []  # np.full_like(obs, np.nan)
         quantile_range = np.arange(0.0, 1.01, 0.01)
         for i, eix in enumerate(eval_ix):
             if ~np.isnan(obs[obs_first_dim, i]):
@@ -1704,20 +1843,21 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                                       axis=1))
                     obs_quantiles.append(intermediate_list)
                 else:
-                    w_quantiles = np.sum(self.weights[eix, :] *
-                                         (obs[obs_first_dim, i] - actual_mb/obs_std[
-                                                         obs_first_dim, i]))
+                    w_quantiles = np.sum(
+                        self.weights[eix, :] * (
+                                obs[obs_first_dim, i] - actual_mb /
+                                obs_std[obs_first_dim, i])
+                    )
                     obs_quantiles.append(w_quantiles)
 
         return obs_quantiles
 
-    def get_observation_quantiles(self, obs, obs_std, mb_ix, mb_init_ix,
-                                  eval_ix,
-                                 obs_first_dim=0, generate_n_obs=1000,
-                                 by_model=False):
+    def get_observation_quantiles(
+            self, obs, obs_std, mb_ix, mb_init_ix, eval_ix, obs_first_dim=0,
+            generate_n_obs=1000, by_model=False):
         """
         Get the quantile of the observation at the weighted particle
-        distribution
+        distribution.
 
         Parameters
         ----------
@@ -1738,6 +1878,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         obs_first_dim : int
             This is a bullshit keyword. It is just temporary and tells that, at
             the moment, we are just able to look at the mass balance.
+        generate_n_obs: int, optional
+            How many observations to generate.
         by_model: bool
 
 
@@ -1765,24 +1907,23 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                         w_quantiles = utils.weighted_quantiles(
                                 np.random.normal(
                                     obs[obs_first_dim, i],
-                                    obs_std[
-                                        obs_first_dim, i],
-                                    generate_n_obs),
-                            quantile_range)
+                                    obs_std[obs_first_dim, i],
+                                    generate_n_obs
+                                ), quantile_range
+                        )
                         intermediate_list.append(
                             np.argmin(np.abs(np.atleast_2d(w_quantiles).T -
                                              actual_mb[mi]), axis=0))
                     obs_quantiles.append(intermediate_list)
                 else:
-                    w_quantiles = utils.weighted_quantiles(np.random.normal(
-                                                                  obs[
-                                                                      obs_first_dim, i],
-                                                                  obs_std[
-                                                                      obs_first_dim, i],
-                                                                  generate_n_obs),
-                                                           quantile_range)
-                    obs_quantiles.append(np.argmin(np.abs(np.atleast_2d(w_quantiles).T -actual_mb),
-                                                   axis=0))
+                    w_quantiles = utils.weighted_quantiles(
+                        np.random.normal(obs[obs_first_dim, i],
+                                         obs_std[obs_first_dim, i],
+                                         generate_n_obs), quantile_range
+                    )
+                    obs_quantiles.append(
+                        np.argmin(np.abs(
+                            np.atleast_2d(w_quantiles).T - actual_mb), axis=0))
 
         return obs_quantiles
 
@@ -1855,8 +1996,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
     def predict(self, mb_models_inst, gmeteo, date, h, obs_merge, ssf,
                 ipot, ipot_sigma, alpha_ix, mod_ix, swe_ix, tacc_ix, mb_ix,
                 tacc_ice, model_error_mean, model_error_std,
-                param_random_walk=False, snowredistfac=False,
-                use_psol_multiplier=False, seed=None):
+                param_random_walk=False, snowredistfac=None,
+                use_psol_multiplier=False, alpha_underlying=None, seed=None):
         """
         Calculate a mass balance prediction.
 
@@ -1909,7 +2050,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         param_random_walk : bool, optional
             Whether to let the parameters do a random walk. Default: False.
         snowredistfac : bool, optional
-            Whether to use a snow redsitribution factor. Default: False.
+            Which snow redistribution factor to use. Default: None.
         use_psol_multiplier : bool, optional
             Whether to use the periodic multiplier for solid precipitation.
             Default: False.
@@ -1938,7 +2079,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         try:
             print('MU_ICE: ', np.average(params_per_model[0][:, 0],
                                          weights=self.model_weights[0]),
-                              np.std(params_per_model[0][:, 0]))
+                  np.std(params_per_model[0][:, 0]))
         except ZeroDivisionError:
             pass
 
@@ -1966,20 +2107,20 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             # correct precipitation for systematic, not calibrated biases
             if use_psol_multiplier is True:
                 psol_rand *= prcp_fac_cycle_multiplier[doy - 1]
-            if snowredistfac is not False:
+            if snowredistfac is not None:
                 psol_rand *= np.atleast_2d(snowredistfac[:, i]).T
 
-            sis_rand = np.atleast_2d(gmeteo.randomize_variable(date, 'sis',
-                                                               random_seed=seed))
-            sis_rand *= ssf
+            sis_rand = np.atleast_2d(gmeteo.randomize_variable(
+                date, 'sis', random_seed=seed))
+            # necessary because of the dimensions
+            sis_rand = sis_rand * ssf
 
             # todo: is perfect correlation a good assumption?
             ipot_reshape = np.repeat(np.atleast_2d(ipot).T,
                                      self.n_model_particles[i], axis=1)
             np.random.seed(seed)
-            ipot_rand = ipot_reshape + \
-                        np.atleast_2d(np.random.normal(
-                            0., ipot_sigma, self.n_model_particles[i]))
+            ipot_rand = ipot_reshape + np.atleast_2d(np.random.normal(
+                0., ipot_sigma, self.n_model_particles[i]))
 
             # PARAM UNCERTAINTY from current filter
             model_params = params_per_model[i]
@@ -2008,8 +2149,10 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                                           model_params[random_pi, :len(
                                               m.cali_params_list)]))
                 else:
-                    param_dict = dict(zip(m.cali_params_list, model_params[pi,
-                                                              :len(m.cali_params_list)]))
+                    param_dict = dict(
+                        zip(m.cali_params_list,
+                            model_params[pi, :len(m.cali_params_list)])
+                    )
 
                 param_dict.update({'psol': psol_rand[:, pi],
                                    'tmean': temp_rand[:, pi],
@@ -2022,16 +2165,16 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                 # update tacc/albedo depending on SWE
                 tacc[param_dict['psol'] >= 1., pi] = 0.
                 old_snow_ix = ((param_dict['psol'] < 1.) & (swe[:, pi] > 0.))
-                tacc[old_snow_ix, pi] += np.clip(param_dict['tmax'][old_snow_ix], 0., None)
+                tacc[old_snow_ix, pi] += np.clip(
+                    param_dict['tmax'][old_snow_ix], 0., None)
                 no_snow_ix = ((param_dict['psol'] < 1.) & (swe[:, pi] == 0.))
                 # setting a chosen fixed ice albedo tacc
                 if no_snow_ix.any():
                     tacc[no_snow_ix, pi] = tacc_ice
 
                 # todo: the underlying albedo should depend on the SWE
-                alpha[:, pi] = point_albedo_brock(swe[:, pi], tacc[:, pi],
-                                                  swe[:, pi] == 0.,
-                                                  a_u=cfg.PARAMS['ice_albedo_default'])
+                alpha[:, pi] = point_albedo_brock(
+                    swe[:, pi], tacc[:, pi], swe[:, pi] == 0., a_u=alpha_underlying)
 
                 # the model decides which MB to produce
                 if m.__name__ == 'BraithwaiteModel':
@@ -2040,8 +2183,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                     melt = melt_hock(**param_dict, ipot=ipot_rand[:, pi],
                                    swe=swe[:, pi])
                 elif m.__name__ == 'PellicciottiModel':
-                    melt = melt_pellicciotti(**param_dict, alpha=alpha[:,
-                                                                   pi])
+                    melt = melt_pellicciotti(**param_dict, alpha=alpha[:, pi])
                 elif m.__name__ == 'OerlemansModel':
                     melt = melt_oerlemans(**param_dict, alpha=alpha[:, pi])
                 else:
@@ -2078,9 +2220,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
                 = \
                 swe_per_model[im].flatten()
             # replace alpha
-            particles[:, :, alpha_ix][particles[:, :, mod_ix] ==
-                                           im] \
-                = \
+            particles[:, :, alpha_ix][particles[:, :, mod_ix] == im] = \
                 alpha_per_model[im].flatten()
             # *ADD* MB (+=) # MB needs Fortran flattening here!!!
             particles[:, :, mb_ix][particles[:, :, mod_ix] == im] \
@@ -2092,7 +2232,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         self.particles = particles.copy()
 
-    def update(self, obs, obs_std, R, obs_ix, obs_init_mb_ix, obs_spatial_ix):
+    def update(self, obs, obs_std, R, obs_ix, obs_init_mb_ix, obs_spatial_ix,
+               sla_ix=None, swe_ix=None):
         """
         Update the prior estimate with observations.
 
@@ -2178,23 +2319,38 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         # apply resampling procedure per model with arbitrary resampling method
         # divide first by model prob., to get the weights right for resampling
         # must be a list, since particles sizes can differ
-        weights_for_resamp = [np.exp(self.model_weights_log[i] -
-                                     self.model_prob_log[i]) for i in self.model_range]
+        weights_for_resamp = [
+            np.exp(self.model_weights_log[i] -
+                   self.model_prob_log[i]) for i in self.model_range]
         resample_indices = [stratified_resample(weights_for_resamp[i],
                                                 N_t_j[i],
                                                 one_random_number=True) for i
                             in range(self.n_models)]
         print('UNIQUE PTCLS to RESAMPLE: ', [len(np.unique(ri)) for ri in
               resample_indices])
+        ric = [list(resample_indices[0])]
+        maxima = np.cumsum([x for x in self.n_model_particles]) - 1
+        ric.extend(
+            [resample_indices[i] + maxima[i - 1] for i in np.arange(3) + 1])
+
+        ric = np.concatenate(ric)
+        ancest_ix.append(ric)
 
         new_p = []
         for m in range(self.n_models):
-            npm, _ = resample_from_index_augmented(self.particles[:,
-                                                       self.model_indices_all[m]],
-                                                     self.weights[:,
-                                                   self.model_indices_all[m]],
-                                                     resample_indices[m])
+            npm, _ = resample_from_index_augmented(
+                self.particles[:, self.model_indices_all[m]],
+                self.weights[:, self.model_indices_all[m]],
+                resample_indices[m])
             new_p.append(npm)
+
+        n_test = np.concatenate(new_p, axis=1)[0, :,
+                                               self.state_indices['xi'][0]]
+        b_test = self.particles[0, :, self.state_indices['xi'][0]]
+        anc = []
+        for p in n_test:
+            anc.extend(list(np.where(b_test == p)[0]))
+        ancest_all.append(anc)
 
         # compensate for over-/underrepresentation
         new_weights_per_model = self.model_prob_log - np.log(N_t_j)
@@ -2206,9 +2362,11 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         self.particles = np.concatenate(new_p, axis=1)
 
         # important: AFTER setting new particles; later comment: why again?
-        self.log_weights = np.repeat(np.hstack([np.tile(new_weights_per_model[i], int(N_t_j[i]))
-             for i in self.model_range])[np.newaxis, ...],
-                                     self.spatial_dims[0], axis=0)
+        self.log_weights = np.repeat(
+            np.hstack(
+                [np.tile(new_weights_per_model[i], int(N_t_j[i])) for i in
+                 self.model_range])[np.newaxis, ...],
+            self.spatial_dims[0], axis=0)
 
         if diversify is True:
             self.diversify_parameters(pmean, pcov, gamma=gamma)
@@ -2219,8 +2377,12 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 
         Parameters
         ----------
-        gamma: float
-            Reasonable values are 0.05 or 0.1. Default:0.05.
+        post_means:
+            Posterior parameter means.
+        post_covs:
+            Posterior parameter covariances.
+        gamma: float, optional
+            Reasonable values are 0.05 or 0.1. Default: 0.05.
 
         Returns
         -------
@@ -2244,29 +2406,38 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             model_ptcls = self.particles[self.stats_ix, mix[j]]
             mu_t_j = param_means[j]
             cov_theta_t_j = param_covs[j]
-            theta_tilde_t_k_nan = self.particles[self.stats_ix, mix[j]][:,
-                                  self.state_indices['theta']]
-            theta_tilde_t_k = theta_tilde_t_k_nan[:,
-                              ~np.isnan(theta_tilde_t_k_nan).all(axis=0)]
+            theta_tilde_t_k_nan = self.particles[
+                                      self.stats_ix, mix[j]][
+                                  :, self.state_indices['theta']]
+            theta_tilde_t_k = theta_tilde_t_k_nan[
+                              :, ~np.isnan(theta_tilde_t_k_nan).all(axis=0)]
 
             psi_k_t = np.random.multivariate_normal(np.zeros(
                     cov_theta_t_j.shape[0]), cov_theta_t_j,
                     size=len(theta_tilde_t_k))
 
-            theta_tilde_t_k_new = mu_t_j + (1 - gamma) * \
-                                  (theta_tilde_t_k - mu_t_j) + \
-                                  np.sqrt(1 - (1 - gamma)**2) * psi_k_t
+            theta_tilde_t_k_new = \
+                mu_t_j + (1 - gamma) * (theta_tilde_t_k - mu_t_j) + \
+                np.sqrt(1 - (1 - gamma)**2) * psi_k_t
 
-            theta_tilde_t_k_new_pad = np.pad(theta_tilde_t_k_new, (
-            (0, 0), (0, self.n_aug_vars - theta_tilde_t_k_new.shape[1])),
-                   'constant', constant_values=np.nan)
+            theta_tilde_t_k_new_pad = np.pad(
+                theta_tilde_t_k_new,
+                ((0, 0), (0, self.n_aug_vars - theta_tilde_t_k_new.shape[1])),
+                'constant', constant_values=np.nan
+            )
 
-            model_ptcls[:, self.state_indices['theta']] = theta_tilde_t_k_new_pad
+            model_ptcls[:, self.state_indices['theta']] = \
+                theta_tilde_t_k_new_pad
             model_ptcls_all.append(model_ptcls)
 
-        self.particles = np.repeat(np.concatenate(model_ptcls_all)[np.newaxis, :, :], self.spatial_dims[0], axis=0)
+        self.particles = np.repeat(
+            np.concatenate(model_ptcls_all)[np.newaxis, :, :],
+            self.spatial_dims[0], axis=0
+        )
 
-    def evolve_theta(self, mu_0, Sigma_0, rho=0.9, change_mean=True, seed=None):
+    def evolve_theta(
+            self, mu_0: list, Sigma_0: list, rho: float = 0.9,
+            change_mean: bool = True, seed: Optional[int] = None):
         """
         Make the model parameters time-varying.
 
@@ -2284,6 +2455,9 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             if the mean should be change back to the prior. If no (False),
             the only the variability of the prior is given back to the
             parameter distribution.
+        seed: int, optional
+            Which random number generator seeds to use (for repeatable
+            experiments). Default: None (non-repeatable).
 
         Returns
         -------
@@ -2298,7 +2472,8 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             # todo: check if cov matrix should be transposed
             theta_j_nan = self.particles[:, mix[j]][..., self.state_indices[
                 'theta']]
-            theta_j = theta_j_nan[..., ~np.isnan(theta_j_nan[0, ...]).all(axis=0)]
+            theta_j = theta_j_nan[
+                ..., ~np.isnan(theta_j_nan[0, ...]).all(axis=0)]
             theta_j = np.log(theta_j)
             np.random.seed(seed)
             zeta_t = np.random.multivariate_normal(np.zeros(len(Sigma_0[j])),
@@ -2388,11 +2563,11 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
             if update_method == 'gauss':
                 self.update_gaussian(obs, obs_std)
             elif update_method == 'truncgauss':
-                self.update_truncated_gaussian()
+                self.update_truncated_gaussian(obs, obs_std)
             elif update_method == 'random':
                 raise NotImplementedError
             elif update_method == 'gamma':
-                self.update_gamma()
+                self.update_gamma(obs, obs_std)
             else:
                 raise ValueError(
                     'Update method {} does not exist.'.format(update_method))
@@ -2405,18 +2580,18 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
         # 4) save, if wanted
         if self.do_save is True:
             raise NotImplementedError
-            #self.to_file()
+            # self.to_file()
 
         # 5) plot, if wanted
         if self.do_plot is True:
             self.plot()
 
-        #if self.do_save:
+        # if self.do_save:
         #    self.save()
-        #if self.do_ani:
+        # if self.do_ani:
         #    self.ani()
 
-        #if self.plot_save:
+        # if self.plot_save:
         #    self.p_save()
 
     def plot(self):
@@ -2426,6 +2601,7 @@ class AugmentedEnsembleParticleFilter(ParticleFilter):
 def melt_braithwaite(psol=None, mu_ice=None, tmean=None, swe=None,
                      prcp_fac=None, tmelt=0., tmax=None, sis=None):
     tempformelt = tmean - tmelt
+    tempformelt[tmean <= tmelt] = 0.
     mu = np.ones_like(swe) * mu_ice
     mu[swe > 0.] = mu_ice * cfg.PARAMS['ratio_mu_snow_ice']
 
@@ -2436,6 +2612,7 @@ def melt_hock(psol=None, mu_hock=None, a_ice=None, tmean=None,
               ipot=None, prcp_fac=None, swe=None, tmelt=0., tmax=None,
               sis=None):
     tempformelt = tmean - tmelt
+    tempformelt[tmean <= tmelt] = 0.
     a = np.ones_like(swe) * a_ice
     a[swe > 0.] = a_ice * cfg.PARAMS['ratio_a_snow_ice']
     melt_day = (mu_hock + a * ipot) * tempformelt
@@ -2598,9 +2775,10 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
 
     Parameters
     ----------
-    id: str
+    gid: str
         Glacier id to be processed.
-    mb_models: list of `py:class:crampon.core.models.massbalance.DailyMassBalanceModelWithSnow`
+    mb_models: list of
+    `py:class:crampon.core.models.massbalance.DailyMassBalanceModelWithSnow`
         The mass balance models top be used for the filter. Default: None
         (use those listed in cfg.MASSBALANCE_MODELS).
     stations: list or None
@@ -2611,6 +2789,9 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         her 2014 paper), 'past_mean' (take the mean from the past
         calibration'), 'past_gabbi' (take the mean from Jeanette Gabbi's
         priors). Default: None ( equals to "past").
+    param_fit: str, optional
+        Which function shall be fitted to the parameters from past
+        calibration.
     unmeasured_period_param_dict:
         Explicit parameters for the unmeasured periods (autumn and early
         summer) handed over for testing.
@@ -2650,7 +2831,6 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     -------
     None
     """
-    from crampon.core.models import massbalance
     # how many particles
     n_particles = 10000
     n_phys_vars = 6
@@ -2666,7 +2846,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     param_random_walk = False
     # todo: there are still come unallowed cases, e.g. lognormal and gabbi
     param_prior_distshape = param_fit
-    param_prior_std_scalefactor = [2.0, 2.0, 2.0, 2.0]
+    param_prior_std_scalefactor = [1.0, 1.0, 1.0, 1.0]
     phi = 0.1
     gamma = 0.05
     model_error_mean = 0.
@@ -2677,11 +2857,12 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     obs_std_scale_fac = 1.0
     sis_sigma = 15.  # try a bigger/smaller STDEV for SIS
 
-    min_std_alpha = 0.0#0.05
-    min_std_swe = 0.0#0.025  # m w.e.
-    min_std_tacc = 0.0#10.0
+    min_std_alpha = 0.0 # 0.05
+    min_std_swe = 0.0  # 0.025  # m w.e.
+    min_std_tacc = 0.0  # 10.0
 
     fixed_obs_std = None  # m w.e.
+    max_nan_thresh = 0.2
 
     print('MIN_STD_ALPHA:, ', min_std_alpha, 'MIN_STD_SWE: ', min_std_swe,
           'MIN_STD_TACC: ', min_std_tacc)
@@ -2702,8 +2883,6 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         raise ValueError('In this provisional version of code, you need to '
                          'specify an end date for the run of your glacier.')
 
-    assert param_method in ['liu', 'memory']
-
     # todo: SIgma for I_pot?
     ipot_sigma = 15.  # W m-2
 
@@ -2714,8 +2893,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     init_particles_per_model = int(n_particles / len(mb_models))
 
     # the gdir do we want to process
-    gdir = utils.GlacierDirectory(id)
-    print(gdir.get_filepath('ipot'))  # just for testing
+    gdir = utils.GlacierDirectory(gid)
     fl_h, fl_w = gdir.get_inversion_flowline_hw()
 
     if adjust_heights is not False:
@@ -2733,10 +2911,10 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
 
     obs_merge, obs_merge_cs = prepare_observations(gdir, stations)
     if fixed_obs_std is not None:
+        log.info('Setting OBS STD to fixed value!')
         obs_merge['swe_std'][:] = fixed_obs_std
-        print(obs_merge.swe_std)
 
-    first_obs_date = obs_merge_cs.date[np.argmin(np.isnan(obs_merge_cs),
+    first_obs_date = obs_merge_cs.date[np.argmin(np.isnan(obs_merge_cs).values,
                                                  axis=1)].values
     first_obs_date = np.array([pd.Timestamp(d) for d in first_obs_date])
 
@@ -2770,9 +2948,9 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     if pdata is not None:
         # earliest OBS is the minimum of all date0s
         autumn_obs_mindate = min(pdata.loc[stations].date0.values)
-        # begin of the mb year is the minimum of the value in params.cfg and the earliest OBS
-        autumn_obs_begin_mbyear_min = pd.Timestamp(min(autumn_obs_mindate,
-                                                       np.datetime64(begin_mbyear)))
+        # begin of mb year is min of the value in params.cfg and earliest OBS
+        autumn_obs_begin_mbyear_min = pd.Timestamp(
+            min(autumn_obs_mindate, np.datetime64(begin_mbyear)))
     else:
         # otherwise: both is at the values of params.cfg
         autumn_obs_mindate = begin_mbyear
@@ -2812,7 +2990,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
             firstobs_heights = np.array([2681.])
         else:
             raise ValueError('Glacier ID not recognized for pdata.')
-        firstobs_fl_ids = np.argmin(np.abs((fl_h - np.atleast_2d(firstobs_heights).T)), axis=1)
+        firstobs_fl_ids = np.argmin(
+            np.abs((fl_h - np.atleast_2d(firstobs_heights).T)), axis=1)
         print(pdata.z.values, firstobs_heights)
         # todo: we don't want two dates, they should be the same (hopefully)
         pdata_init = pdata.loc[pdata['z'].isin(firstobs_heights)]
@@ -2829,8 +3008,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         pdata_init_unc = pdata_init['bp_unc'].values
         # be the same
         # select runs close to the stake observations in stake OBS period
-        mb_init_all_cs_pdata = mb_init_field.stack(ens=['model',
-        'member']).sel(
+        mb_init_all_cs_pdata = mb_init_field.stack(
+            ens=['model', 'member']).sel(
             time=slice(autumn_obs_mindate, pdata_init_date)).cumsum(
             dim='time').isel(time=-1).MB.values
         mb_init_all_cs_first_obs_init = mb_init_field.stack(ens=['model',
@@ -2839,17 +3018,24 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
             dim='time').isel(time=-1).MB.values
         # minimum (before JAN) must be subtracted if there is snow
         mb_init_all_cs_first_obs_init_min = mb_init_field.stack(
-            ens=['model', 'member']).sel(time=slice(autumn_obs_mindate,
-                                                    pd.Timestamp('{}-12-31'.format(pd.Timestamp(autumn_obs_mindate).year)))).cumsum(dim='time').min(dim='time')
+            ens=['model', 'member']).sel(
+            time=slice(autumn_obs_mindate,
+                       pd.Timestamp('{}-12-31'.format(
+                           pd.Timestamp(autumn_obs_mindate).year)))).cumsum(
+            dim='time').min(dim='time')
         mb_init_all_cs_first_obs_init_argmin = \
-            np.argmin(np.average(mb_init_field.stack(ens=['model', 'member']).
-                                 sel(time=slice(autumn_obs_mindate, pd.Timestamp('{}-12-31'.format(pd.Timestamp(autumn_obs_mindate).year)))).cumsum(dim='time').MB.values, weights=w, axis=0), axis=0)
+            np.argmin(np.average(
+                mb_init_field.stack(ens=['model', 'member']).sel(
+                    time=slice(autumn_obs_mindate,
+                               pd.Timestamp('{}-12-31'.format(
+                                   pd.Timestamp(autumn_obs_mindate).year)))
+                ).cumsum(dim='time').MB.values, weights=w, axis=0), axis=0)
 
         run_sel = []
         run_sel_diff = []
-        #if np.isnan(pdata_init_unc):
+        # if np.isnan(pdata_init_unc):
         #    bp_unc = 0.05  # reading uncertainty for stakes
-        #else:
+        # else:
         #    bp_unc = pdata_init_unc
         for foix, sfl in enumerate(firstobs_fl_ids):
             if np.isnan(pdata_init_unc[foix]):
@@ -2858,56 +3044,60 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                 bp_unc = pdata_init_unc[foix]
             point_mb = pdata_init_swe[foix]
 
-            #if pdata_init_otype[foix] == 'ice':
+            # if pdata_init_otype[foix] == 'ice':
 
             np.random.seed(seed)
             gauss_range = np.random.normal(point_mb, bp_unc, size=n_particles)
-            gauss_range = np.clip(gauss_range, point_mb - bp_unc, point_mb + bp_unc)
+            gauss_range = np.clip(
+                gauss_range, point_mb - bp_unc, point_mb + bp_unc)
 
             for unc_bp in gauss_range:
-                run_sel.append(np.argmin(np.abs(mb_init_all_cs_pdata[sfl,
-                                                      :] - unc_bp)))
-                run_sel_diff.append(mb_init_all_cs_pdata[sfl,
-                                                         np.argmin(np.abs(mb_init_all_cs_pdata[sfl,:] - unc_bp))] - unc_bp)
-            #else:  # snow
+                run_sel.append(
+                    np.argmin(np.abs(mb_init_all_cs_pdata[sfl, :] - unc_bp)))
+                run_sel_diff.append(
+                    mb_init_all_cs_pdata[
+                        sfl, np.argmin(np.abs(mb_init_all_cs_pdata[sfl, :]
+                                              - unc_bp))] - unc_bp)
+            # else:  # snow
             #    # find the runs closest to zero at first camera observation!!!
             #    for unc_bp in np.arange(-bp_unc, bp_unc, 0.01):
             #        model_swe = (mb_init_all_cs_first_obs_init - \
             #                    mb_init_all_cs_first_obs_init_min).MB.values
             #        member_no = np.argmin(np.abs(model_swe[sfl, :] - unc_bp))
             #        run_sel.append(member_no)
-            #        run_sel_diff.append(mb_init_all_cs_first_obs_init[sfl,
-            #                                                          member_no])
+            #        run_sel_diff.append(mb_init_all_cs_first_obs_init[
+            #        sfl, member_no])
         if len(run_sel) == 0:
             raise ValueError
 
         np.random.seed(seed)
         rand_choice_ix = np.random.choice(range(len(run_sel)),
                                           n_particles)
-        #mb_init = mb_init_homo[:, np.array(run_sel)[rand_choice_ix]]
-        mb_init = mb_init_all_cs_first_obs_init[:, np.array(run_sel)[rand_choice_ix]]
+        # mb_init = mb_init_homo[:, np.array(run_sel)[rand_choice_ix]]
+        mb_init = mb_init_all_cs_first_obs_init[
+                  :, np.array(run_sel)[rand_choice_ix]]
         mb_init -= np.array(run_sel_diff)[rand_choice_ix]
 
-        #mb_init = mb_init_homo[:, np.random.choice(run_sel, n_particles)]
+        # mb_init = mb_init_homo[:, np.random.choice(run_sel, n_particles)]
     print(mb_init, 'AVERAGE: ', np.mean(np.average(mb_init, weights=w,
                                                    axis=0)), pd.Timestamp(
                                                       min(first_obs_date)))
 
     # get indices of those runs
     # select those runs in cumulative MB beginning at OCT-1
-
-
     ipot_per_fl = gdir.read_pickle('ipot_per_flowline')
     ipot_per_fl = np.array([i for sub in ipot_per_fl for i in sub])
-    #ipot_year = ipot_per_fl[s_index, :]
+    # ipot_year = ipot_per_fl[s_index, :]
     ipot_year = ipot_per_fl[fl_ids, :]
+    # make leap year compatible
+    ipot_year = np.hstack([ipot_year, np.atleast_2d(ipot_year[:, -1]).T])
 
     # time span
-    date_span = pd.date_range(obs_merge_cs.date.values[0], run_end_date)
+    date_span = pd.date_range(init_cond_to, run_end_date)
     print('DATE SPAN: ', date_span[0], date_span[-1])
 
     # get prior parameter distributions
-    # todo: it's confusing that the params are return in linear domain,
+    # todo: it's confusing that the params are returned in linear domain,
     #  but means and cov in log domain
     theta_priors, theta_priors_means, theta_priors_cov = \
         prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
@@ -2918,10 +3108,9 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     # get snow redist fac
     snowredist_ds = xr.open_dataset(gdir.get_filepath('snow_redist'))
 
-    aepf = AugmentedEnsembleParticleFilter(mb_models, n_particles,
-                                           spatial_dims=(len(h),),
-                                           n_phys_vars=n_phys_vars,
-                                           n_aug_vars=n_aug_vars)
+    aepf = AugmentedEnsembleParticleFilter(
+        mb_models, n_particles, spatial_dims=(len(h),),
+        n_phys_vars=n_phys_vars, n_aug_vars=n_aug_vars)
 
     # init particles
     #tacc_temp = tacc_from_alpha_brock(alpha_init)
@@ -2943,8 +3132,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         n_theta = theta_m.shape[1]
         # make parameters fit
         theta_m_reshape = np.tile(theta_m, (x_0.shape[0], 1))
-        x_0[:, :, theta_start_ix:theta_start_ix+n_theta][x_0[:, :, mod_ix] == mix] = \
-            theta_m_reshape
+        x_0[:, :, theta_start_ix:theta_start_ix+n_theta][
+            x_0[:, :, mod_ix] == mix] = theta_m_reshape
 
     aepf.particles = x_0
     aepf._M_t_all = np.array([np.max(aepf.model_weights_log[i]) for i in
@@ -2958,7 +3147,11 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
 
     sis_scale_fac = xr.open_dataarray(gdir.get_filepath(
         'sis_scale_factor')).values
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, figsize=(20, 15), sharex=True)
+    # make leap year compatible
+    sis_scale_fac = np.hstack([sis_scale_fac,
+                               np.atleast_2d(sis_scale_fac[:, -1]).T])
+
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, figsize=(20, 15), sharex='all')
     fig2 = plt.figure(figsize=(15, 7))
     ax5 = fig2.add_subplot(111)
 
@@ -2993,33 +3186,25 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
     quant_list = []
     quant_list_pm = []
 
-    # analyze_error is to eliminate CRPS values after long offtimes (unfair) - set to True initially, because, we want to capture the first day CRPS
+    # analyze_error is to eliminate CRPS values after long offtimes (unfair) -
+    # set to True initially, because, we want to capture the first day CRPS
     analyze_error = True
 
     for date in date_span:
-        print(date)
-        print('MPROB: ', aepf.model_prob)
-        print('M_T_ALL: ', aepf.M_t_all)
+        print(date, '\nMPROB: ', aepf.model_prob, '\nM_T_ALL: ', aepf.M_t_all)
 
         mprob_list.append(aepf.model_prob)
         mpart_list.append(aepf.n_model_particles)
 
         doy = date.dayofyear
-        try:
-            ipot = ipot_year[:, doy]
-        except IndexError:
-            # leap year
-            ipot = ipot_year[364]
-
-        # np leap year problem here
-        #ssf = sis_scale_fac[s_index, doy, np.newaxis]
+        ipot = ipot_year[:, doy]
         ssf = sis_scale_fac[fl_ids, doy, np.newaxis]
+
         try:
             snowredistfac = snowredist_ds.sel(time=date).D.values
         except KeyError:
-            #print('Not snowredistfac found for {}'.format(date))
             snowredistfac = None
-            pass
+
         aepf.predict(mb_models_inst, gmeteo, date, h, obs_merge, ssf, ipot,
                      ipot_sigma, alpha_ix, mod_ix, swe_ix, tacc_ix, mb_ix,
                      tacc_ice, model_error_mean, model_error_std,
@@ -3030,9 +3215,9 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
 
         params_per_model = aepf.params_per_model
         # Braithwaite mu_ice
-        ax2.errorbar(date, np.mean(params_per_model[0][:, 0]),
-                     yerr=np.std(params_per_model[0][:, 0]), fmt='o',
-                     c=colors[0])
+        ax2.errorbar(
+            date, np.mean(params_per_model[0][:, 0]),
+            yerr=np.std(params_per_model[0][:, 0]), fmt='o', c=colors[0])
         # Braithwaite prcp_fac
         ax2.errorbar(date, np.mean(params_per_model[0][:, 1]),
                      yerr=np.std(params_per_model[0][:, 1]), fmt='o',
@@ -3040,9 +3225,10 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         # Pellicciotti tf
         try:
             pelli_ix = [m.__name__ for m in mb_models].index('PellicciottiModel')
-            ax2.errorbar(date, np.mean(params_per_model[pelli_ix][:, 0]),
-                         yerr=np.std(params_per_model[pelli_ix][:, 0]), fmt='o',
-                         c=colors[2])
+            ax2.errorbar(
+                date, np.mean(params_per_model[pelli_ix][:, 0]),
+                yerr=np.std(params_per_model[pelli_ix][:, 0]), fmt='o',
+                c=colors[pelli_ix])
         except ValueError:
             pass
 
@@ -3058,17 +3244,18 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                 std_manual = np.atleast_2d(obs_merge.sel(
                     date=date).swe_std.values)
                 obs_std = std_manual.copy()
-                obs_std[~np.isnan(std_manual)] = std_manual[~np.isnan(std_manual)] * obs_std_scale_fac
-                obs_std[np.isnan(std_manual)] = obs_std_we_default * obs_std_scale_fac
-                obs_phase = np.atleast_2d(obs_merge.sel(date=date).phase.values)
-
+                obs_std[~np.isnan(std_manual)] = \
+                    std_manual[~np.isnan(std_manual)] * obs_std_scale_fac
+                obs_std[np.isnan(std_manual)] = \
+                    obs_std_we_default * obs_std_scale_fac
+                obs_phase = \
+                    np.atleast_2d(obs_merge.sel(date=date).phase.values)
 
             # keep track of when camera is set up/gaps (need for reset MB)
             # todo: check std
             if date in first_obs_date:
                 print('FIRST OBS', date)
                 dix = date == first_obs_date
-                # todo: changed for Hansruedi's multiple cam option
                 if limit_to_camera_elevations is True:
                     # todo: implement indices_below for dix only
                     to_insert = mb_anal_before_all[dix, :].copy()
@@ -3076,7 +3263,8 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                     ptcls = aepf.particles.copy()
                     ptcls[dix, :, obs_init_mb_ix] = to_insert
                     if reset_albedo_and_swe_at_obs_init is True:
-                        ptcls[dix, :, alpha_ix] = cfg.PARAMS['ice_albedo_default']
+                        ptcls[dix, :, alpha_ix] = \
+                            cfg.PARAMS['ice_albedo_default']
                         ptcls[dix, :, swe_ix] = 0.
                     aepf.particles = ptcls
                     print(aepf.particles[dix, :, obs_init_mb_ix])
@@ -3085,19 +3273,21 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                     print(to_insert)
                     ptcls = aepf.particles.copy()
                     ptcls[s_index[dix], :, obs_init_mb_ix] = to_insert
-                    #plt.figure()
-                    #plt.fill_between(fl_ids, np.mean(ptcls[:, :, alpha_ix], axis=1) - np.std(ptcls[:, :, alpha_ix], axis=1), np.mean(ptcls[:, :, alpha_ix], axis=1)+np.std(ptcls[:, :, alpha_ix], axis=1))
-                    #plt.axvline(np.min(fl_ids[s_index[dix]]))
                     if reset_albedo_and_swe_at_obs_init is True:
                         indices_below = fl_h <= np.max(fl_h[s_index[dix]])
-                        #ptcls[s_index[dix], :, alpha_ix] = cfg.PARAMS['ice_albedo_default']
-                        #ptcls[s_index[dix], :, swe_ix] = 0.
                         np.random.seed(seed)
-                        ptcls[indices_below, :, alpha_ix] = np.random.normal(cfg.PARAMS[
-                            'ice_albedo_default'], min_std_alpha, ptcls[indices_below, :, alpha_ix].shape)
+                        ptcls[indices_below, :, alpha_ix] = \
+                            np.random.normal(
+                                cfg.PARAMS['ice_albedo_default'],
+                                min_std_alpha,
+                                ptcls[indices_below, :, alpha_ix].shape)
                         np.random.seed(seed)
-                        ptcls[indices_below, :, swe_ix] = np.clip(np.random.normal(
-                            0, min_std_swe, ptcls[indices_below, :, swe_ix].shape), 0., None)
+                        ptcls[indices_below, :, swe_ix] = \
+                            np.clip(
+                                np.random.normal(
+                                    0, min_std_swe,
+                                    ptcls[indices_below, :, swe_ix].shape),
+                                0., None)
                     aepf.particles = ptcls
                     print(aepf.particles[s_index[dix], :, obs_init_mb_ix])
         except:
@@ -3106,42 +3296,45 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
 
         # todo: this is hardcoded: we take the first which is not NaN
         # 'valid observation index'
-        if date == date_span[0]:
+        if (obs is not None) and (voi is None):
             # voi shouldn't change anymore
             voi = np.where(~np.isnan(obs))[-1][0]
 
         box_offset = 0.2
         if obs is not None:
             boxvals = [aepf.particles[s_index[voi], aepf.model_indices_all[
-                mi]][:,
-                       mb_ix]-obs[0][voi] for mi in aepf.model_range] + [
+                mi]][:, mb_ix]-obs[0][voi] for mi in aepf.model_range] + [
                 aepf.particles[s_index[voi], :, mb_ix] - obs[0][voi]]
             boxpos = [(date - date_span[0]).days - aepf.n_models / 2. *
                       box_offset + box_offset * mi for mi in range(
                 aepf.n_models)]
             for mi in aepf.model_range:
-                ax5.boxplot(boxvals[mi], positions=[boxpos[mi]],
-                            patch_artist=True,
-                boxprops=dict(facecolor=colors[mi], color=colors[mi]))
+                ax5.boxplot(
+                    boxvals[mi], positions=[boxpos[mi]], patch_artist=True,
+                    boxprops=dict(facecolor=colors[mi], color=colors[mi]))
             ax5.axvline(boxpos[mi] + box_offset)
 
-        mod_pred_mean = [np.mean(aepf.particles[s_index[voi], :, mb_ix][
-                                     aepf.particles[s_index[voi], :, mod_ix] ==
-                                      i]) for
-                         i in range(aepf.n_models)]
-        mod_pred_std = [np.std(aepf.particles[s_index[voi], :, mb_ix][
-        aepf.particles[s_index[voi], :, mod_ix] == i]) for i in range(
-            aepf.n_models)]
+        # todo: make it an average
+        mod_pred_mean = [
+            np.mean(aepf.particles[s_index[voi], :, mb_ix][
+                        aepf.particles[s_index[voi], :, mod_ix] == i]) for
+            i in range(aepf.n_models)]
+        mod_pred_std = [
+            np.std(aepf.particles[s_index[voi], :, mb_ix][
+                       aepf.particles[s_index[voi], :, mod_ix] == i]) for
+            i in range(aepf.n_models)]
         print('MOD PRED MEAN: ', mod_pred_mean)
         print('MOD PRED STD: ', mod_pred_std)
         if obs is not None:
             print('OBS: ', obs[0], ', OBS_STD: ', obs_std[0])
         else:
-            print('OBS: ', obs, ', OBS_STD: ', obs_std)
-        print('PREDICTED: ', np.average(aepf.particles[s_index, :, mb_ix] -
-                                        aepf.particles[s_index, :, obs_init_mb_ix], axis=1, weights=aepf.weights[s_index, :]))
+            print('No camera observations today.')
+        print('PREDICTED: ', np.average(
+            aepf.particles[s_index, :, mb_ix] -
+            aepf.particles[s_index, :, obs_init_mb_ix], axis=1,
+            weights=aepf.weights[s_index, :]))
 
-        # plot models
+        # plot prediction by model
         y_jitter = np.array([pd.Timedelta(hours=2 * td) for td in
                              np.linspace(-2.0, 2.0, aepf.n_models)])
         y_vals = np.array([date] * len(mb_models)) + y_jitter
@@ -3161,7 +3354,7 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
         if obs is not None:
             # plot obs
             ax1.errorbar(date, obs[0][voi], yerr=obs_std[0][voi], c='k',
-            marker='o', fmt='o')
+                         marker='o', fmt='o')
 
             if analyze_error is True:
                 if limit_to_camera_elevations is True:
@@ -3196,9 +3389,13 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                     crps_1 = crps_by_observation_height_direct(
                         resamp_p[..., 0], obs.T * cfg.RHO_W / cfg.RHO,
                         obs_std.T / cfg.RHO * cfg.RHO_W)
-                    four_ixs = np.random.uniform(low=0, high=resamp_p.shape[1]-1, size=4).astype(int)
-                    crps_2 = crps_by_observation_height_direct(resamp_p[:, four_ixs, 0], obs.T * cfg.RHO_W / cfg.RHO,
-                        obs_std.T / cfg.RHO * cfg.RHO_W)
+                    four_ixs = np.random.uniform(
+                        low=0, high=resamp_p.shape[1]-1, size=4).astype(int)
+                    crps_2 = crps_by_observation_height_direct(
+                        resamp_p[:, four_ixs, 0], obs.T * cfg.RHO_W / cfg.RHO,
+                        obs_std.T / cfg.RHO * cfg.RHO_W
+                    )
+
                     if crps_ice_only is True:
                         print(obs_phase)
                         properscoring_crps[obs_phase[0] == 's'] = np.nan
@@ -3216,56 +3413,29 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
                 crps_2_list.append(np.full_like(obs[0].T, np.nan))
 
             analyze_error = True
-            print('DEPARTURE AT VOI: ', dep_list[-1])
+            #print('DEPARTURE AT VOI: ', dep_list[-1])
             print('CRPS at VOI: ', crps_list[-1], crps_1_list[-1])
-            # plot particles distribution per model
-            ppm = aepf.n_model_particles
-            for ppi, pp in enumerate(ppm):
-                if ppi == 0:
-                    ax3.bar(date, pp, color=colors[ppi])
-                else:
-                    ax3.bar(date, pp, bottom=np.sum(ppm[:ppi]),
-                            color=colors[ppi])
 
-            # alpha from Pellicciotti
-            ax4.errorbar(date, np.mean(aepf.particles[s_index[voi], :,
-                                                      alpha_ix][
-                                           aepf.particles[s_index[voi], :,mod_ix] ==
-                                           2]),
-                         yerr=np.std(aepf.particles[s_index[voi], :, alpha_ix][
-                                         aepf.particles[s_index[voi], :,
-                                         mod_ix] == 2]),
-                         fmt='o', c='cornflowerblue')
-
-            obs_quant = aepf.get_observation_quantiles(obs, obs_std,
-                                                       mb_ix=mb_ix,
-                                                       mb_init_ix=obs_init_mb_ix,
-                                                       eval_ix=s_index,
-                                                       by_model=False)
+            obs_quant = aepf.get_observation_quantiles(
+                obs, obs_std, mb_ix=mb_ix, mb_init_ix=obs_init_mb_ix,
+                eval_ix=s_index, by_model=False
+            )
             quant_list.append(obs_quant)
-            obs_quant_pm = aepf.get_observation_quantiles(obs, obs_std,
-                                                       mb_ix=mb_ix,
-                                                       mb_init_ix=obs_init_mb_ix,
-                                                       eval_ix=s_index,
-                                                       by_model=True)
+            obs_quant_pm = aepf.get_observation_quantiles(
+                obs, obs_std, mb_ix=mb_ix, mb_init_ix=obs_init_mb_ix,
+                eval_ix=s_index, by_model=True
+            )
             quant_list_pm.append(obs_quant_pm)
 
             # obs covariance
             R = np.mat(np.eye(obs.shape[1]))
 
             if update is True:
-                if limit_to_camera_elevations is True:
-                    aepf.update(obs, obs_std, R, obs_ix=mb_ix,
-                                obs_init_mb_ix=obs_init_mb_ix,
-                                obs_spatial_ix=np.arange(len(s_index)))
-                else:
-                    aepf.update(obs, obs_std, R, obs_ix=mb_ix,
-                                obs_init_mb_ix=obs_init_mb_ix,
-                                obs_spatial_ix=s_index)
-            print('UPDATED: ', np.average(aepf.particles[s_index, :, mb_ix] -
-                                          aepf.particles[s_index, :, obs_init_mb_ix],
-                                          weights=aepf.weights[s_index, :], axis=1))
-            if date == pd.Timestamp('2019-07-24'):
+                aepf.update(obs, obs_std, R, obs_ix=mb_ix,
+                            obs_init_mb_ix=obs_init_mb_ix,
+                            obs_spatial_ix=spatial_cam_ix)
+
+            if (aepf.particles[..., alpha_ix] < 0.).any():
                 print('stop')
             print('MB today entire glacier: ',
                   np.average(np.average(aepf.particles[..., mb_ix]
@@ -3280,14 +3450,19 @@ def run_aepf(id, mb_models=None, stations=None, generate_params=None,
             else:
                 aepf.resample(phi=phi, gamma=gamma, diversify=False, seed=seed)
 
-            ax1.errorbar(date+pd.Timedelta(hours=0.75), np.average(
-                aepf.particles[s_index[voi], :, mb_ix],
-                weights=aepf.weights[s_index[voi], :]),
-                         yerr=np.sqrt(np.cov(aepf.particles[s_index[voi], :,
-mb_ix],
-                                             aweights=aepf.weights[s_index[
-                                                                       voi],:])),
-                         c='r', fmt='o')
+            mb_anc_ptcls_after.append(aepf.particles[s_index, :, mb_ix])
+            alpha_anc_ptcls_after.append(aepf.particles[s_index, :, alpha_ix])
+
+            #ax1.errorbar(
+            #    date + pd.Timedelta(hours=0.75),
+            #    np.average(aepf.particles[s_index[voi], :, mb_ix],
+            #               weights=aepf.weights[s_index[voi], :]),
+            #    yerr=np.sqrt(np.cov(aepf.particles[s_index[voi], :, mb_ix],
+            #                        aweights=aepf.weights[s_index[voi], :])),
+            #    c='r', fmt='o'
+            #)
+            aepf.plot_state_errorbars(ax1, date + pd.Timedelta(hours=0.75),
+                                      colors=['r'], space_ix=s_index[voi])
         else:  # no observation this time
             analyze_error = False
 
@@ -3295,18 +3470,24 @@ mb_ix],
             write_param_dates_list.append(date)
             # 1) write weights
             p_avg = [
-                np.average(aepf.params_per_model[k], weights=aepf.model_weights[k],
-                           axis=0) for k in range(len(mb_models))]
+                np.average(aepf.params_per_model[k],
+                           weights=aepf.model_weights[k], axis=0) for k in
+                range(len(mb_models))]
             write_params_avg_list.append(p_avg)
             # 2) write actual params
 
-            p_std = np.sqrt([np.average((aepf.params_per_model[k]-p_avg[k])**2, weights=aepf.model_weights[k], axis=0) for k in range(len(mb_models))])
+            p_std = np.sqrt([
+                np.average((aepf.params_per_model[k]-p_avg[k])**2,
+                           weights=aepf.model_weights[k], axis=0) for k in
+                range(len(mb_models))])
             write_params_std_list.append(p_std)
 
-        if (evolve_params is True) and (param_method == 'memory'):
-            aepf.evolve_theta(theta_priors_means, theta_priors_cov,
-                              rho=theta_memory, change_mean=change_memory_mean,
-                              seed=seed)
+        if (date in alpha_ds.time) or (obs is not None):
+            if (evolve_params is True) and (param_method == 'memory'):
+                aepf.evolve_theta(theta_priors_means, theta_priors_cov,
+                                  rho=theta_memory,
+                                  change_mean=change_memory_mean,
+                                  seed=seed)
 
         #  check if minimum std requirements are fulfilled:
         increase_std_alpha = np.std(aepf.particles[..., alpha_ix],
@@ -3322,41 +3503,44 @@ mb_ix],
         #    np.random.normal(np.atleast_2d(np.zeros(np.sum(increase_std_swe))).T, np.atleast_2d(np.ones(np.sum(increase_std_swe)) * min_std_swe).T, aepf.particles[increase_std_swe, :, swe_ix].shape), 0., None)
 
         # save analysis
-        mb_anal_before = np.atleast_2d(np.average(aepf.particles[..., mb_ix],
-                                              axis=1,
-                                    weights=aepf.weights))
+        mb_anal_before = np.atleast_2d(
+            np.average(aepf.particles[..., mb_ix], axis=1,
+                       weights=aepf.weights))
         mb_anal_before_all = np.atleast_2d(aepf.particles[..., mb_ix])
-        mb_anal_std_before = np.sqrt(np.average((aepf.particles[...,
-                                                    mb_ix]-mb_anal_before.T)**2,
-                                                    weights=aepf.weights, axis=1))
+        mb_anal_std_before = np.sqrt(
+            np.average((aepf.particles[..., mb_ix] - mb_anal_before.T)**2,
+                       weights=aepf.weights, axis=1))
 
-        run_example_list.append(np.average(aepf.particles[..., mb_ix], weights=w, axis=0)[rand_45])
-        #run_avg_total.append()
+        run_example_list.append(np.average(
+            aepf.particles[..., mb_ix], weights=w, axis=0)[rand_45])
+        # run_avg_total.append()
 
     # calculate weighted average over heights at the end of the MB year
     mb_until_assim = mb_init
     resamp_ix = stratified_resample(aepf.weights[aepf.stats_ix, :],
                                     aepf.particles.shape[1])
-    mb_during_assim_eq_weights = np.array([resample_from_index(aepf.particles[i, :, mb_ix],
-                                                               aepf.weights[
-                                                                   i, ...],
-                                                               resamp_ix)[0]
-                                           for i in
-                                           np.arange(
-                                               aepf.particles.shape[0])])
+    mb_during_assim_eq_weights = \
+        np.array([resample_from_index(aepf.particles[i, :, mb_ix],
+                                      aepf.weights[i, ...], resamp_ix)[0]
+                  for i in np.arange(aepf.particles.shape[0])])
+
+    if (aepf.particles[..., alpha_ix] < 0.).any():
+        print('stop')
+
     # todo: shuffle doesn't matter?
     # todo_subtract OBS_INIT=?
     np.random.seed(seed)
     [np.random.shuffle(mb_during_assim_eq_weights[x, ...]) for x in range(
         mb_during_assim_eq_weights.shape[0])]
     mb_total = mb_until_assim + mb_during_assim_eq_weights
-    if id == 'RGI50-11.B4312n-1':
-        rho_stake_ids = np.argmin(np.abs((fl_h - np.atleast_2d([3234., 3113,
-            2924., 2741, 2595., 2458., 2345., 2279., 2228., 2838., 2306,
-            2222.]).T)), axis=1)
+    if gid == 'RGI50-11.B4312n-1':
+        rho_stake_ids = np.argmin(
+            np.abs((fl_h - np.atleast_2d(
+                [3234., 3113, 2924., 2741, 2595., 2458., 2345., 2279., 2228.,
+                 2838., 2306, 2222.]).T)), axis=1)
         # to convert numbers in GLAMOS table to m w.e.
         rho_densities = [0.52, 0.47, 0.47, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9,
-                        0.9, 0.9]
+                         0.9, 0.9]
         idxs = np.argmin(np.abs((fl_h - np.atleast_2d(
             [3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228.,
              2838., 2306., 2222.]).T)), axis=1)
@@ -3373,8 +3557,11 @@ mb_ix],
         rho_mean = np.mean(ms, axis=1)
         rho_std = np.std(ms, axis=1)
 
-        plt.scatter([3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228., 2838., 2306., 2222.], rho_glamos, label = 'GLAMOS')
-        plt.errorbar([3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279., 2228., 2838., 2306., 2222.], rho_mean, yerr = rho_std, fmt = 'o', label = 'MOD', c = 'g')
+        plt.scatter([3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279.,
+                     2228., 2838., 2306., 2222.], rho_glamos, label='GLAMOS')
+        plt.errorbar([3234., 3113., 2924., 2741., 2595., 2458., 2345., 2279.,
+                      2228., 2838., 2306., 2222.], rho_mean, yerr=rho_std,
+                     fmt='o', label='MOD', c='g')
         mad = np.mean(np.abs(rho_mean - rho_glamos))
         plt.title('RHONE MAD: {:.2f} m w.e.'.format(mad))
         plt.xlabel('Elevation (m)')
@@ -3382,7 +3569,7 @@ mb_ix],
         plt.legend()
         plt.show()
 
-    if id == 'RGI50-11.B5616n-1':
+    if gid == 'RGI50-11.B5616n-1':
         fin_stake_ids = np.argmin(np.abs((fl_h - np.atleast_2d(
             [2619., 2597., 2680., 2788., 2920., 3036., 3122., 3149., 3087.,
              3258., 3255., 3341., 3477.]).T)), axis=1)
@@ -3393,7 +3580,7 @@ mb_ix],
         print('Height distances: ', np.min(np.abs((fl_h - np.atleast_2d(
             [2619., 2597., 2680., 2788., 2920., 3036., 3122., 3149., 3087.,
              3258., 3255., 3341., 3477.]).T)), axis=1))
-    if id == 'RGI50-11.A55F03':
+    if gid == 'RGI50-11.A55F03':
         plm_stake_ids = np.argmin(np.abs((fl_h - np.atleast_2d(
             [2694., 2715., 2753., 2663., 2682.]).T)), axis=1)
         # to convert numbers in GLAMOS table to m w.e. (already in m w.e.)
@@ -3405,10 +3592,10 @@ mb_ix],
     mb_total_avg = np.average(mb_total, weights=w, axis=0)
     print('MB total on {}: {} $\pm$ {}'.format(date_span[-1], np.mean(
         mb_total_avg), np.std(mb_total_avg)))
-    print('UNCERTAINTY before PF:{}, while PF: {}'.format(np.std(np.average(
-        mb_until_assim, weights=w, axis=0)), np.std(np.average(mb_during_assim_eq_weights, weights=w, axis=0))))
-    mb_total = np.sort(mb_until_assim) + np.sort(
-        mb_during_assim_eq_weights)
+    print('UNCERTAINTY before PF:{}, while PF: {}'.format(
+        np.std(np.average( mb_until_assim, weights=w, axis=0)),
+        np.std(np.average(mb_during_assim_eq_weights, weights=w, axis=0))))
+    mb_total = np.sort(mb_until_assim) + np.sort(mb_during_assim_eq_weights)
     mb_total_avg = np.average(mb_total, weights=w, axis=0)
     print('MB total sorted on {}: {} $\pm$ {}'.format(date_span[-1], np.mean(
         mb_total_avg), np.std(mb_total_avg)))
@@ -3422,9 +3609,9 @@ mb_ix],
                     Line2D([0], [0], color='k', lw=4),
                     Line2D([0], [0], color='y', lw=4),
                     Line2D([0], [0], color='r', lw=4)]
-    ax1.legend(custom_lines, ['Braithwaite', 'Hock', 'Pellicciotti',
-                              'Oerlemans', 'OBS', 'PRED', 'POST'])
-               #scatterpoints=1, ncol=4, fontsize=8)
+    ax1.legend(custom_lines,
+               ['Braithwaite', 'Hock', 'Pellicciotti', 'Oerlemans', 'OBS',
+                'PRED', 'POST'])  # scatterpoints=1, ncol=4, fontsize=8)
     ax1.grid()
     ax2.set_ylabel('$\mu^*_{ice}$ (mm ice K-1 d-1)\nTF ()')
     ax2.legend()
@@ -3442,32 +3629,37 @@ mb_ix],
     ax5.set_ylabel('Departure (PRED-OBS) (m w.e.)')
     ax5.legend(custom_lines[:-3], ['Braithwaite', 'Hock', 'Pellicciotti',
                                    'Oerlemans'])
-    fig2.suptitle(''
-                  '{} ({}). Median absolute ensemble departure: {:.3f} m '
-                  'w.e.'.format(gdir.name, stations, np.nanmedian(np.abs(
-        [item for sublist in dep_list for item in sublist]))))
-    print('Median absolute departure old method: ', np.nanmedian(np.abs(
-        [item for sublist in dep_list for item in sublist])))
-    print('Median absolute departure new method: ', np.nanmedian(
-        [np.abs(np.nanmean(sublist)) for sublist in dep_list]))
+    fig2.suptitle(
+        '{} ({}). Median absolute ensemble departure: {:.3f} m w.e.'.format(
+            gdir.name, stations, np.nanmedian(np.abs(
+                [item for sublist in dep_list for item in sublist]))))
+    print('Median absolute departure old method: ',
+          np.nanmedian(np.abs([
+              item for sublist in dep_list for item in sublist]))
+          )
+    print('Median absolute departure new method: ',
+          np.nanmedian([np.abs(np.nanmean(sublist)) for sublist in dep_list]))
     fig2.savefig('C:\\users\\johannes\\documents\\publications'
                  '\\Paper_Cameras\\test\\{}_boxplot.png'.format(stations),
                  dpi=500)
     fig.savefig('C:\\users\\johannes\\documents\\publications'
-                 '\\Paper_Cameras\\test\\{}_panel.png'.format(stations),
+                '\\Paper_Cameras\\test\\{}_panel.png'.format(stations),
                 dpi=500)
 
     plt.figure()
 
     # todo: WRONG DATES!!!!!
-    plt.plot(date_span[:len(crps_list)], np.nanmean(np.array(crps_list), axis=1), label='old CRPS')
-    plt.plot(date_span[:len(crps_1_list)], np.nanmean(np.array(crps_1_list), axis=1), label='CRPS 1')
+    plt.plot(date_span[:len(crps_list)],
+             np.nanmean(np.array(crps_list), axis=1), label='old CRPS')
+    plt.plot(date_span[:len(crps_1_list)],
+             np.nanmean(np.array(crps_1_list), axis=1), label='CRPS 1')
     plt.legend()
-    plt.title('{}, MEDIAN CRPS: {}, {}, {}'.format(gdir.name,
-                                           np.nanmedian([item for sublist in crps_list for item in sublist]),
-                                           np.nanmedian([item for sublist in crps_1_list for item in sublist]),
-                                           np.nanmedian([item for sublist in crps_2_list for item in sublist]),
-                                           np.nanmedian([item for sublist in crps_3_list for item in sublist])))
+    plt.title('{}, MEDIAN CRPS: {}, {}, {}'.format(
+        gdir.name,
+        np.nanmedian([item for sublist in crps_list for item in sublist]),
+        np.nanmedian([item for sublist in crps_1_list for item in sublist]),
+        np.nanmedian([item for sublist in crps_2_list for item in sublist]),
+        np.nanmedian([item for sublist in crps_3_list for item in sublist])))
 
     print('{}, MEDIAN CRPS: {}, {}, {}'.format(gdir.name, np.nanmedian(
         [item for sublist in crps_list for item in sublist]), np.nanmedian(
@@ -3492,9 +3684,12 @@ mb_ix],
 
     # quantiles histogram per model
     # todo: flexible numer of subplots only works until 6 MB models
-    figm, axms = plt.subplots(int(np.floor(np.sqrt(len(mb_models)))), int(np.ceil(np.sqrt(len(mb_models)))), sharex=True)
-    figm.suptitle('{}, {} calibration parameters ({} fit); stations individual'.format(gdir.name, generate_params,
-                                  param_prior_distshape))
+    figm, axms = plt.subplots(int(np.floor(np.sqrt(len(mb_models)))),
+                              int(np.ceil(np.sqrt(len(mb_models)))),
+                              sharex='all')
+    figm.suptitle('{}, {} calibration parameters ({} fit); stations '
+                  'individual'.format(gdir.name, generate_params,
+                                      param_prior_distshape))
     try:
         axms_flat = axms.flat
     except AttributeError:  # only one model
@@ -3504,17 +3699,314 @@ mb_ix],
         axm.hist(np.array([i[0] for i in sub_list]).flatten())
         axm.set_xlabel(mb_models[i].__name__)
 
+    ancestor_plot(gdir=gdir, stat=voi, to_analyze_mb=mb_anc_ptcls,
+                  to_analyze_alpha=alpha_anc_ptcls, forward=True,
+                  plot_stat='diff_median')
+
+    ancestor_plot(gdir=gdir, stat=voi, to_analyze_mb=mb_anc_ptcls,
+                  to_analyze_alpha=alpha_anc_ptcls, forward=True,
+                  plot_stat='percentiles')
+
+    ancestor_plot(gdir=gdir, stat=voi, to_analyze_mb=mb_anc_ptcls,
+                  to_analyze_alpha=alpha_anc_ptcls, forward=False,
+                  plot_stat='diff_median')
+
+    ancestor_plot(gdir=gdir, stat=voi, to_analyze_mb=mb_anc_ptcls,
+                  to_analyze_alpha=alpha_anc_ptcls, forward=False,
+                  plot_stat='percentiles')
+
+    stat = voi
+    to_analyze_mb = mb_anc_ptcls
+    to_analyze_alpha = alpha_anc_ptcls
+    forward = True,
+    plot_stat = 'percentiles'
+    if forward is True:
+        ma = to_analyze_mb[0][stat, :]
+        al = to_analyze_alpha[0][stat, :]
+        ixs = ancest_ix[0]
+    else:
+        ma = to_analyze_mb[-1][stat, :]
+        al = to_analyze_alpha[-1][stat, :]
+        ixs = ancest_ix[-1]
+    if forward is True:
+        iterrange = range(len(to_analyze_mb))
+    else:
+        iterrange = range(len(to_analyze_mb))[::-1][1:]
+
+    perc_low_ma = []
+    perc_med_ma = []
+    perc_high_ma = []
+    perc_low_al = []
+    perc_med_al = []
+    perc_high_al = []
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, sharex='all')
+    for i in iterrange:
+        if plot_stat == 'diff_median':
+            ax1.scatter(np.full_like(np.unique(ma), i),
+                        np.unique(ma) - np.median(ma))
+            ax2.scatter(np.full_like(np.unique(al), i),
+                        np.unique(al) - np.median(al))
+
+        if plot_stat == 'filter':
+            ax1.scatter(np.full_like(np.unique(ma), i), np.unique(ma))
+            ax1.scatter(np.full_like(np.unique(al), i), np.unique(al))
+
+        perc_low_ma.append(np.percentile(ma, 5))
+        perc_med_ma.append(np.percentile(ma, 50))
+        perc_high_ma.append(np.percentile(ma, 95))
+        perc_low_al.append(np.percentile(ma, 5))
+        perc_med_al.append(np.percentile(ma, 50))
+        perc_high_al.append(np.percentile(ma, 95))
+
+        ax2.scatter(np.full_like(np.unique(ixs), i), np.unique(ixs))
+
+        ixs = ixs[ancest_ix[i]]
+        ma = to_analyze_mb[i][stat, :][ixs]
+        al = to_analyze_alpha[i][stat, :][ixs]
+    if plot_stat == 'percentiles':
+        ax1.fill_between(iterrange, perc_low_ma, perc_high_ma)
+        ax1.plot(iterrange, perc_med_ma, color='orange')
+        ax2.fill_between(iterrange, perc_low_al, perc_high_al)
+        ax2.plot(iterrange, perc_med_al, color='orange')
+    fig.suptitle('{} {} iteration'.format(
+        gdir.name, 'forward' if forward is True else 'backward'))
+    ax3.set_ylabel('Surviving indices')
+    ax1.set_ylabel('{}'.format('MB'))
+    ax2.set_ylabel('{}'.format('Albedo'))
+    ax3.set_xlabel('Time steps (with observations)')
+
+    stat = voi
+    str_var = 'MB'
+    if str_var == 'MB':
+        to_analyze = mb_anc_ptcls
+    elif str_var == 'albedo':
+        to_analyze = alpha_anc_ptcls
+    forward = True
+    plot_stat = 'percentiles'
+
+    if forward is True:
+        var = to_analyze[0][stat, :]
+        ixs = ancest_ix[0]
+    else:
+        var = to_analyze[-1][stat, :]
+        ixs = ancest_ix[-1]
+    if forward is True:
+        iterrange = range(len(to_analyze))
+    else:
+        iterrange = range(len(to_analyze))[::-1][1:]
+
+    perc_low = []
+    perc_high = []
+
+    fig, (ax1, ax2) = plt.subplots(2, sharex='all')
+    for i in iterrange:
+        if plot_stat == 'diff_median':
+            ax1.scatter(np.full_like(np.unique(var), i),
+                        np.unique(var) - np.median(var))
+
+        if plot_stat == 'filter':
+            ax1.scatter(np.full_like(np.unique(var), i), np.unique(var))
+
+        perc_low.append(np.percentile(var, 5))
+        perc_high.append(np.percentile(var, 95))
+
+        ax2.scatter(np.full_like(np.unique(ixs), i), np.unique(ixs))
+
+        ixs = ixs[ancest_ix[i]]
+        var = to_analyze[i][stat, :][ixs]
+    if plot_stat == 'percentiles':
+        ax1.fill_between(iterrange, perc_low, perc_high)
+    fig.suptitle('{} {} iteration'.format(
+        gdir.name, 'forward' if forward is True else 'backward'))
+    ax2.set_ylabel('Surviving indices')
+    ax1.set_ylabel('{}'.format(str_var))
+    ax2.set_xlabel('Time steps (with observations)')
+    plt.show()
+    stat = voi
+    str_var = 'MB'
+    if str_var == 'MB':
+        to_analyze = mb_anc_ptcls
+    elif str_var == 'albedo':
+        to_analyze = alpha_anc_ptcls
+    forward = False
+    plot_stat = 'percentiles'
+
+    if forward is True:
+        var = to_analyze[0][stat, :]
+        ixs = ancest_ix[0]
+    else:
+        var = to_analyze[-1][stat, :]
+        ixs = ancest_ix[-1]
+    if forward is True:
+        iterrange = range(len(to_analyze))
+    else:
+        iterrange = range(len(to_analyze))[::-1][1:]
+
+    perc_low = []
+    perc_high = []
+
+    fig, (ax1, ax2) = plt.subplots(2, sharex='all')
+    for i in iterrange:
+        if plot_stat == 'diff_median':
+            ax1.scatter(np.full_like(np.unique(var), i),
+                        np.unique(var) - np.median(var))
+
+        if plot_stat == 'filter':
+            ax1.scatter(np.full_like(np.unique(var), i), np.unique(var))
+
+        perc_low.append(np.percentile(var, 5))
+        perc_high.append(np.percentile(var, 95))
+
+        ax2.scatter(np.full_like(np.unique(ixs), i), np.unique(ixs))
+
+        ixs = ixs[ancest_ix[i]]
+        var = to_analyze[i][stat, :][ixs]
+    if plot_stat == 'percentiles':
+        ax1.fill_between(iterrange, perc_low, perc_high)
+    fig.suptitle('{} {} iteration'.format(
+        gdir.name, 'forward' if forward is True else 'backward'))
+    ax2.set_ylabel('Surviving indices')
+    ax1.set_ylabel('{}'.format(str_var))
+    ax2.set_xlabel('Time steps (with observations)')
+    plt.show()
+    stat = voi
+    str_var = 'albedo'
+    if str_var == 'MB':
+        to_analyze = mb_anc_ptcls
+    elif str_var == 'albedo':
+        to_analyze = alpha_anc_ptcls
+    forward = False
+    plot_stat = 'percentiles'
+
+    if forward is True:
+        var = to_analyze[0][stat, :]
+        ixs = ancest_ix[0]
+    else:
+        var = to_analyze[-1][stat, :]
+        ixs = ancest_ix[-1]
+    if forward is True:
+        iterrange = range(len(to_analyze))
+    else:
+        iterrange = range(len(to_analyze))[::-1][1:]
+
+    perc_low = []
+    perc_high = []
+
+    fig, (ax1, ax2) = plt.subplots(2, sharex='all')
+    for i in iterrange:
+        if plot_stat == 'diff_median':
+            ax1.scatter(np.full_like(np.unique(var), i),
+                        np.unique(var) - np.median(var))
+
+        if plot_stat == 'filter':
+            ax1.scatter(np.full_like(np.unique(var), i), np.unique(var))
+
+        perc_low.append(np.percentile(var, 5))
+        perc_high.append(np.percentile(var, 95))
+
+        ax2.scatter(np.full_like(np.unique(ixs), i), np.unique(ixs))
+
+        ixs = ixs[ancest_ix[i]]
+        var = to_analyze[i][stat, :][ixs]
+    if plot_stat == 'percentiles':
+        ax1.fill_between(iterrange, perc_low, perc_high)
+    fig.suptitle('{} {} iteration'.format(
+        gdir.name, 'forward' if forward is True else 'backward'))
+    ax2.set_ylabel('Surviving indices')
+    ax1.set_ylabel('{}'.format(str_var))
+    ax2.set_xlabel('Time steps (with observations)')
+    plt.show()
+
     # todo: say that write_params and write_probs are mutually exclusive
     if write_params is True:
-        return write_param_dates_list, write_params_std_list, write_params_avg_list
+        return write_param_dates_list, write_params_std_list, \
+               write_params_avg_list
     elif write_probs is True:
         return date_span, mprob_list, mpart_list
     else:
         return None
 
 
+def ancestor_plot(gdir, stat, to_analyze_mb, to_analyze_alpha, forward,
+                  plot_stat):
+    """
+    Plot the ancestors of an assimilation model run.
+
+    Parameters
+    ----------
+    gdir :
+    stat :
+    to_analyze_mb :
+    to_analyze_alpha :
+    forward :
+    plot_stat :
+
+    Returns
+    -------
+
+    """
+
+    if forward is True:
+        ma = to_analyze_mb[0][stat, :]
+        al = to_analyze_alpha[0][stat, :]
+        ixs = ancest_ix[0]
+    else:
+        ma = to_analyze_mb[-1][stat, :]
+        al = to_analyze_alpha[-1][stat, :]
+        ixs = ancest_ix[-1]
+    if forward is True:
+        iterrange = range(len(to_analyze_mb))
+    else:
+        iterrange = range(len(to_analyze_mb))[::-1][1:]
+
+    perc_low_ma = []
+    perc_med_ma = []
+    perc_high_ma = []
+    perc_low_al = []
+    perc_med_al = []
+    perc_high_al = []
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, sharex='all')
+    for i in iterrange:
+        if plot_stat == 'diff_median':
+            ax1.scatter(np.full_like(np.unique(ma), i),
+                        np.unique(ma) - np.median(ma))
+            ax2.scatter(np.full_like(np.unique(al), i),
+                        np.unique(al) - np.median(al))
+
+        if plot_stat == 'filter':
+            ax1.scatter(np.full_like(np.unique(ma), i), np.unique(ma))
+            ax1.scatter(np.full_like(np.unique(al), i), np.unique(al))
+
+        perc_low_ma.append(np.percentile(ma, 5))
+        perc_med_ma.append(np.percentile(ma, 50))
+        perc_high_ma.append(np.percentile(ma, 95))
+        perc_low_al.append(np.percentile(ma, 5))
+        perc_med_al.append(np.percentile(ma, 50))
+        perc_high_al.append(np.percentile(ma, 95))
+
+        ax3.scatter(np.full_like(np.unique(ixs), i), np.unique(ixs))
+
+        print(len(ancest_ix), i)
+        ixs = ixs[ancest_ix[i]]
+        ma = to_analyze_mb[i][stat, :][ixs]
+        al = to_analyze_alpha[i][stat, :][ixs]
+    if plot_stat == 'percentiles':
+        ax1.fill_between(iterrange, perc_low_ma, perc_high_ma)
+        ax1.plot(iterrange, perc_med_ma, color='orange')
+        ax2.fill_between(iterrange, perc_low_al, perc_high_al)
+        ax2.plot(iterrange, perc_med_al, color='orange')
+    fig.suptitle('{} {} iteration'.format(
+        gdir.name, 'forward' if forward is True else 'backward'))
+    ax3.set_ylabel('Surviving indices')
+    ax1.set_ylabel('{}'.format('MB'))
+    ax2.set_ylabel('{}'.format('Albedo'))
+    ax3.set_xlabel('Time steps (with observations)')
+
+
 def A_normal(mu, sigma_sqrd):
-    #return 2 * sigma * _normpdf(mu / sigma) + \
+    # return 2 * sigma * _normpdf(mu / sigma) + \
     #       mu * (2 * stats.norm.cdf(mu / sigma) - 1)
     # todo: once, sigma was sigma_squared as parameter
     sigma = np.sqrt(sigma_sqrd)
@@ -3523,8 +4015,10 @@ def A_normal(mu, sigma_sqrd):
 
 
 def auxcrpsC(m, s):
-    #return 2. * s * dnorm_0(m / s, 0.) + m * (2. * pnorm_0(m / s, 1., 0.) - 1.)
-    return 2. * s * stats.norm.pdf(m / s, 0.) + m * (2. * stats.norm.cdf(m / s, 1., 0.) - 1.)
+    # return 2. * s * dnorm_0(m / s, 0.) + m * (2. * pnorm_0(m / s, 1., 0.)
+    # - 1.)
+    return 2. * s * stats.norm.pdf(m / s, 0.) + \
+           m * (2. * stats.norm.cdf(m / s, 1., 0.) - 1.)
 
 
 def crpsmixnC(w, m, s, y):
@@ -3557,29 +4051,37 @@ def crps_mixnorm(y, m, s, w=None):
     return res
 
 
-def crps_by_observation_height(aepf, h_obs, h_obs_std, obs_ix, mb_ix, obs_init_mb_ix):
+def crps_by_observation_height(aepf, h_obs, h_obs_std, obs_ix, mb_ix,
+                               obs_init_mb_ix):
     wgts = aepf.weights[obs_ix, :][0]
-    ptcls = aepf.particles[obs_ix, :, mb_ix] - aepf.particles[obs_ix, :, obs_init_mb_ix]
-    #obs_origin_len = len(h_obs)
-    #obs_notnan = np.where(~np.isnan(h_obs))[0]
-    #ptcls = ptcls[obs_notnan]
-    #h_obs = h_obs[obs_notnan]
-    #h_obs_std = h_obs_std[obs_notnan]
+    ptcls = aepf.particles[obs_ix, :, mb_ix] - \
+            aepf.particles[obs_ix, :, obs_init_mb_ix]
+    # obs_origin_len = len(h_obs)
+    # obs_notnan = np.where(~np.isnan(h_obs))[0]
+    # ptcls = ptcls[obs_notnan]
+    # h_obs = h_obs[obs_notnan]
+    # h_obs_std = h_obs_std[obs_notnan]
 
-    first_term = np.nansum(wgts * A_normal(h_obs - ptcls / cfg.RHO * cfg.RHO_W, h_obs_std**2), axis=1)
+    first_term = np.nansum(
+        wgts * A_normal(h_obs - ptcls / cfg.RHO * cfg.RHO_W, h_obs_std**2),
+        axis=1)
     len_weights = len(wgts)
-    second_term = -0.5 * np.nansum([np.nansum(wgts * wgts[l] * A_normal((ptcls.T - ptcls[:, l]).T /
-                   cfg.RHO * cfg.RHO_W, 2 * h_obs_std**2), axis=1) for l in
-                                 range(len_weights)], axis=0)
+    second_term = -0.5 * np.nansum([
+        np.nansum(wgts * wgts[l] * A_normal(
+            (ptcls.T - ptcls[:, l]).T / cfg.RHO * cfg.RHO_W, 2 * h_obs_std**2),
+                  axis=1) for l in range(len_weights)], axis=0)
     second_term[np.where(np.isnan(h_obs))[0]] = np.nan
     crps = first_term + second_term
-    #result = np.full(obs_origin_len, np.nan)
-    #result[obs_notnan] = crps
+    # result = np.full(obs_origin_len, np.nan)
+    # result[obs_notnan] = crps
     return first_term + second_term
 
 
 def corr_term(mu, sigma):
-    """Potential correction term for trunacted gaussians as describe in Gneiting 2006 eq.5 """
+    """
+    Potential correction term for truncated Gaussians as described in Gneiting
+    2006 eq.5
+    """
     return -2 * sigma * _normpdf(mu / sigma) * _normcdf(
         -mu / sigma) + sigma / np.sqrt(np.pi) * _normcdf(
         -np.sqrt(2) * mu / sigma) + mu * (_normcdf(-mu / sigma)) ** 2
@@ -3591,38 +4093,48 @@ def crps_by_observation_height_direct(ptcls, h_obs, h_obs_std, wgts=None):
         wgts = np.ones(ptcls.shape[1]) / ptcls.shape[1]
     # weights may not be n-dimensional at the moment
     assert wgts.ndim == 1
-    first_term = np.nansum(wgts * A_normal(h_obs - ptcls, h_obs_std**2), axis=1)
+    first_term = np.nansum(wgts * A_normal(h_obs - ptcls, h_obs_std**2),
+                           axis=1)
     len_weights = len(wgts)
-    second_term = -0.5 * np.nansum([np.nansum(wgts * wgts[l] * A_normal((ptcls.T - ptcls[:, l]).T, 2 * h_obs_std**2), axis=1) for l in
-                                 range(len_weights)], axis=0)
+    second_term = -0.5 * np.nansum([
+        np.nansum(wgts * wgts[l] * A_normal((ptcls.T - ptcls[:, l]).T,
+                                            2 * h_obs_std**2), axis=1) for l in
+        range(len_weights)], axis=0)
     second_term[np.where(np.isnan(h_obs))[0]] = np.nan
     if ((first_term + second_term) < 0.).any():
         print('CALC ERROR IN CRPS')
     return first_term + second_term
 
 
-def crps_by_observation_height_direct_vectorized(ptcls, h_obs, h_obs_std, wgts=None):
+def crps_by_observation_height_direct_vectorized(ptcls, h_obs, h_obs_std,
+                                                 wgts=None):
     """ PTCLS, h_obs and h_obs_std must be given in OBS SPACE!!!"""
     if wgts is None:
         wgts = np.atleast_2d(np.ones_like(ptcls)) / ptcls.shape[1]
     # check if wgts really all sum to one
-    #assert np.isclose(np.sum(wgts, axis=1), np.ones_like(wgts.shape[1]), atol=0.001)
+    # assert np.isclose(np.sum(wgts, axis=1), np.ones_like(wgts.shape[1]),
+    # atol=0.001)
     first_term = np.sum(wgts * A_normal(h_obs - ptcls, h_obs_std**2), axis=1)
     forecasts_diff = (np.expand_dims(ptcls, -1) - np.expand_dims(ptcls, -2))
     weights_matrix = (np.expand_dims(wgts, -1) * np.expand_dims(wgts, -2))
-    second_term = -0.5 * np.nansum(weights_matrix * A_normal((forecasts_diff), 2 * h_obs_std**2))
+    second_term = -0.5 * np.nansum(
+        weights_matrix * A_normal(forecasts_diff, 2 * h_obs_std**2))
     return first_term + second_term
 
 
-def crps_by_water_equivalent(aepf, h_obs, h_obs_std, obs_ix, mb_ix, obs_init_mb_ix):
+def crps_by_water_equivalent(aepf, h_obs, h_obs_std, obs_ix, mb_ix,
+                             obs_init_mb_ix):
     wgts = aepf.weights[obs_ix, :][0]
-    ptcls = aepf.particles[obs_ix, :, mb_ix] - aepf.particles[obs_ix,:,obs_init_mb_ix]
+    ptcls = aepf.particles[obs_ix, :, mb_ix] - \
+            aepf.particles[obs_ix, :, obs_init_mb_ix]
     len_weights = len(wgts)
-    first_term = np.sum(wgts * A_normal(cfg.RHO / 1000. * h_obs - ptcls, (
-                cfg.RHO / 1000. * h_obs_std**2)), axis=1)
-    second_term = - 0.5 * np.sum([np.sum((wgts * wgts[l])[:, np.newaxis] * np.abs(ptcls.T - ptcls[:, l]), axis=0)
-         for l in range(len_weights)]) - 0.5 * A_normal(0., 2. * (
-                cfg.RHO / 1000 * h_obs_std**2))
+    first_term = np.sum(
+        wgts * A_normal(cfg.RHO / 1000. * h_obs - ptcls,
+                        (cfg.RHO / 1000. * h_obs_std**2)), axis=1)
+    second_term = - 0.5 * np.sum([
+        np.sum((wgts * wgts[l])[:, np.newaxis] * np.abs(ptcls.T - ptcls[:, l]),
+               axis=0) for l in range(len_weights)]) \
+        - 0.5 * A_normal(0., 2. * (cfg.RHO / 1000 * h_obs_std**2))
     # this stays 2D -> select [0]
     return first_term + second_term[:, 0]
 
@@ -3630,7 +4142,7 @@ def crps_by_water_equivalent(aepf, h_obs, h_obs_std, obs_ix, mb_ix, obs_init_mb_
 def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
                              param_prior_distshape,
                              param_prior_std_scalefactor, generate_params=None,
-                             param_dict=None, adjust_pelli=True, seed=None):
+                             param_dict=None, adjust_pelli=True, seed=None) -> tuple:
     """
 
     Parameters
@@ -3647,31 +4159,38 @@ def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
         Do we want to scale the standard deviation of the parameter
         distribution to make it wider/narrower?
     generate_params : str
-        The way we want to generate parameters.
+        The way we want to generate parameters, i.e. whether we want to get
+        them from past calibration or from the Gabbi 2014-paper. Possible one
+        of: ['past', 'gabbi', 'mean_past', 'mean_gabbi', None]. Default: None
+        (equals 'past').
     param_dict :
         If the parameters shall stem from this dictionary only.
+    adjust_pelli: bool, optional
+        Adjust the Pellicciotti parameter prior distribution. Default: True.
+    seed: int, optional
+        Whether to use a random number generator seed (for repeatable
+        experiments). Default: None (non-repeatable).
 
     Returns
     -------
-
+    theta_priors, theta_priors_means, theta_priors_cov: tuple
+        Prior distributions, prior means & prior covariances of the parameters.
     """
 
     # get prior parameter distributions
     # todo: the np.abs is to get c0 in OerlemansModel positive!!!! (we take the
     #  log afterwards)
     if (generate_params == 'past') or (generate_params is None):
-        theta_priors = [np.abs(get_prior_param_distributions(gdir, m,
-                                                             init_particles_per_model,
-                                                             fit=param_prior_distshape,
-                                                             std_scale_fac=
-                                                             param_prior_std_scalefactor[
-                                                                 i], seed=seed))
-                        for i, m in enumerate(mb_models)]
+        theta_priors = [np.abs(
+            get_prior_param_distributions(
+                gdir, m, init_particles_per_model, fit=param_prior_distshape,
+                std_scale_fac=param_prior_std_scalefactor[i], seed=seed))
+            for i, m in enumerate(mb_models)]
         theta_priors_means = [np.median(np.log(tj), axis=0) for tj in
                               theta_priors]
         theta_priors_cov = [np.cov(np.log(tj).T) for tj in theta_priors]
 
-        #todo: it is necessary. but how to justify?
+        # todo: it is necessary. but how to justify?
         # make tf in Pellicciotti noisy
         if adjust_pelli is True:
             pelli_prior = theta_priors[2]
@@ -3682,23 +4201,21 @@ def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
 
     elif generate_params == 'gabbi':
         # get mean and cov of log(initial prior)
-        theta_priors = [np.abs(get_prior_param_distributions_gabbi(m,
-                                                                   init_particles_per_model,
-                                                                   fit=param_prior_distshape))
-                        for m in mb_models]
+        theta_priors = [
+            np.abs(get_prior_param_distributions_gabbi(
+                m, init_particles_per_model, fit=param_prior_distshape))
+            for m in mb_models]
 
         theta_priors_means = [np.mean(np.log(tj), axis=0) for tj in
                               theta_priors]
         theta_priors_cov = [np.cov(np.log(tj).T) for tj in theta_priors]
         theta_priors_cov = [np.eye(t.shape[0]) * t for t in theta_priors_cov]
     elif generate_params == 'mean_past':
-        theta_priors = [np.abs(get_prior_param_distributions(gdir, m,
-                                                             init_particles_per_model,
-                                                             fit=param_prior_distshape,
-                                                             std_scale_fac=
-                                                             param_prior_std_scalefactor[
-                                                                 i], seed=seed))
-                        for i, m in enumerate(mb_models)]
+        theta_priors = [np.abs(
+            get_prior_param_distributions(
+                gdir, m, init_particles_per_model, fit=param_prior_distshape,
+                std_scale_fac=param_prior_std_scalefactor[i], seed=seed))
+            for i, m in enumerate(mb_models)]
         theta_priors = [np.atleast_2d(np.mean(tj, axis=0)) for tj in
                         theta_priors]
         theta_priors = [np.repeat(tp, init_particles_per_model, axis=0) for tp
@@ -3710,9 +4227,8 @@ def prepare_prior_parameters(gdir, mb_models, init_particles_per_model,
         theta_priors_cov = [np.zeros_like(tjc) for tjc in theta_priors_cov]
     elif generate_params == 'mean_gabbi':
         # get mean and cov of log(initial prior)
-        theta_priors = [np.abs(get_prior_param_distributions_gabbi(m,
-                                                                   init_particles_per_model))
-                        for m in mb_models]
+        theta_priors = [np.abs(get_prior_param_distributions_gabbi(
+            m, init_particles_per_model)) for m in mb_models]
         theta_priors = [np.atleast_2d(np.mean(tj, axis=0)) for tj in
                         theta_priors]
         theta_priors = [np.repeat(tp, init_particles_per_model, axis=0) for tp
@@ -3751,9 +4267,9 @@ def prepare_observations(gdir, stations=None, ice_only=False,
         stations = id_to_station[gdir.rgi_id]
     station_hgts = [station_to_height[s] for s in stations]
 
-    obs_merge = utils.prepare_holfuy_camera_readings(gdir, ice_only=ice_only,
-                                                     exclude_initial_snow=exclude_initial_snow,
-                                                     stations=stations)
+    obs_merge = utils.prepare_holfuy_camera_readings(
+        gdir, ice_only=ice_only, exclude_initial_snow=exclude_initial_snow,
+        stations=stations, holfuy_path='c:\\users\\johannes\\documents\\holfuyretriever\\')
     obs_merge = obs_merge.sel(height=station_hgts)
     obs_merge_cs = obs_merge.swe.cumsum(dim='date')
     obs_merge_cs = obs_merge_cs.where(~np.isnan(obs_merge.swe), np.nan)
@@ -3777,6 +4293,7 @@ def validation_run(stations, param_ts, weight_ts, model_weight_ts):
 
     """
 
+
 def reference_run_constant_param():
     """
     Perform a reference run with constant parameters.
@@ -3794,21 +4311,19 @@ def reference_run_constant_param():
     mad_list = []
     for i in range(len(results)):
         rdict = results.iloc[i].to_dict()
-        gdir = utils.GlacierDirectory(rdict['RGIId'],
-                                      base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\per_glacier')
+        gdir = utils.GlacierDirectory(
+            rdict['RGIId'],
+            base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\'
+                     'per_glacier')
         fl_h, fl_w = gdir.get_inversion_flowline_hw()
         stations = id_to_station[gdir.rgi_id]
         station_hgts = [station_to_height[s] for s in stations]
-        obs_merge = utils.prepare_holfuy_camera_readings(gdir, ice_only=False,
-                                                         exclude_initial_snow=True,
-                                                         stations=stations)
+        obs_merge = utils.prepare_holfuy_camera_readings(
+            gdir, ice_only=False, exclude_initial_snow=True, stations=stations)
         obs_merge = obs_merge.sel(height=station_hgts)
-        quadro_result = make_mb_current_mbyear_heights(gdir,
-                                                                 begin_mbyear=pd.Timestamp(
-                                                                     '2018-10-01'),
-                                                                 param_dict=rdict,
-                                                                 write=False,
-                                                                 reset=False)
+        quadro_result = make_mb_current_mbyear_heights(
+            gdir, begin_mbyear=pd.Timestamp('2018-10-01'), param_dict=rdict,
+            write=False, reset=False)
         res_list.append(quadro_result[0])
         s_index = np.argmin(np.abs((fl_h - np.atleast_2d(station_hgts).T)),
                             axis=1)
@@ -3859,16 +4374,20 @@ def station_init_conditions_at_first_setup(station, year=2019):
     # todo: include year
 
     ic = {
-        1001:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'),
-              'swe': (0.9, 0.15)},
-        1002:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'),
-              'swe':('from_model')},
-        1003:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'),
-              'swe':('from_model')},
-        1006:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'), 'swe':('from_model')},
-        1007:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'), 'swe':('from_model')},
-        1008:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'), 'swe':('from_model')},
-        1009:{'mb': (0., 0.), 'alpha':('from_model'), 'tacc':('from_model'), 'swe':('from_model')},
+        1001: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': (0.9, 0.15)},
+        1002: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': 'from_model'},
+        1003: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': 'from_model'},
+        1006: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': 'from_model'},
+        1007: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': 'from_model'},
+        1008: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': 'from_model'},
+        1009: {'mb': (0., 0.), 'alpha': 'from_model', 'tacc': 'from_model',
+               'swe': 'from_model'},
     }
 
 
@@ -3977,7 +4496,7 @@ def variogram_function_hock(lag_distance: float or np.ndarray) -> float or \
     Parameters
     ----------
     lag_distance: float or np.ndarray
-        Lag distances between to measurements giving the according coavriance.
+        Lag distances between to measurements giving the according covariance.
 
     Returns
     -------
@@ -4016,7 +4535,6 @@ def krige_camera_mb(mb, lag_distances, variogram_func=variogram_function_hock):
         Values kriged to the lag distances and their respective standard
         deviations.
     """
-
 
 
 def predict_particle_filter(particles: np.ndarray, pred: np.ndarray,
@@ -4132,7 +4650,8 @@ def distribute_point_mb_measurement_on_heights(fl_heights: np.ndarray,
                                                obs: float, obs_hgt: float,
                                                obs_std: float,
                                                prec_sol_at_hgts: np.ndarray,
-                                               unc_method: str = 'linear') -> tuple:
+                                               unc_method: str = 'linear') \
+        -> tuple:
 
     """
     Distribute a point mass balance measurement on all glacier heights.
@@ -4160,9 +4679,11 @@ def distribute_point_mb_measurement_on_heights(fl_heights: np.ndarray,
         Mass balance as modeled by the ensemble members (m w.e.).
     obs: float
         Mass balance measurement, converted to m w.e.. (m w.e.).
+    obs_hgt: float
+        Height at which mass balance measurement was made.
     obs_std: float
         The measurement uncertainty given as the standard deviation (m w.e.).
-    prec_sol_at_heights: np.array
+    prec_sol_at_hgts: np.array
         Solid precipitation at the flowline heights.
     unc_method: str
         Method to distribute the uncertainty with height. Allowed are 'linear'
@@ -4178,17 +4699,17 @@ def distribute_point_mb_measurement_on_heights(fl_heights: np.ndarray,
         heights given.
     """
     # todo: test multiple assims
-    #m_index = np.argmin(np.abs(fl_heights - obs_hgt))
+    # m_index = np.argmin(np.abs(fl_heights - obs_hgt))
     m_index = np.argmin(np.abs(fl_heights - np.atleast_2d(obs_hgt).T), axis=1)
 
-    #delta_h = fl_heights - fl_heights[m_index]
-    #mb_diff = (model_mb[:, m_index] - model_mb.T).T
+    # delta_h = fl_heights - fl_heights[m_index]
+    # mb_diff = (model_mb[:, m_index] - model_mb.T).T
     delta_h = fl_heights - np.atleast_2d(fl_heights[m_index]).T
     mb_diff = (np.atleast_3d(model_mb[:, m_index].T) - np.atleast_3d(
         model_mb.T).T).T
 
     # distribute the obs along the mb gradient
-    #obs_distr = obs - np.nanmedian(mb_diff, axis=0)
+    # obs_distr = obs - np.nanmedian(mb_diff, axis=0)
     obs_distr = np.atleast_2d(obs) - np.nanmedian(mb_diff, axis=1)
 
     # ensure that e.g. mass balance doesn't become positive without precip!
@@ -4205,17 +4726,16 @@ def distribute_point_mb_measurement_on_heights(fl_heights: np.ndarray,
     # Distribute the stdev of the measurement (becomes bigger with dh!?)
     # todo: test multiple
     mod_std = np.std(mb_diff, axis=1)
-    #mod_std = np.std(mb_diff, axis=0)
+    # mod_std = np.std(mb_diff, axis=0)
     if unc_method == 'linear':
         # todo: test multiple
-        #meas_std_distr = distribute_std_by_linear_distance(delta_h, obs_std,
+        # meas_std_distr = distribute_std_by_linear_distance(delta_h, obs_std,
         #                                                   mod_std)
-        meas_std_distr = distribute_std_by_linear_distance(delta_h,
-                                                           np.atleast_2d(obs_std).T,
-                                                           mod_std.T)
+        meas_std_distr = distribute_std_by_linear_distance(
+            delta_h, np.atleast_2d(obs_std).T, mod_std.T)
     elif unc_method == 'idw':
-        meas_std_distr = distribute_std_by_inverse_distance(delta_h, obs_std,
-                                                           mod_std)
+        meas_std_distr = distribute_std_by_inverse_distance(
+            delta_h, obs_std, mod_std)
     elif unc_method is None:
         meas_std_distr = np.ones_like(mod_std, dtype=np.float32) * obs_std
     else:
@@ -4262,7 +4782,7 @@ def distribute_std_by_linear_distance(dist: np.ndarray, obs_std: float,
 
     # Multiply the weights for each interpolated point by all observed Z-values
     # todo: test multiple
-    #std_distr = obs_std * weights + mod_std * (1 - weights)
+    # std_distr = obs_std * weights + mod_std * (1 - weights)
     std_distr = np.atleast_2d(obs_std) * wgt + mod_std * (1 - wgt)
 
     return std_distr
@@ -4344,7 +4864,7 @@ def get_possible_height_gradients(arr: np.ndarray, heights: np.ndarray,
     if arr.ndim > 1:
         # problem with square array when axis not given
         if (np.array([arr.shape[i] == arr.shape[i+1] for i, _ in
-             enumerate(arr.shape[:-1])]).all()) and (axis is None):
+                      enumerate(arr.shape[:-1])]).all()) and (axis is None):
             raise ValueError('If array is square, axis must be given.')
         else:
             axis = [arr.shape.index(a) for a in arr.shape if heights.shape[0]
@@ -4369,8 +4889,8 @@ def get_possible_height_gradients(arr: np.ndarray, heights: np.ndarray,
                 grad = np.gradient(arr, delta_h, axis=axis)
             else:
                 # shuffles in-place
-                #np.random.shuffle(arr)
-                disarrange(arr, axis=0)  # todo: is axis=0 correct for every case?
+                # np.random.shuffle(arr)
+                disarrange(arr, axis=0)  # todo: axis=0 correct for every case?
                 grad = np.vstack(grad, np.gradient(arr, delta_h, axis=axis))
         # check if we need to transpose back
         if transpose is True:
@@ -4411,7 +4931,6 @@ def plot_gradient(gradient: np.ndarray) -> None:
     -------
     None
     """
-    from mpl_toolkits.mplot3d import Axes3D
 
     mean = np.nanmean(gradient, axis=0)
     std = np.nanstd(gradient, axis=0)
@@ -4428,13 +4947,11 @@ def plot_gradient(gradient: np.ndarray) -> None:
     plt.show()
 
 
-def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
-                                           begin_mbyear: pd.Timestamp,
-                                           mb_model: MassBalanceModel = None,
-                                           snowcover: SnowFirnCover = None,
-                                           write: bool = True,
-                                           reset: bool = False,
-                                           filesuffix: str = '') -> xr.Dataset:
+def make_mb_current_mbyear_particle_filter(
+        gdir: utils.GlacierDirectory, begin_mbyear: pd.Timestamp,
+        mb_model: DailyMassBalanceModel = None,
+        snowcover: SnowFirnCover = None, write: bool = True,
+        reset: bool = False, filesuffix: str = '') -> xr.Dataset:
     """
     Make the mass balance of the current mass budget year for a given glacier
     using measured data to assimilate into the.
@@ -4465,7 +4982,8 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
         Mass balance of current mass budget year as cumulative sum.
     """
 
-    yesterday = min(utils.get_cirrus_yesterday(), begin_mbyear+pd.Timedelta(days=366))
+    yesterday = min(utils.get_cirrus_yesterday(),
+                    begin_mbyear+pd.Timedelta(days=366))
     yesterday_str = yesterday.strftime('%Y-%m-%d')
     begin_str = begin_mbyear.strftime('%Y-%m-%d')
 
@@ -4493,18 +5011,20 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
     mb_all_assim[:, 0] = 0.
 
     stations = id_to_station[gdir.rgi_id]
-    #stations = id_to_station['RGI50-11.B5616n-1']
+    # stations = id_to_station['RGI50-11.B5616n-1']
     obs_merge = utils.prepare_holfuy_camera_readings(gdir)
 
     # todo: new format
-    #meas['obs_we'] = obs_operator_dh_stake_to_mwe(meas['dh'])
-    #meas['obs_std_we'] = obs_operator_dh_stake_to_mwe(meas['uncertainty'])
+    # meas['obs_we'] = obs_operator_dh_stake_to_mwe(meas['dh'])
+    # meas['obs_std_we'] = obs_operator_dh_stake_to_mwe(meas['uncertainty'])
     # todo: minus to revert the minus from the function! This is shit!
-    obs_std_we_default = - utils.obs_operator_dh_stake_to_mwe(cfg.PARAMS['dh_obs_manual_std_default'])
-    #station_hgt = station_to_height[station]
+    obs_std_we_default = - utils.obs_operator_dh_stake_to_mwe(
+        cfg.PARAMS['dh_obs_manual_std_default'])
+    # station_hgt = station_to_height[station]
     station_hgts = [station_to_height[s] for s in stations]
-    #s_index = np.argmin(np.abs(heights - station_hgt))
-    s_index = np.argmin(np.abs((heights - np.atleast_2d(station_hgts).T)), axis=1)
+    # s_index = np.argmin(np.abs(heights - station_hgt))
+    s_index = np.argmin(np.abs((heights -
+                                np.atleast_2d(station_hgts).T)), axis=1)
 
     weights = None
     N_particles = 10000  # makes it a bit faster
@@ -4514,8 +5034,8 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
     mb_spec_assim[:, 0] = 0.
 
     tasks.update_climate(gdir)
-    _ = make_mb_current_mbyear_heights(gdir, begin_mbyear=begin_mbyear, reset=True,
-                                   filesuffix=filesuffix)
+    _ = make_mb_current_mbyear_heights(
+        gdir, begin_mbyear=begin_mbyear, reset=True, filesuffix=filesuffix)
 
     gmeteo = climate.GlacierMeteo(gdir)
 
@@ -4529,32 +5049,33 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
     # todo: so war es vorher
     mb_mod_std_all = mb_mod_stack.std(dim=['ens'], skipna=True).MB.values
     # todo: once scipy is updated to 1.3.0, use this:
-    # mb_mod_std_all = mb_mod_stack.apply(stats.median_absolute_deviation, axis=?, nan_policy='ignore')
+    # mb_mod_std_all = mb_mod_stack.apply(stats.median_absolute_deviation,
+    # axis=?, nan_policy='ignore')
 
-    #experiment für std um median
-    #med = np.nanmedian(mb_mod_stack.cumsum(dim='time').MB.values, axis=2)
-    #mb_mod_std_all = np.nanmedian(
-    #    np.abs(mb_mod_stack.cumsum(dim='time').MB.values - np.atleast_3d(med)),
-    #    axis=2)
+    # experiment für std um median
+    # med = np.nanmedian(mb_mod_stack.cumsum(dim='time').MB.values, axis=2)
+    # mb_mod_std_all = np.nanmedian(
+    #    np.abs(mb_mod_stack.cumsum(dim='time').MB.values
+    #    - np.atleast_3d(med)), axis=2)
 
-    #mb_mod_std_all = mb_mod_stack.std(dim='ens', skipna=True).cumsum(dim='time',  # this is to test if we have to use the cumsum std
-    #                                                  skipna=True).MB.values
-
+    # mb_mod_std_all = mb_mod_stack.std(dim='ens', skipna=True).cumsum(
+    # dim='time',  # this is to test if we have to use the cumsum std
+    # skipna=True).MB.values
 
     mbscs = mb_mod_stack.cumsum(dim='time', skipna=True)
     mbscs = mbscs.where(~np.isnan(mb_mod_stack))
     mbscs = mbscs.where(mbscs != 0.)
     mb_mod_cumsum_std_all = mbscs.std(dim='ens', skipna=True).MB.values
     # todo: once scipy is updated to 1.3.0, replace this:
-    #arr = mb_mod.sel(fl_id=s_index[0]).cumsum(dim='time', skipna=True).stack(
+    # arr = mb_mod.sel(fl_id=s_index[0]).cumsum(dim='time', skipna=True).stack(
     #    dim=['member', 'model']).MB.values
-    #scale = 1.4826
-    #med = np.apply_over_axes(np.nanmedian, arr, 1)
-    #mad = np.median(np.abs(arr - med), axis=1)
+    # scale = 1.4826
+    # med = np.apply_over_axes(np.nanmedian, arr, 1)
+    # mad = np.median(np.abs(arr - med), axis=1)
     # mb_mod_cumsum_std_all  = scale * mad
     mb_mod_cumsum_all = mbscs.cumsum(dim='ens', skipna=True).MB.values
 
-    #mb_mod_cumsum_std_all = mb_mod_stack.cumsum(
+    # mb_mod_cumsum_std_all = mb_mod_stack.cumsum(
     #    dim='time',  # this is to test if we have to use the cumsum std
     #    skipna=True).std(dim='ens', skipna=True).MB.values
 
@@ -4577,10 +5098,11 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
             bias = np.zeros_like(s_index, dtype=float)
         else:
             bias = np.nanmean(
-                mb_mod_all[s_index, max(date_ix - 10, 0):date_ix + 1],
-                axis=1) - np.nanmean(obs_merge.sel(
-                date=slice(max(first_date, date - dt.timedelta(days=10)),
-                           date)).swe.values, axis=1)
+                mb_mod_all[s_index, max(date_ix - 10, 0):date_ix + 1], axis=1)\
+                   - np.nanmean(
+                obs_merge.sel(date=slice(max(first_date,
+                                             date - dt.timedelta(days=10)),
+                                         date)).swe.values, axis=1)
 
         # if date has an OBS and that OBS is not NaN
         if (np.datetime64(date) in obs_merge.date) and ~np.isnan(
@@ -4599,28 +5121,38 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
                     np.atleast_2d(mb_mod_date),
                     # todo: change back?
                     np.atleast_2d(mb_mod_std_date),
-                    #np.atleast_2d(mb_mod_cumsum_std_date),
+                    # np.atleast_2d(mb_mod_cumsum_std_date),
                     (N_particles, len(heights)))
             # there was already a day with OBS before and weights is not None:
             else:  # predict with model + uncertainty
                 # trick: add std deviation randomly to all particles
-                # strictly speaking for each particles in a row randn should be ran separately, but particle number should be big enough to make everything random
-                print('MODEL:', mb_mod_date[s_index[0]], mb_mod_std_date[s_index[0]])
+                # strictly speaking for each particles in a row randn should
+                # be ran separately, but particle number should be big enough
+                # to make everything random
+                print('MODEL:', mb_mod_date[s_index[0]],
+                      mb_mod_std_date[s_index[0]])
 
-                # todo: correct mean and std if mb is zero => this should be base on how close temperature is to zero deg; the further away, the smaller the MB
+                # todo: correct mean and std if mb is zero => this should be
+                #  base on how close temperature is to zero deg; the further
+                #  away, the smaller the MB
                 if (mb_mod_date == 0.).any():
-                    possible_maxtemp = gmeteo.get_tmean_at_heights(
-                        date) + climate.interpolate_mean_temperature_uncertainty(
-                        np.array([date.month]))
+                    possible_maxtemp = \
+                        gmeteo.get_tmean_at_heights(date) + \
+                        climate.interpolate_mean_temperature_uncertainty(
+                            np.array([date.month]))
                     positive_part = np.clip(possible_maxtemp, 0, None)
-                    possible_melt = BraithwaiteModel.cali_params_guess['mu_ice']/1000. * positive_part
-                    # set all zeros to a min value (we need stddev for the method to work)
+                    possible_melt = \
+                        BraithwaiteModel.cali_params_guess['mu_ice'] / 1000. *\
+                        positive_part
+                    # set all 0s to min value (we need stddev for the method)
                     possible_melt[possible_melt == 0.] = 0.0001
-                    mb_mod_std_date[mb_mod_date == 0.] = possible_melt[mb_mod_date == 0.]
+                    mb_mod_std_date[mb_mod_date == 0.] = \
+                        possible_melt[mb_mod_date == 0.]
 
                 # make the predict step
                 particles_old = copy.deepcopy(particles)
-                particles = predict_particle_filter(particles, mb_mod_date, mb_mod_std_date)
+                particles = predict_particle_filter(
+                    particles, mb_mod_date, mb_mod_std_date)
 
             mean_plot = np.nanmean(particles[:, s_index])
             std_plot = np.nanstd(particles[:, s_index])
@@ -4628,14 +5160,16 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
             print('Particle mean/std after predict: ', mean_plot, std_plot)
 
             # todo: THIS IS CHANGED FOR THE DEBIASING TEST
-            #obs_we = mb_all_assim[s_index, date_ix-1] + obs_merge.sel(date=date).swe.values
+            # obs_we = mb_all_assim[s_index, date_ix-1] +
+            # obs_merge.sel(date=date).swe.values
             obs_we = mb_all_assim[s_index, date_ix - 1] + obs_merge.sel(
                 date=date).swe.values + bias
             # todo: this is new for truncate
             obs_we_old = mb_all_assim[s_index, date_ix - 1]
             bias_list.append(bias)
             print('bias: ', bias)
-            #obs_std_we = mb_all_assim_std[s_index, date_ix-1] + obs_merge.sel(date=date).swe_std.values
+            # obs_std_we = mb_all_assim_std[s_index, date_ix-1] +
+            # obs_merge.sel(date=date).swe_std.values
             obs_std_we = obs_merge.sel(date=date).swe_std.values
 
             # check if there is given uncertainty, otherwise switch to default
@@ -4643,18 +5177,20 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
                 obs_std_we[np.where(np.isnan(obs_std_we))] = obs_std_we_default
 
             # delete some NaNs from ensemble
-            #ens_for_dist = mb_mod_stack_ens[:, date_ix, :].T[
+            # ens_for_dist = mb_mod_stack_ens[:, date_ix, :].T[
             #    ~np.isnan(mb_mod_stack_ens[:, date_ix, :].T).any(axis=1)]
 
             # extrapolate the measurement along the flowlines
             # todo: => unused for the moment!
-            #_, psol_at_hgts = gmeteo.get_precipitation_solid_liquid(date, heights)
-            #obs_we_extrap, obs_std_we_extrap = distribute_point_mb_measurement_on_heights(
+            # _, psol_at_hgts =
+            # gmeteo.get_precipitation_solid_liquid(date, heights)
+            # obs_we_extrap, obs_std_we_extrap =
+            # distribute_point_mb_measurement_on_heights(
             #    heights, ens_for_dist, obs_we, station_hgts,
             #    obs_std_we, psol_at_hgts, unc_method='linear')
 
-            ## if we have an OBS, and it's not the first one
-            #if date_ix > first_date_ix:
+            # if we have an OBS, and it's not the first one
+            # if date_ix > first_date_ix:
             #    # todo: why is one array transposed?
             #    obs_we_extrap_all[:, n_day+1] = obs_we_extrap[:, 0]
             #    obs_we_std_extrap_all[:, n_day+1] = obs_std_we_extrap[0, :]
@@ -4666,16 +5202,19 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
             if np.isnan(weights).any():
                 print('THERE ARE NAN WEIGHTS')
 
-            # todo: new method to digest multiple measurements at once without extrapolating
+            # todo: new method to digest multiple measurements at once without
+            #  extrapolating
             # iterate over stations, find new weights for each, and take mean
             new_weights = np.zeros((particles.shape[0], len(s_index)))
             for i, s in enumerate(s_index):
                 checka = copy.deepcopy(weights[:, s])
-                new_weights[:, i] = update_particle_filter(particles[:, s],
-                                                     checka, obs_we[i],
-                                                     obs_std_we[i], truncate=particles_old[:, s] - obs_we[i], obs_old=obs_we_old[i])  # todo: this is new for truncate
+                new_weights[:, i] = update_particle_filter(
+                    particles[:, s], checka, obs_we[i], obs_std_we[i],
+                    truncate=particles_old[:, s] - obs_we[i],
+                    obs_old=obs_we_old[i])  # todo: this is new for truncate
             new_weights = np.nanmean(new_weights, axis=1)
-            new_weights = np.repeat(np.atleast_2d(new_weights).T, weights.shape[1], axis=1)
+            new_weights = np.repeat(np.atleast_2d(new_weights).T,
+                                    weights.shape[1], axis=1)
 
             weights = copy.deepcopy(new_weights)
             if np.isnan(weights).any():
@@ -4689,55 +5228,72 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
             mb_all_assim_std[:, n_day+1] = mb_std_assim
 
             # resample the distribution if necessary
-            particles, weights = resample_particles(particles, weights,
-                                                    n_eff_thresh=n_eff_thresh)
-            print('UNIQUE PARTICLES: ', len(np.unique(particles[:, s_index[0]])))
+            particles, weights = resample_particles(
+                particles, weights, n_eff_thresh=n_eff_thresh)
+            print('UNIQUE PARTICLES: ',
+                  len(np.unique(particles[:, s_index[0]])))
             print('MEAN: ', np.mean(particles[:, s_index[0]]))
 
-            mb_spec_assim[:, n_day + 1] = np.nanpercentile(np.average(np.sort(particles, axis=0), weights=widths, axis=1), np.arange(0, 100)) + mb_spec_assim[:, first_date_ix]
+            mb_spec_assim[:, n_day + 1] = \
+                np.nanpercentile(np.average(np.sort(particles, axis=0),
+                                            weights=widths, axis=1),
+                                 np.arange(0, 100)) + \
+                mb_spec_assim[:, first_date_ix]
 
             # plot some stuff for visualization
-            #plt.errorbar(n_day + 0.04, mb_all_assim[s_index[0], n_day+1],
+            # plt.errorbar(n_day + 0.04, mb_all_assim[s_index[0], n_day+1],
             #             yerr=mb_std_assim[s_index[0]], fmt='o', label='POST',
             #             c='b')
 
             # POST
-            ##test, _ = resample_particles(particles, weights, n_eff_thresh=N_particles)
-            #vv = plt.violinplot(np.random.normal(mb_all_assim[s_index[0], n_day+1], mb_std_assim[s_index[0]], 5000), [n_day], showmeans=False, showextrema=False, showmedians=False)
-            ##vv = plt.violinplot(test[s_index[0]], [n_day])
-            #for pc in vv['bodies']:
+            # test, _ = resample_particles(particles, weights,
+            # n_eff_thresh=N_particles)
+            # vv = plt.violinplot(np.random.normal(
+            # mb_all_assim[s_index[0], n_day+1],
+            # mb_std_assim[s_index[0]], 5000), [n_day], showmeans=False,
+            # showextrema=False, showmedians=False)
+            # vv = plt.violinplot(test[s_index[0]], [n_day])
+            # for pc in vv['bodies']:
             #    pc.set_facecolor('blue')
             #    pc.set_edgecolor('blue')
             #    pc.set_alpha(0.5)
-            ##plt.scatter(n_day+0.04-weights[:, s_index[0]], particles[:, s_index[0]])
+            # plt.scatter(n_day+0.04-weights[:, s_index[0]],
+            # particles[:, s_index[0]])
 
-            ## MODEL
-            ## todo: change this back???
-            ##vv = plt.violinplot(mb_mod_stack.sel(time=date, fl_id=s_index[0]).MB.dropna(dim='ens').values, [n_day])
-            ##for n_obs in np.arange(mean_plot.shape[1]):
-            #vv = plt.violinplot(np.random.normal(mean_plot, std_plot, 5000), [n_day], showmeans=False, showextrema=False, showmedians=False)
-            #for pc in vv['bodies']:
+            # MODEL
+            # todo: change this back???
+            # vv = plt.violinplot(mb_mod_stack.sel(time=date,
+            # fl_id=s_index[0]).MB.dropna(dim='ens').values, [n_day])
+            # for n_obs in np.arange(mean_plot.shape[1]):
+            # vv = plt.violinplot(np.random.normal(mean_plot, std_plot, 5000),
+            # [n_day], showmeans=False, showextrema=False, showmedians=False)
+            # for pc in vv['bodies']:
             #    pc.set_facecolor('g')
             #    pc.set_edgecolor('g')
             #    pc.set_alpha(0.5)
 
-            #plt.errorbar([n_day+0.02], mean_plot, label='MODEL', yerr=std_plot, fmt='o', c='g')
+            # plt.errorbar([n_day+0.02], mean_plot, label='MODEL',
+            # yerr=std_plot, fmt='o', c='g')
 
-            ## OBS
-            #vv = plt.violinplot(np.random.normal(obs_we[-1],obs_std_we[-1], 5000), [n_day], showmeans=False, showextrema=False, showmedians=False)
-            #for pc in vv['bodies']:
+            # OBS
+            # vv = plt.violinplot(np.random.normal(obs_we[-1],obs_std_we[-1],
+            # 5000), [n_day], showmeans=False, showextrema=False,
+            # showmedians=False)
+            # for pc in vv['bodies']:
             #    pc.set_facecolor('r')
             #    pc.set_edgecolor('r')
             #    pc.set_alpha(0.5)
-            ###print('hello')
+            # print('hello')
         # if date does not have OBS or OBS is NaN
         else:
-            #mb_spec_assim[:, n_day + 1] = np.pad(
+            # mb_spec_assim[:, n_day + 1] = np.pad(
             #    np.average(mbscs.sel(time=date).MB.values, weights=widths,
             #               axis=0), ((0, N_particles - mbscs.ens.size)),
             #    'constant', constant_values=(np.nan, np.nan))
 
-            #mb_spec_assim[:, n_day + 1] = mb_all_assim[:, first_date_ix:x_len] + mb_spec_assim[:, first_date_ix - 1]
+            # mb_spec_assim[:, n_day + 1] =
+            # mb_all_assim[:, first_date_ix:x_len] +
+            # mb_spec_assim[:, first_date_ix - 1]
             # until first day - does this make sense?
             if weights is None:
                 mb_all_assim[:, n_day + 1] = mb_mod_date
@@ -4749,48 +5305,48 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
             # all other days
             else:
                 # write already the MB for the next day here
-                particles_prediction = predict_particle_filter(particles,
-                                                               mb_mod_date,
-                                                               mb_mod_std_date)
+                particles_prediction = predict_particle_filter(
+                    particles, mb_mod_date, mb_mod_std_date)
                 # after prediction, weights should be one again, so no average
-                mb_all_assim[:, n_day+1] = np.mean(particles_prediction, axis=0)
+                mb_all_assim[:, n_day+1] = np.mean(
+                    particles_prediction, axis=0)
                 mb_all_assim_std[:, n_day+1] = np.std(particles, axis=0)
                 mb_spec_assim[:, n_day + 1] = np.nanpercentile(
-                    np.average(mb_mod_stack.sel(time=date).MB.values, weights=widths,
-                               axis=0), np.arange(0, 100)) + mb_spec_assim[:, n_day]
+                    np.average(mb_mod_stack.sel(time=date).MB.values,
+                               weights=widths, axis=0),
+                    np.arange(0, 100)) + mb_spec_assim[:, n_day]
     if date_ix + 1 < 365:
         x_len = date_ix + 1
     else:
         x_len = 365
 
     # fake legend for violin plot
-    import matplotlib.patches as mpatches
-    import matplotlib.pyplot as plt
     blue_patch = mpatches.Patch(color='blue')
     green_patch = mpatches.Patch(color='green')
     darkgr_patch = mpatches.Patch(color='red')
     fake_handles = [blue_patch, green_patch, darkgr_patch]
-    fake_labels = ['ASSIM','MODEL','OBS']
+    fake_labels = ['ASSIM', 'MODEL', 'OBS']
     plt.legend(fake_handles, fake_labels, fontsize=20)
-    #plt.setp(ax.get_xticklabels(), fontsize=20)
-    #plt.setp(ax.get_yticklabels(), fontsize=20)
+    # plt.setp(ax.get_xticklabels(), fontsize=20)
+    # plt.setp(ax.get_yticklabels(), fontsize=20)
     plt.grid()
-    #plt.plot(np.arange(first_date_ix, date_ix + 1),
+    # plt.plot(np.arange(first_date_ix, date_ix + 1),
     #         np.cumsum(mb_mod_all[s_index[0], first_date_ix:]))
-    #plt.plot(np.arange(first_date_ix, date_ix + 1), mb_all_assim[s_index, first_date_ix:][0][1:])
+    # plt.plot(np.arange(first_date_ix, date_ix + 1),
+    # mb_all_assim[s_index, first_date_ix:][0][1:])
 
     for s in np.arange(len(s_index)):
         fig, ax = plt.subplots()
         ax.errorbar(np.arange(x_len),
-                     np.cumsum(mb_mod_all[s_index[s]])[:x_len],
-                     mb_mod_cumsum_std_all[s_index[s]][:x_len], elinewidth=0.5, label='model')
+                    np.cumsum(mb_mod_all[s_index[s]])[:x_len],
+                    mb_mod_cumsum_std_all[s_index[s]][:x_len],
+                    elinewidth=0.5, label='model')
         both = np.cumsum(mb_mod_all[s_index[s]])[:x_len]
         both_std = mb_mod_cumsum_std_all[s_index[s]][:x_len]
-        both[first_date_ix:] = mb_all_assim[s_index[s], first_date_ix:x_len] + \
-                               both[first_date_ix - 1]
+        both[first_date_ix:] = mb_all_assim[s_index[s], first_date_ix:x_len] +\
+            both[first_date_ix - 1]
         both_std[first_date_ix:] = mb_all_assim_std[s_index[s],
-                                   first_date_ix:x_len] + both_std[
-                                       first_date_ix - 1]
+            first_date_ix:x_len] + both_std[first_date_ix - 1]
         ax.errorbar(np.arange(x_len) + 0.5, both, both_std, elinewidth=0.5,
                     label='assimilated')
         plt.xlabel('DOY of mass budget year (OCT-SEP)', fontsize=20)
@@ -4821,8 +5377,6 @@ def make_mb_current_mbyear_particle_filter(gdir: utils.GlacierDirectory,
     plt.show()
 
     return mb_all_assim
-    print('hi')
-
 
     """
     mean_for_ds = np.moveaxis(np.atleast_3d(np.array(mb_all_assim)), 1, 0)
@@ -4951,7 +5505,7 @@ def step_particle_filter_cameras(gdir: utils.GlacierDirectory,
 
 def plot_pdf_model_obs_post(obs: float, obs_std: float, mod: float,
                             mod_std: float, post: float,
-                            post_std: float)-> None:
+                            post_std: float) -> None:
     """
     Plot fitted Gaussian distributions of means and standard deviations.
 
@@ -4984,30 +5538,21 @@ def plot_pdf_model_obs_post(obs: float, obs_std: float, mod: float,
     ptp = valmax - valmin
     x_range = np.linspace(valmin - 0.05 * ptp, valmax + 0.05 * ptp, 1000)
 
-    plt.plot(x_range,
-             stats.norm(obs, obs_std).pdf(
-                 x_range), label='OBS')
-    plt.plot(x_range,
-                 stats.norm(post,
-                            post_std).pdf(
-                 x_range), label='POST')
-    plt.plot(x_range,
-             stats.norm(mod, mod_std).pdf(
-                 x_range), label='MODEL')
+    plt.plot(x_range, stats.norm(obs, obs_std).pdf(x_range), label='OBS')
+    plt.plot(x_range, stats.norm(post, post_std).pdf(x_range), label='POST')
+    plt.plot(x_range, stats.norm(mod, mod_std).pdf(x_range), label='MODEL')
     plt.legend()
     plt.show()
 
 
-def make_mb_current_mbyear_heights(gdir: utils.GlacierDirectory,
-                                   begin_mbyear: pd.Timestamp,
-                                   last_day: dt.datetime or pd.Timestamp or
-                                             None = None,
-                                   mb_model: MassBalanceModel = None,
-                                   snowcover: SnowFirnCover = None,
-                                   write: bool = True, reset: bool = False,
-                                   filesuffix:str = '', param_dict=None,
-                                   constrain_bw_with_prcp_fac: bool = True) -> \
-xr.Dataset:
+def make_mb_current_mbyear_heights(
+        gdir: utils.GlacierDirectory, begin_mbyear: pd.Timestamp,
+        last_day: Optional[Union[dt.datetime, pd.Timestamp]] = None,
+        mb_model: DailyMassBalanceModel = None,
+        snowcover: SnowFirnCover = None, write: bool = True,
+        reset: bool = False, filesuffix: str = '',
+        param_dict: Optional[dict] = None,
+        constrain_bw_with_prcp_fac: bool = True) -> xr.Dataset:
     """
     Make the mass balance at flowline heights of the current mass budget year.
 
@@ -5017,6 +5562,9 @@ xr.Dataset:
         The GlacierDirectory to calculate the current mass balance for.
     begin_mbyear: datetime.datetime
         The beginning of the current mass budget year.
+    last_day: dt.datetime or pd.Timestamp or None
+        Last day to calculate the mass balance for. Default: None (take
+        "Cirrus yesterday").
     mb_model: `py:class:crampon.core.models.massbalance.DailyMassBalanceModel`,
               optional
         A mass balance model to use. Default: None (use all available).
@@ -5032,6 +5580,13 @@ xr.Dataset:
         (append).
     filesuffix: str
         Suffix to be used for the mass balance calculation.
+    param_dict: dict or None
+        Dictionary with parameters to use for the mass balance calculation. If
+        None, take all available parameters from past calibration. Default:
+        None.
+    constrain_bw_with_prcp_fac: bool, optional
+        Whether to contrain the used parameters with the precipitation
+        correction factor tuned on the winter mass balance. Default: True.
 
     Returns
     -------
@@ -5061,7 +5616,7 @@ xr.Dataset:
     ds_list = []
     heights, widths = gdir.get_inversion_flowline_hw()
 
-    conv_fac = cfg.FLUX_TO_DAILY_FACTOR#((86400 * cfg.RHO) / cfg.RHO_W)  # m
+    conv_fac = cfg.FLUX_TO_DAILY_FACTOR  # ((86400 * cfg.RHO) / cfg.RHO_W)  # m
     # ice s-1 to m w.e.
     # d-1
 
@@ -5072,12 +5627,11 @@ xr.Dataset:
     for mbm in mb_models:
         stacked = None
 
-        pg = ParameterGenerator(gdir, mbm, latest_climate=True,
-                                      only_pairs=True,
-                                      constrain_with_bw_prcp_fac=constrain_bw_with_prcp_fac,
-                                      bw_constrain_year=begin_mbyear.year + 1,
-                                      narrow_distribution=0.,
-                                      output_type='array', suffix=filesuffix)
+        pg = ParameterGenerator(
+            gdir, mbm, latest_climate=True, only_pairs=True,
+            constrain_with_bw_prcp_fac=constrain_bw_with_prcp_fac,
+            bw_constrain_year=begin_mbyear.year + 1, narrow_distribution=0.,
+            output_type='array', suffix=filesuffix)
 
         if param_dict is None:
             param_prod = pg.from_single_glacier()
@@ -5105,8 +5659,9 @@ xr.Dataset:
                 mb_temp.append(tmp)
 
             # todo: is tink the commented out version was wrong!
-            #sc_list_one_model.append(np.nansum(sc.swe, axis=1))
-            sc_list_one_model.append(np.nansum(day_model_curr.snowcover.swe, axis=1))
+            # sc_list_one_model.append(np.nansum(sc.swe, axis=1))
+            sc_list_one_model.append(np.nansum(day_model_curr.snowcover.swe,
+                                               axis=1))
             sfc_obj_list_one_model.append(day_model_curr.snowcover)
             if hasattr(day_model_curr, 'albedo'):
                 alpha_list.append(day_model_curr.albedo.alpha)
@@ -5117,7 +5672,7 @@ xr.Dataset:
             else:
                 stacked = np.atleast_3d(mb_temp).T
 
-        stacked = np.sort(stacked, axis=0)
+        #stacked = np.sort(stacked, axis=0)
 
         mb_for_ds = np.moveaxis(np.atleast_3d(np.array(stacked)), 1, 0)
         mb_for_ds.shape += (1,) * (4 - mb_for_ds.ndim)  # add dim for model
@@ -5137,6 +5692,9 @@ xr.Dataset:
         ds_list.append(mb_ds)
 
     ens_ds = xr.merge(ds_list)
+    # sort in the order we want it
+    ens_ds = xr.concat([ens_ds.MB.sel(model=m) for m in cfg.MASSBALANCE_MODELS
+                        if m in ens_ds.coords['model']], dim='model').to_dataset(name='MB')
     ens_ds.attrs.update({'id': gdir.rgi_id, 'name': gdir.name,
                          'units': 'm w.e.'})
 
@@ -5151,7 +5709,8 @@ xr.Dataset:
             gdir.write_pickle(mb_curr, 'mb_current')
 
     # todo: this should actually account for correlation ob mb, swe and alpha
-    return ens_ds, sc_list_one_model, alpha_list, tacc_list, sfc_obj_list_one_model
+    return ens_ds, sc_list_one_model, alpha_list, tacc_list, \
+           sfc_obj_list_one_model
 
 
 def make_variogram(glob_path: str) -> None:
@@ -5197,10 +5756,10 @@ def make_variogram(glob_path: str) -> None:
             plt.text(d, dh_sorted_by_dist[i], '{}'.format(
                 [x for _, x in sorted(zip(distances, corr_df.index.values))][
                     i].split('_')[1]))
-        #plt.title('Correlogram for station {}'.format(str(s)))
-        #plt.xlabel('Absolute height distance (m)')
-        #plt.xlim(0, None)
-        #plt.ylabel('$R^2$')
+        # plt.title('Correlogram for station {}'.format(str(s)))
+        # plt.xlabel('Absolute height distance (m)')
+        # plt.xlim(0, None)
+        # plt.ylabel('$R^2$')
     plt.title('Correlogram for station {}'.format(str(s)))
     plt.xlabel('Absolute height distance (m)')
     plt.xlim(0, None)
@@ -5209,7 +5768,8 @@ def make_variogram(glob_path: str) -> None:
 
 def crossval_multilinear_regression(glob_path: str) -> None:
     """
-    Cross-validate a prediction of mass balances at the cameras from multilinear regression
+    Cross-validate a prediction of mass balances at the cameras from
+    multilinear regression
 
     Parameters
     ----------
@@ -5220,13 +5780,13 @@ def crossval_multilinear_regression(glob_path: str) -> None:
     -------
     None.
     """
-    import statsmodels.api as sm
     from scipy.spatial.distance import squareform, pdist
 
     use_horizontal_distance = True
 
     # todo: remove hard code
-    hdata_path = 'c:\\users\\johannes\\documents\\holfuyretriever\\holfuy_data.csv'
+    hdata_path = 'c:\\users\\johannes\\documents\\holfuyretriever\\' \
+                 'holfuy_data.csv'
 
     # 'C:\\users\\johannes\\documents\\holfuyretriever\\manual*.csv'
     flist = glob.glob(glob_path)
@@ -5257,12 +5817,14 @@ def crossval_multilinear_regression(glob_path: str) -> None:
         y = conc_drop[test_labels]
 
         test_labels_int = [int(n.split('_')[1]) for n in test_labels]
-        #easy_cols = X.rename(
+        # easy_cols = X.rename(
         #    {'dh_1001': 1001, 'dh_1002': 1002, 'dh_1003': 1003,
         #     'dh_1006': 1006,
         #     'dh_1007': 1007, 'dh_1008': 1008, 'dh_1009': 1009}, axis=1)
-        #wgts = pd.concat([hdist[[int(n.split('_')[1]) for n in test_labels]].T,
-        #                  easy_cols], axis=0).loc[[int(n.split('_')[1]) for n in test_labels]]
+        # wgts = pd.concat([hdist[[int(n.split('_')[1]) for n in
+        # test_labels]].T,
+        #                  easy_cols], axis=0).loc[[int(n.split('_')[1]) for n
+        #                  in test_labels]]
         wgts = hdist[test_labels_int].values[
                    hdist[test_labels_int].values != 0.] / np.sum(
             hdist[test_labels_int].values[hdist[test_labels_int].values != 0.])
@@ -5278,11 +5840,11 @@ def crossval_multilinear_regression(glob_path: str) -> None:
         plt.plot(predictions, label='PRED')
         plt.legend()
         plt.title(' '.join(list(test_labels)) +
-                  ' RMSE: ' + ('{:.3f}').format(
+                  ' RMSE: ' + '{:.3f}'.format(
             np.sqrt(np.mean((predictions.values - y.values) ** 2))))
 
 
-def variogram_cloud() -> None:
+def variogram_cloud(conc, hdist) -> None:
     """
     Plot the variogram cloud as in [Bivand et al. 2013]_ (p. 220).
 
@@ -5308,7 +5870,7 @@ def variogram_cloud() -> None:
     ax.set_ylabel('Squared difference ($m^2$)')
 
 
-def simple_variogram() -> None:
+def simple_variogram(conc, hdist) -> None:
     """
     Plot a simple variogram.
 
@@ -5341,7 +5903,7 @@ def simple_variogram() -> None:
     plt.show()
 
 
-def sample_variogram_100_variations() -> None:
+def sample_variogram_100_variations(conc, hdist) -> None:
     """
     Produces a figure similar to 8.5 in [Bivand et al. (2013)]_, but only points.
 
@@ -5370,7 +5932,7 @@ def sample_variogram_100_variations() -> None:
         variance_for_h = np.array(variance_list)[np.where(dist_list == h)[0]]
         N_h = len(variance_for_h)
         gamma_hat.append(1 / (2 * N_h) * np.sum(variance_for_h))
-    fig, (ax1, ax2) = plt.subplots(2, 1)
+    fig, (ax1, ax2) = plt.subplots(2)
     for n in range(100):
         change_indices = np.random.choice(len(gamma_hat), len(gamma_hat),
                                           replace=False)
@@ -5390,7 +5952,8 @@ def sample_variogram_100_variations() -> None:
     ax1.set_xlabel('Horizontal distance x (m)')
     ax1.set_ylabel('Semivariance $\hat{\gamma}$')
     ax2.set_title(
-        'Linear Slope and p-value for variogram vs. 100 variograms for randomly re-allocated data')
+        'Linear Slope and p-value for variogram vs. 100 variograms for '
+        'randomly re-allocated data')
     ax2.set_xlabel('Slope ($\dfrac{d \hat{\gamma}}{d x}$)')
     ax2.set_ylabel('p-value')
     ax1.legend()
@@ -5398,7 +5961,7 @@ def sample_variogram_100_variations() -> None:
     plt.show()
 
 
-def sample_variogram_from_residuals() -> None:
+def sample_variogram_from_residuals(conc, hdist) -> None:
     """
     Accounts for the fact that the mean of MB varies spatially.
 
@@ -5433,11 +5996,12 @@ def sample_variogram_from_residuals() -> None:
         tgrad = gm.meteo.sel(time=conc.index).tgrad
         tmean_at_hgt = tmean + tgrad * (s_hgt - gm.ref_hgt)
 
-        notnan_ix = \
-        np.where(~np.isnan(sis) & ~np.isnan(tmean_at_hgt) & ~pd.isnull(conc[s]))[0]
+        notnan_ix = np.where(~np.isnan(sis) & ~np.isnan(tmean_at_hgt) & 
+            ~pd.isnull(conc[s]))[0]
 
         y = conc[s][notnan_ix]
-        X = sm.add_constant(np.vstack((sis[notnan_ix], tmean_at_hgt[notnan_ix])).T)
+        X = sm.add_constant(np.vstack((sis[notnan_ix], 
+            tmean_at_hgt[notnan_ix])).T)
 
         model = sm.OLS(y, X).fit()
         eps_list.append(np.mean(model.resid))
@@ -5465,17 +6029,19 @@ def sample_variogram_from_residuals() -> None:
     plt.ylim(min(gamma_hat), max(gamma_hat))
     """
 
-    # this alternative takes the model residuals as they are (no mean) and calculates the mean only when they are subtracted:
-    # the point being: the semivariance values are more reasonable (10e-4 instead of 10e-33)
+    # this alternative takes the model residuals as they are (no mean) and
+    # calculates the mean only when they are subtracted: the point being: the
+    # semivariance values are more reasonable (10e-4 instead of 10e-33)
     # todo: check, but I think this is true:
     eps_list = []
     station_list = []
     for s in conc.columns.values:
-        id = station_to_glacier[int(s.split('_')[1])]
+        sid = station_to_glacier[int(s.split('_')[1])]
         s_hgt = station_to_height[int(s.split('_')[1])]
-        gd = GlacierDirectory(id,
-                              base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\per_glacier\\')
-        gm = GlacierMeteo(gd)
+        gd = utils.GlacierDirectory(
+            sid, base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\'
+                          'per_glacier\\')
+        gm = climate.GlacierMeteo(gd)
         sis = gm.meteo.sel(time=conc.index).sis
         tmean = gm.meteo.sel(time=conc.index).temp
         tgrad = gm.meteo.sel(time=conc.index).tgrad
@@ -5510,7 +6076,7 @@ def sample_variogram_from_residuals() -> None:
              max(gamma_hat) + 0.1 * max(gamma_hat))
 
 
-def camera_randomforestregressor() -> None:
+def camera_randomforestregressor(X) -> None:
     """
     Use a random forest regressor to predict camera values.
 
@@ -5528,7 +6094,8 @@ def camera_randomforestregressor() -> None:
             rf = RandomForestRegressor(n_estimators=1000, random_state=42)
             rf.fit(X.drop(X.index[n]).drop([drop_col], axis=1),
                    y.drop(y.index[n]))
-            # print(X.drop(X.index[n]).drop([drop_col], axis = 1), y.drop(y.index[n]))
+            # print(X.drop(X.index[n]).drop([drop_col], axis = 1),
+            #       y.drop(y.index[n]))
             predictions = rf.predict(
                 np.atleast_2d(X.drop([drop_col], axis=1).iloc[n]))
             # print(y.iloc[n])
@@ -5566,7 +6133,7 @@ def camera_randomforestregressor() -> None:
     """
 
 
-def try_gaussian_proc_regression():
+def try_gaussian_proc_regression(hdist, corr_df):
     """
     Try Gauss process regression to model observational random error in space.
 
@@ -5574,13 +6141,11 @@ def try_gaussian_proc_regression():
     -------
 
     """
-    import numpy as np
-    from matplotlib import pyplot as plt
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
     np.random.seed(1)
-    # Mesh the input space for evaluations of the real function, the prediction and
-    # its MSE
+    # Mesh the input space for evaluations of the real function, the
+    # prediction and its MSE
     x = np.atleast_2d(np.linspace(0, 100000, 100)).T
     # now the noisy case
     X = hdist.values[np.triu_indices(hdist.shape[0], k=1)].flatten()
@@ -5599,8 +6164,8 @@ def try_gaussian_proc_regression():
     gp.fit(X, y)
     # Make the prediction on the meshed x-axis (ask for MSE as well)
     y_pred, sigma = gp.predict(x, return_std=True)
-    # Plot the function, the prediction and the 95% confidence interval based on
-    # the MSE
+    # Plot the function, the prediction and the 95% confidence interval based
+    # on the MSE
     plt.figure()
     # plt.plot(x, f(x), 'r:', label=r'$f(x) = x\,\sin(x)$')
     plt.errorbar(X.ravel(), y, dy, fmt='r.', markersize=10,
@@ -5617,7 +6182,7 @@ def try_gaussian_proc_regression():
     plt.show()
 
 
-def linreg_of_station_regressions_perturbed() -> None:
+def linreg_of_station_regressions_perturbed(conc, hdist) -> None:
     """
     Do a linear regression of station values, but perturb.
 
@@ -5640,9 +6205,11 @@ def linreg_of_station_regressions_perturbed() -> None:
         id_1 = station_to_glacier[s1.split('_')[1]]
         id_2 = station_to_glacier[s2.split('_')[1]]
 
-        # gdir_1 = GlacierDirectory(id_1, base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\per_glacier\\')
+        # gdir_1 = GlacierDirectory(id_1, base_dir='C:\\users\\johannes\\
+        # documents\\modelruns\\CH\\per_glacier\\')
         # gdir_2 = GlacierDirectory(id_2,
-        #                          base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\per_glacier\\')
+        # base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\
+        # per_glacier\\')
 
         # gm_1 = GlacierMeteo(gdir_1)
         # gm_2 = GlacierMeteo(gdir_2)
@@ -5652,17 +6219,19 @@ def linreg_of_station_regressions_perturbed() -> None:
 
         for n in range(iterations):
             noise = np.random.normal(mu, sigma, [len(conccopy), 2])
-            conccopy = conccopy + noise
+            conccopy += noise
 
             # sun_1 = gm_1.meteo.sel(time=conccopy.index).sis
             # sun_2 = gm_2.meteo.sel(time=conccopy.index).sis
             # sun_dev_1 = sun_1 - np.nanmean(sun_1) / np.nanmean(sun_1)
             # sun_dev_2 = sun_2 - np.nanmean(sun_2) / np.nanmean(sun_2)
-            # sun_notnan = np.where(~np.isnan(sun_dev_1) | ~np.isnan(sun_dev_2))[0]
+            # sun_notnan = np.where(~np.isnan(sun_dev_1) |
+            # ~np.isnan(sun_dev_2))[0]
             # print(sun_dev_1, sun_dev_2)
             # weighted with incoming solar
             # y = conccopy[s2][sun_notnan]*sun_dev_2[sun_notnan]
-            # X = sm.add_constant(conccopy[s1][sun_notnan]*sun_dev_1[sun_notnan].values)
+            # X = sm.add_constant(conccopy[s1][sun_notnan] *
+            # sun_dev_1[sun_notnan].values)
 
             y = conccopy[s2]
             X = sm.add_constant(conccopy[s1])
@@ -5677,7 +6246,8 @@ def linreg_of_station_regressions_perturbed() -> None:
             cutoff = stats.t.ppf(1. - alpha / 2, model.df_resid)
             large_resid = np.abs(resids) > cutoff
             leverage = infl.hat_matrix_diag
-            large_leverage = leverage > statsmodels.graphics.regressionplots._high_leverage(
+            large_leverage = \
+                leverage > statsmodels.graphics.regressionplots._high_leverage(
                 model)
             large_points = np.logical_or(large_resid, large_leverage)
 
@@ -5689,23 +6259,27 @@ def linreg_of_station_regressions_perturbed() -> None:
             # plt.figure()
 
             # plt.scatter(X_corr.values[:, 1], y_corr)
-            # plt.plot(np.arange(np.min(X_corr.values[:, 1]), np.max(X_corr.values[:, 1])+0.01, 0.01), model_corr.params[0] + np.arange(np.min(X_corr.values[:, 1]), np.max(X_corr.values[:, 1])+0.01, 0.01) * model_corr.params[1])
+            # plt.plot(np.arange(np.min(X_corr.values[:, 1]),
+            #     np.max(X_corr.values[:, 1])+0.01, 0.01), model_corr.params[0]
+            #     + np.arange(np.min(X_corr.values[:, 1]),
+            #     np.max(X_corr.values[:, 1])+0.01, 0.01) *
+            #     model_corr.params[1])
             # plt.xlabel(s1)
             # plt.ylabel(s2)
 
             # x_low, _ = plt.xlim()
             # y_low, _ = plt.ylim()
             # plt.annotate(
-            #    'R2: {:.2f}\np-val: {:.2f}'.format(model_corr.rsquared, model_corr.pvalues[1]),
-            #    (x_low, y_low))
+            #    'R2: {:.2f}\np-val: {:.2f}'.format(model_corr.rsquared,
+            #    model_corr.pvalues[1]), (x_low, y_low))
 
             result_df.loc[i * n + n, 's1'] = int(s1.split('_')[1])
             result_df.loc[i * n + n, 's2'] = int(s2.split('_')[1])
             result_df.loc[i * n + n, 'hdist'] = hdist[int(s1.split('_')[1])][
                 hdist.index == int(s2.split('_')[1])].item()
             result_df.loc[i * n + n, 'vdist'] = abs(
-                assimilation.station_to_height[int(s1.split('_')[1])] -
-                assimilation.station_to_height[int(s2.split('_')[1])])
+                station_to_height[int(s1.split('_')[1])] -
+                station_to_height[int(s2.split('_')[1])])
             result_df.loc[i * n + n, 'R2_corr'] = model_corr.rsquared
             result_df.loc[i * n + n, 'pval_corr'] = model_corr.pvalues[1]
 
@@ -5732,7 +6306,8 @@ def linreg_of_station_regressions_perturbed() -> None:
     cutoff = stats.t.ppf(1. - alpha / 2, variomodel.df_resid)
     large_resid = np.abs(resids) > cutoff
     leverage = infl.hat_matrix_diag
-    large_leverage = leverage > statsmodels.graphics.regressionplots._high_leverage(
+    large_leverage = \
+        leverage > statsmodels.graphics.regressionplots._high_leverage(
         variomodel)
     large_points = np.logical_or(large_resid, large_leverage)
 
@@ -5753,7 +6328,7 @@ def linreg_of_station_regressions_perturbed() -> None:
     plt.title('Linear regression of significant station correlations')
 
 
-def linreg_of_stations_regressions_kickout_outliers() -> None:
+def linreg_of_stations_regressions_kickout_outliers(conc, hdist) -> None:
     """
     Do a linear regression of camera station values, but leave outliers out.
 
@@ -5775,9 +6350,11 @@ def linreg_of_stations_regressions_kickout_outliers() -> None:
         id_1 = station_to_glacier[int(s1.split('_')[1])]
         id_2 = station_to_glacier[int(s2.split('_')[1])]
 
-        # gdir_1 = GlacierDirectory(id_1, base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\per_glacier\\')
-        # gdir_2 = GlacierDirectory(id_2,
-        #                          base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\per_glacier\\')
+        # gdir_1 = GlacierDirectory(id_1,
+        #     base_dir='C:\\users\\johannes\\documents\\modelruns\\CH\\'
+        #     'per_glacier\\')
+        # gdir_2 = GlacierDirectory(id_2, base_dir='C:\\users\\johannes\\'
+        # 'documents\\modelruns\\CH\\per_glacier\\')
 
         # gm_1 = GlacierMeteo(gdir_1)
         # gm_2 = GlacierMeteo(gdir_2)
@@ -5787,17 +6364,19 @@ def linreg_of_stations_regressions_kickout_outliers() -> None:
 
         for n in range(iterations):
             noise = np.random.normal(mu, sigma, [len(conccopy), 2])
-            conccopy = conccopy + noise
+            conccopy += noise
 
             # sun_1 = gm_1.meteo.sel(time=conccopy.index).sis
             # sun_2 = gm_2.meteo.sel(time=conccopy.index).sis
             # sun_dev_1 = sun_1 - np.nanmean(sun_1) / np.nanmean(sun_1)
             # sun_dev_2 = sun_2 - np.nanmean(sun_2) / np.nanmean(sun_2)
-            # sun_notnan = np.where(~np.isnan(sun_dev_1) | ~np.isnan(sun_dev_2))[0]
+            # sun_notnan = np.where(~np.isnan(sun_dev_1) |
+            #                       ~np.isnan(sun_dev_2))[0]
             # print(sun_dev_1, sun_dev_2)
             # weighted with incoming solar
             # y = conccopy[s2][sun_notnan]*sun_dev_2[sun_notnan]
-            # X = sm.add_constant(conccopy[s1][sun_notnan]*sun_dev_1[sun_notnan].values)
+            # X = sm.add_constant(conccopy[s1][sun_notnan] *
+            # sun_dev_1[sun_notnan].values)
 
             y = conccopy[s2]
             X = sm.add_constant(conccopy[s1])
@@ -5812,7 +6391,8 @@ def linreg_of_stations_regressions_kickout_outliers() -> None:
             cutoff = stats.t.ppf(1. - alpha / 2, model.df_resid)
             large_resid = np.abs(resids) > cutoff
             leverage = infl.hat_matrix_diag
-            large_leverage = leverage > statsmodels.graphics.regressionplots._high_leverage(
+            large_leverage = \
+                leverage > statsmodels.graphics.regressionplots._high_leverage(
                 model)
             large_points = np.logical_or(large_resid, large_leverage)
 
@@ -5824,14 +6404,18 @@ def linreg_of_stations_regressions_kickout_outliers() -> None:
             # plt.figure()
 
             # plt.scatter(X_corr.values[:, 1], y_corr)
-            # plt.plot(np.arange(np.min(X_corr.values[:, 1]), np.max(X_corr.values[:, 1])+0.01, 0.01), model_corr.params[0] + np.arange(np.min(X_corr.values[:, 1]), np.max(X_corr.values[:, 1])+0.01, 0.01) * model_corr.params[1])
+            # plt.plot(np.arange(np.min(X_corr.values[:, 1]),
+            # np.max(X_corr.values[:, 1])+0.01, 0.01), model_corr.params[0] +
+            # np.arange(np.min(X_corr.values[:, 1]),
+            # np.max(X_corr.values[:, 1])+0.01, 0.01) * model_corr.params[1])
             # plt.xlabel(s1)
             # plt.ylabel(s2)
 
             # x_low, _ = plt.xlim()
             # y_low, _ = plt.ylim()
             # plt.annotate(
-            #    'R2: {:.2f}\np-val: {:.2f}'.format(model_corr.rsquared, model_corr.pvalues[1]),
+            #    'R2: {:.2f}\np-val: {:.2f}'.format(model_corr.rsquared,
+            #    model_corr.pvalues[1]),
             #    (x_low, y_low))
 
             result_df.loc[i * n + n, 's1'] = int(s1.split('_')[1])
@@ -5868,7 +6452,8 @@ def linreg_of_stations_regressions_kickout_outliers() -> None:
     cutoff = stats.t.ppf(1. - alpha / 2, variomodel.df_resid)
     large_resid = np.abs(resids) > cutoff
     leverage = infl.hat_matrix_diag
-    large_leverage = leverage > statsmodels.graphics.regressionplots._high_leverage(
+    large_leverage = \
+        leverage > statsmodels.graphics.regressionplots._high_leverage(
         variomodel)
     large_points = np.logical_or(large_resid, large_leverage)
 
@@ -5887,7 +6472,7 @@ def linreg_of_stations_regressions_kickout_outliers() -> None:
     plt.title('Linear regression of significant station correlations')
 
 
-def correlation_of_dh_residuals() -> None:
+def correlation_of_dh_residuals(conc, hdist) -> None:
     """
     Correlate the residuals of Holfuy camera dh readings.
 
@@ -5919,7 +6504,9 @@ def correlation_of_dh_residuals() -> None:
         plt.tight_layout()
 
 
-def spatial_correlation_of_station_correlations(alpha: float = 0.95) -> None:
+def spatial_correlation_of_station_correlations(conc, hdist,
+                                                alpha: float = 0.95) \
+        -> None:
     """
     Plots the station residual correlations ($R^2$) over horizontal distance.
 
@@ -5949,15 +6536,17 @@ def spatial_correlation_of_station_correlations(alpha: float = 0.95) -> None:
         distlist.append(dist)
         ax.scatter(dist, model.rsquared, c='b')
     distmodel = sm.OLS(r2list, sm.add_constant(distlist)).fit()
-    ax.plot(np.arange(min(distlist) - 1., max(distlist) + 1., 1.),
+    ax.plot(np.arange(min(distlist) - 1.,
+                      max(distlist) + 1., 1.),
             distmodel.params[0] + np.arange(min(distlist) - 1.,
-                                        max(distlist) + 1., 1.) *
+                                            max(distlist) + 1., 1.) *
             distmodel.params[1], c='g',
             label='$R^2$: {:.2f},\np: {:.2f}'.format(model.rsquared,
                                                      model.pvalues[1]))
     _, stdata, _ = summary_table(distmodel, alpha=0.05)
     predict_mean_ci_low, predict_mean_ci_upp = stdata[:, 4:6].T
-    ax.fill_between(sorted(distlist), sorted(predict_mean_ci_low, reverse=True),
+    ax.fill_between(sorted(distlist),
+                    sorted(predict_mean_ci_low, reverse=True),
                     sorted(predict_mean_ci_upp, reverse=True),
                     facecolor='r', alpha=0.2, label='Confidence interval 0.05')
     plt.legend(fontsize=fontsize)
@@ -6004,19 +6593,19 @@ def spatial_correlation_of_station_correlations(alpha: float = 0.95) -> None:
     plt.tight_layout()
 
 
-def fit_exponential_decay():
+def fit_exponential_decay(result_df):
     """
-    Creepy function to fit an exponential decay to a R^2 over distance scatter plot.
+    Creepy way to fit exponential decay to a R^2 over distance scatter plot.
     # todo: this function is horribly hard-coded.
     Returns
     -------
 
     """
-    from scipy.optimize import curve_fit
+
     def fit_func(dist, a, c):
         return c * (np.exp(1 - (dist / a)))
 
-    popt, pcov = curve_fit(fit_func, result_df.hdist, result_df.R2)
+    popt, pcov = optimize.curve_fit(fit_func, result_df.hdist, result_df.R2)
     plt.scatter(result_df.hdist, result_df.R2, label='True')
     plt.plot(np.arange(0, 80000, 1000),
              fit_func(np.arange(0, 80000, 1000), *popt), 'g--',
@@ -6024,7 +6613,7 @@ def fit_exponential_decay():
     plt.legend()
 
 
-def make_station_CV_boxplot() -> None:
+def make_station_CV_boxplot(conc) -> None:
     """
     Make a boxplot of the cross-validation error when predicting station mass
     balance.
@@ -6033,8 +6622,6 @@ def make_station_CV_boxplot() -> None:
     -------
     None
     """
-    import statsmodels.api as sm
-
     conc_drop = conc.dropna(axis=0)
     from sklearn.model_selection import LeavePOut
     labels = conc.columns.values
@@ -6066,18 +6653,19 @@ def make_station_CV_boxplot() -> None:
     plt.xlabel('Station')
     plt.ylabel('Relative Percent Difference')
     plt.title(
-        'Cross-validation from multilinear regression, relative percent difference')
+        'Cross-validation from multilinear regression, relative percent '
+        'difference')
     plt.savefig(
-        'C:\\Users\\Johannes\\Desktop\\crampon_prelim_plots\\CV_boxplot_linear_prediction_relative_percent_diff.png')
+        'C:\\Users\\Johannes\\Desktop\\crampon_prelim_plots\\'
+        'CV_boxplot_linear_prediction_relative_percent_diff.png')
 
 
 if __name__ == '__main__':
     import geopandas as gpd
     from crampon import workflow
-    from crampon import cfg
     import warnings
-    from crampon import tasks
-    import itertools
+    from crampon import utils
+    from itertools import product
 
     warnings.filterwarnings('ignore')
 
@@ -6097,6 +6685,14 @@ if __name__ == '__main__':
     all_mparts = []
     all_dspans = []
     glacier_names = []
+
+
+    ancest_ix = []
+    ancest_all = []
+    mb_anc_ptcls = []
+    mb_anc_ptcls_after = []
+    alpha_anc_ptcls = []
+    alpha_anc_ptcls_after = []
 
 
     #for m in [eval(m) for m in cfg.MASSBALANCE_MODELS]:
@@ -6120,20 +6716,33 @@ if __name__ == '__main__':
     #    param_prod = np.median(pg.from_single_glacier(), axis=0)
     #    ruppd.update(dict(zip([mbm.__name__+'_'+i for i in mbm.cali_params_list], param_prod)))
     #print(ruppd)
-
+    """
     dspan, mprobs, mparts = run_aepf('RGI50-11.B4312n-1', mb_models=None, generate_params='past',
               param_fit='lognormal', param_method='memory',
               change_memory_mean=True, make_init_cond=True,
               qhisto_by_model=False, adjust_pelli=False, pdata=pdata,
               reset_albedo_and_swe_at_obs_init=False, write_probs=True,
                                      adjust_heights=False, prior_param_dict=None,
-                                     unmeasured_period_param_dict=None, crps_ice_only=False, use_tgrad_uncertainty=False)
+                                     unmeasured_period_param_dict=None, 
+                                     crps_ice_only=False, 
+                                     use_tgrad_uncertainty=True,
+                                     use_pgrad_uncertainty=True, 
+                                     assimilate_albedo=False)
     all_mprobs.append(mprobs)
     all_mparts.append(mparts)
     all_dspans.append(dspan)
     glacier_names.append('Rhonegletscher')
+    """
 
 
+
+
+    ancest_ix = []
+    ancest_all = []
+    mb_anc_ptcls = []
+    mb_anc_ptcls_after = []
+    alpha_anc_ptcls = []
+    alpha_anc_ptcls_after = []
     #rdict = {}
     #gdir = utils.GlacierDirectory('RGI50-11.B5616n-1')
     ## get mean parameters
@@ -6155,6 +6764,7 @@ if __name__ == '__main__':
     #    param_prod = np.median(pg.from_single_glacier(), axis=0)
     #    fuppd.update(dict(zip([mbm.__name__+'_'+i for i in mbm.cali_params_list], param_prod)))
     #print(fuppd)
+
 
     dspan, mprobs, mparts = run_aepf('RGI50-11.B5616n-1', mb_models=None, generate_params='past',
                                      param_fit='lognormal',
