@@ -1390,6 +1390,378 @@ def calculate_snow_dist_factor(gdir, mb_models=None, reset=True):
     return ds_merge
 
 
+def calibrate_mb_model_on_geod_mb_huss(
+        gdir, mb_model, conv_thresh=0.005, it_thresh=50,
+        cali_suffix='_fischer', **kwargs):
+    """
+    Calibrate glaciers on the geod. MB by Fischer et al. (2015) in the way
+    Huss et al.(2016) suggests.
+
+    Parameters
+    ----------
+    gdir: py:class:`crampon.GlacierDirectory`
+        The GlacierDirectory of the glacier to be calibrated.
+    mb_model: py:class:`crampon.core.massbalance.MassBalanceModel`
+        The mass balance model to calibrate parameters for.
+    conv_thresh: float
+        Abort criterion for the iterative calibration, defined as the absolute
+        gradient of the calibration parameters between two iterations. Default:
+         Abort when the absolute gradient is smaller than 0.005.
+    it_thresh: float
+        Abort criterion for the iterative calibration by the number of
+        iterations. This criterion is used when after the given number of
+        iteration the convergence threshold hasn't been reached. Default: Abort
+        after 50 iterations.
+    cali_suffix: str
+        Suffix to apply to the calibration file name (read & write). Default:
+        "fischer".
+    **kwargs: dict
+        Keyword arguments accepted by the mass balance model.
+
+    Returns
+    -------
+    None
+    """
+    # todo: find a good solution for ratio_s_i
+    # todo: do not always hard-code 'mb_model.__name__ + '_' +'
+    # todo go through generalized objective function and see if winter/annual
+    #  mb works ok
+
+    # read the RandForestPredictor that will give the initial parameter guess
+    pred_model_name = os.path.join(cfg.PATHS['working_dir'],
+                                   'randomforest_{}.pkl'.format(
+                                       mb_model.__name__))
+    with open(pred_model_name, 'rb') as pickle_file:
+        (rf_features, rf_predictor) = pickle.load(pickle_file)
+
+    # to do define them better upstream
+    prcp_fac_bound_low = 0.5
+    prcp_fac_bound_high = 2.5
+
+    # Get geodetic MB values
+    fischer_df = pd.read_csv(os.path.join(cfg.PATHS['data_dir'],
+                                          'fischeretal_2015_geod_mb.csv'),
+                             encoding="iso-8859-1")
+    fischer_vals = fischer_df[
+        fischer_df['SGI2010'].str.contains(gdir.rgi_id.split('.')[1])]
+    print(fischer_vals)
+    t1_year = fischer_vals.t1_year.item()
+    t2_year = fischer_vals.t2_year.item()
+    area1 = fischer_vals.area_t1_km2.item() * 10**6  # km2 -> m2
+    area2 = fischer_vals.area_t2_km2.item() * 10**6  # km2 -> m2
+    area_change_avg = (area2 - area1) / (t2_year - t1_year)
+    gmb_spec_avg = fischer_vals.gmb_spec_t1_t2.item()
+    gmb_spec_avg_unc = fischer_vals.uncertainty_gmb_spec_t1_t2.item()
+
+    # use T as a proxy to distribute the MB
+    # todo: use T and SIS in years where available
+    tsums = []
+    psolsums = []
+    imeans_summer = []  # JUN-SEP
+    gmeteo = climate.GlacierMeteo(gdir)  # needed later
+    tmean_glacier = climate.GlacierMeteo(gdir).meteo.temp
+    prcp_glacier = climate.GlacierMeteo(gdir).meteo.prcp  # uncorrected!
+    imean_glacier = climate.GlacierMeteo(gdir).meteo.sis
+    y1y2_span = np.arange(t1_year, t2_year)
+    for y in y1y2_span:
+        temps = tmean_glacier.sel(
+            time=slice('{}-10-01'.format(str(y)), '{}-09-30'
+                       .format(str(y + 1)))).values
+        prcps = prcp_glacier.sel(
+            time=slice('{}-10-01'.format(str(y)),
+                       '{}-09-30'.format(str(y + 1)))).values
+
+        temps_pos = np.clip(temps, 0, None)
+        tsum = np.sum(temps_pos)
+        tsums.append(tsum)
+        psolsums.append(np.sum(prcps[temps < 0.]))
+
+        imean_summer = imean_glacier.sel(
+            time=slice('{}-06-01'.format(str(y + 1)), '{}-09-30'.format(
+                str(y + 1)))).values
+        imeans_summer.append(np.mean(imean_summer))
+
+    corr_fac_temp = (1 + (tsums - np.mean(tsums)) / np.mean(tsums))
+    corr_fac_prcp = (1 + (psolsums - np.mean(psolsums)) / np.mean(psolsums))
+    corr_fac_sis = (1 + (imeans_summer - np.nanmean(imeans_summer)) /
+                    np.nanmean(imeans_summer))
+    corr_fac = np.mean(corr_fac_prcp, np.nanmean(corr_fac_temp, corr_fac_sis))
+    gmb_spec_disagg = gmb_spec_avg * corr_fac
+    gmb_spec_unc_disagg = gmb_spec_avg_unc * corr_fac
+    area_change_disagg = area_change_avg * corr_fac
+
+    # take name of hydro year as index ("+1")
+    disagg_df = pd.DataFrame(index=y1y2_span + 1,
+                             columns=['gmb', 'gmb_unc', 'area'],
+                             data=np.array([gmb_spec_disagg,
+                                            gmb_spec_unc_disagg,
+                                            area_change_disagg]).T)
+
+    # todo: we need to process the meteosat radiation data to make this
+    #  possible - otherwise only Hock and Braithwaite possible
+    # todo: we need to limit the cali period to min 1984, when
+    #  radiation model is used
+    if mb_model.__name__ in ['OerlemansModel', 'PellicciottiModel']:
+        cali_bg_year = 1984
+    else:
+        cali_bg_year = t1_year
+
+    # Find out what we will calibrate
+    to_calibrate_csv = [mb_model.prefix + i for i in
+                        mb_model.cali_params_guess.keys()]
+
+    # Is there already a calibration where we just can append, or new file
+    try:
+        cali_df = gdir.get_calibration(filesuffix=cali_suffix)
+    # think about an outer join of the date indices here
+    except FileNotFoundError:
+        cali_df = pd.DataFrame(
+            columns=to_calibrate_csv + ['mu_star', 'prcp_fac'],  # 4 OGGM
+            index=pd.date_range('{}-10-01'.format(cali_bg_year),
+                                '{}-09-30'.format(t2_year)))
+
+    # we don't know initial snow and time of run history
+    run_hist = None  # at the minimum date as calculated by Matthias
+    scov = None
+
+    # get initial heights and widths -
+    # todo: it should be clear from which year they come - not hard-coded!
+    year_init_hw = gdir.rgi_date.year
+    heights, widths = gdir.get_inversion_flowline_hw()
+    fl_dx = gdir.read_pickle('inversion_flowlines')[-1].dx
+
+    # todo: extend the loss in area backwards in time until 1961 (based on
+    #  T sum as proxy) and then run "spinup"
+    for year in range(cali_bg_year, t2_year):
+
+        # arbitrary range for which the params are valid - choose the mb year
+        valid_range = pd.date_range('{}-10-01'.format(year),
+                                    '{}-09-30'.format(year + 1))
+
+        # todo: adapt heights/widths here based on annual MB
+        # "+1" for the hydro years
+        mb_annual = disagg_df[disagg_df.index == year + 1].gmb.item()
+        mb_annual_unc = disagg_df[disagg_df.index == year + 1].gmb_unc.item()
+
+        # area change until date of the outlines
+        area_chg = np.sum(disagg_df.loc[year + 1: year_init_hw].area)
+        # continue with last width
+        # todo: this is to cut off the round tongue: remove the hard-coded!
+        if widths.size > 55:
+            last_width = np.mean(widths[-55:-25])
+        else:  # super short glacier
+            last_width = np.mean(widths)
+        # continue with slope of lowest
+        last_slope = (heights[-1] - heights[-6]) / (5 * fl_dx * gdir.grid.dx)
+
+        # make area chg positive
+        n_new_nodes = - area_chg / (fl_dx * gdir.grid.dx) / last_width
+        new_heights = last_slope * np.arange(1, np.ceil(n_new_nodes)+1) + \
+            heights[-1]
+        heights_annual = np.hstack((heights, new_heights))
+        widths_annual = np.hstack((widths,  # old width nodes
+                                   # new full width nodes
+                                   np.repeat([last_width],
+                                             np.floor(n_new_nodes)),
+                                   # new rest width nodes
+                                   np.array([(n_new_nodes %
+                                              np.floor(n_new_nodes)) *
+                                             last_width])))
+
+        # take care of shape of scov:
+        # todo: at the moment this is supercheap: it can only REMOVE,
+        #  and ONLY REMOVE AT THE VERY TONGUE
+        if scov is not None:
+            scov.remove_height_nodes(np.arange(len(widths_annual),
+                                               scov.swe.shape[0]))
+            print(scov.swe.shape)
+        grad = 1
+        r_ind = 0
+
+        # initial_guess
+        # todo: ask if Matthias is ok with them - also with boundaries
+        # param_dict = mb_model.cali_params_guess.copy()
+        # inital guess with random forest
+        tsum_for_rf = np.sum(np.clip(np.average(
+            gmeteo.get_tmean_at_heights(valid_range, heights_annual),
+            weights=widths_annual, axis=1), 0., None))
+        psol_for_rf, _ = gmeteo.get_precipitation_solid_liquid(
+            valid_range, heights_annual)
+        psum_for_rf = np.sum(np.average(
+            psol_for_rf, weights=widths_annual, axis=1))
+        zmin = min(heights_annual)
+        zmax = max(heights_annual)
+        zmed = np.median(heights_annual)
+        area = np.sum(widths_annual * fl_dx * gdir.grid.dx)
+        hypso = pd.read_csv(gdir.get_filepath('hypsometry'))
+        slope = hypso['Slope']
+        aspect = hypso['Aspect']
+
+        # todo: store the feature_list elsewhere - in the RandomForestRegressor?
+        if mb_model.__name__ == 'BraithwaiteModel':
+            feature_list = ['tsum', 'psum', 'Zmin', 'Zmax', 'Zmed', 'Area',
+                            'Slope', 'Aspect']
+            param_prediction = rf_predictor.predict(
+                np.array([tsum_for_rf, psum_for_rf, zmin, zmax, zmed, area,
+                          slope, aspect]).reshape(1, -1))
+        elif mb_model.__name__ == 'HockModel':
+            feature_list = ['tsum', 'psum', 'ipot', 'Zmin', 'Zmax', 'Zmed',
+                            'Area', 'Slope', 'Aspect']
+            # todo: let iport vary with glacier shape
+            ipot = gdir.read_pickle('ipot_per_flowline')
+            ipot = np.average(np.mean(np.vstack(ipot), axis=1),
+                weights=widths)
+            param_prediction = rf_predictor.predict(
+                np.array([tsum_for_rf, psum_for_rf, ipot, zmin, zmax, zmed,
+                          area, slope, aspect]).reshape(1, -1))
+        else:
+            raise ValueError('What are the random forest features for {}'
+                             .format(mb_model.__name__))
+
+        param_dict = dict(zip(mb_model.cali_params_list.copy(),
+                              param_prediction[0]))
+        # param_dict = mb_model.cali_params_guess.copy()
+        print('Initial params predicted: {}'.format(" ".join(
+            "{} {}".format(k, v) for k, v in param_dict.items())))
+
+        # say what we are doing
+        log.info('Calibrating budget year {}/{}'.format(year, year+1))
+
+        def prcp_fac_cali(pdict, all_but_pfac):
+            # start with cali on winter MB and optimize only prcp_fac
+            # todo: pass heights_annual and widths_annual here
+            spinupres_w = optimize.least_squares(
+                to_minimize_mb_calibration_on_fischer,
+                x0=np.array([pdict['prcp_fac']]),
+                xtol=0.0001,
+                #bounds=(prcp_fac_bound_low, prcp_fac_bound_high),
+                method='trf',
+                verbose=2, args=(gdir, mb_model, mb_annual, valid_range[0],
+                                 valid_range[-1], heights_annual,
+                                 widths_annual),
+                kwargs={'run_hist': run_hist, 'scov': scov,
+                        'prcp_corr_only': True,
+                        **OrderedDict(all_but_pfac)})
+            # log status
+            log.info('After winter cali, prcp_fac:{}'.format(spinupres_w.x[0]))
+
+            return spinupres_w
+
+        while grad > conv_thresh:
+
+            # log status
+            log.info('{}TH ROUND, grad={}, PARAMETERS: {}'
+                     .format(r_ind, grad, param_dict.__repr__()))
+
+            # get an odict with all but prcp_fac
+            all_but_prcp_fac = [(k, v) for k, v in param_dict.items()
+                                if k not in ['prcp_fac']]
+
+            spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
+
+            # check if we ran into boundaries: if no, we're done already!
+            if ~np.isclose(spinupres_w.x[0], prcp_fac_bound_low, 0.01) and \
+                    ~np.isclose(spinupres_w.x[0], prcp_fac_bound_high, 0.01):
+                # set the value of the GLOBAL param_dict
+                param_dict['prcp_fac'] = spinupres_w.x[0]
+                break
+            # otherwise: try to not run into boundaries
+            else:
+                while np.isclose(spinupres_w.x[0], prcp_fac_bound_low, 0.01):
+                    # start over again, but with TF 20% higher
+                    # todo: 1.2/0.8 influence the final result => TF will stay at these values
+                    all_but_prcp_fac = [(x, y * 1.2) for x, y in all_but_prcp_fac]
+                    spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
+                    print(spinupres_w.x[0])
+                while np.isclose(spinupres_w.x[0], prcp_fac_bound_high, 0.01):
+                    # start over again, but with TF 20% lower
+                    all_but_prcp_fac = [(x, y * 0.8) for x, y in all_but_prcp_fac]
+                    spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
+                    print(spinupres_w.x[0])
+                # set the value of the GLOBAL param_dict *now*
+                param_dict['prcp_fac'] = spinupres_w.x[0]
+
+            # if needed:
+            # todo: find a good solution to give bounds to the values?
+            # todo: this is now actually not necessary anymore, since the
+            #  while loops take care of everything.
+            spinupres = optimize.least_squares(
+                to_minimize_mb_calibration_on_fischer,
+                x0=np.array([j for i, j in all_but_prcp_fac]),
+                xtol=0.0001,
+                method='trf',
+                verbose=2,
+                args=(gdir, mb_model, mb_annual, valid_range[0],
+                      valid_range[-1], heights_annual, widths_annual),
+                kwargs={'prcp_corr_only': False, 'run_hist': run_hist,
+                        'scov': scov, 'prcp_fac': param_dict['prcp_fac']})
+
+            # update all but prcp_fac
+            for j, d_i in enumerate(all_but_prcp_fac):
+                param_dict[d_i[0]] = spinupres.x[j]
+
+            # Check whether abort or go on
+            grad_test_param = all_but_prcp_fac[0][
+                1]  # take 1st, for example
+            grad = np.abs(grad_test_param - spinupres.x[0])
+
+            r_ind += 1
+            if r_ind > it_thresh:
+                warn_it = 'Iterative calibration reached abort criterion of' \
+                          ' {} iterations and was stopped at a parameter ' \
+                          'gradient of {} for {}.'.format(r_ind, grad,
+                                                          grad_test_param)
+                log.warning(warn_it)
+                break
+
+
+        # Report result
+        log.info('After whole cali:{}, grad={}'.format(param_dict.__repr__(),
+                                                       grad))
+
+        # Write in cali df
+        for k, v in list(param_dict.items()):
+            cali_df.loc[valid_range[0]:valid_range[-1],
+            mb_model.prefix + k] = v
+        if isinstance(mb_model, massbalance.BraithwaiteModel):
+            cali_df.loc[valid_range[0]:valid_range[-1],
+            mb_model.prefix + 'mu_snow'] = \
+                cali_df.loc[valid_range[0]:valid_range[-1],
+                mb_model.prefix + 'mu_ice'] * cfg.PARAMS['ratio_mu_snow_ice']
+        if isinstance(mb_model, massbalance.HockModel):
+            cali_df.loc[valid_range[0]:valid_range[-1],
+            mb_model.prefix + 'a_snow'] = \
+                cali_df.loc[valid_range[0]:valid_range[-1],
+                mb_model.prefix + 'a_ice']  * cfg.PARAMS['ratio_a_snow_ice']
+        cali_df.to_csv(gdir.get_filepath('calibration',
+                                         filesuffix=cali_suffix))
+
+        # prepare history for next round, while handing over cali params now !!
+        curr_model = mb_model(gdir, bias=0., **param_dict,
+                              heights_widths=(heights_annual, widths_annual))
+
+        mb = []
+
+        # history depends on which start date we choose
+        if scov is not None:
+            curr_model.time_elapsed = run_hist
+            curr_model.snowcover = copy.deepcopy(scov)
+
+        for date in valid_range:
+            tmp = curr_model.get_daily_specific_mb(heights_annual,
+                                                   widths_annual, date=date)
+            mb.append(tmp)
+
+            # prepare for next annual calibration (row.date1 == nextrow.date0)
+            if date == valid_range[-1]:
+                run_hist = curr_model.time_elapsed[:-1]  # same here
+                scov = copy.deepcopy(curr_model.snowcover)
+
+        error = mb_annual - np.sum(mb)
+        print(error)
+        log.info('ERROR to measured MB:{}'.format(error))
+
+
 
 def visualize(mb_xrds, msrd, err, x0, ax=None):
     if not ax:
