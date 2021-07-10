@@ -2268,6 +2268,63 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
             pass
 
 
+def _impose_variability_on_geodetic_params(gdir, suffix):
+    """
+    Take the calibration on GLAMOS mass balances and impose it on the geodetic
+    calibration.
+
+    Parameters
+    ----------
+    gdir: pd.DataFrame
+        Dataframe with the calibration on geodetic mass balances.
+    suffix: str
+        Suffix under which the new Dataframe with imposed variability will be
+        stored. This function automatically attaches another "variab" to this
+        suffix.
+
+    Returns
+    -------
+    None
+    """
+
+    geod_cali = gdir.get_calibration(filesuffix=suffix)
+    geod_models = [p.split('_')[0] for p in geod_cali.columns if 'Model' in p]
+    minmax_dates_geod = geod_cali.index.min(), geod_cali.index.max()
+
+    for gm in np.unique(geod_models):
+        glamos_cali = massbalance.ParameterGenerator(mb_model=gm).pooled_params
+        #glamos_cali = gdir.get_calibration(mb_model=gm)
+        minmax_dates_glam = glamos_cali.index.min(), glamos_cali.index.max()
+        mask_glam = (glamos_cali.index >= minmax_dates_geod[0]) & (
+                glamos_cali.index <= minmax_dates_geod[1])
+        mask_geod = (geod_cali.index >= minmax_dates_glam[0]) & (
+                geod_cali.index <= minmax_dates_glam[1])
+        glamos_cali_masked = glamos_cali.loc[mask_glam]
+        glamos_cali_masked = glamos_cali_masked.resample('AS').mean()
+
+        glamos_variability = glamos_cali_masked.copy()
+        glamos_variability[:] = 1.
+        glamos_variability = glamos_cali_masked / np.nanmean(
+            glamos_cali_masked, axis=0)
+
+        geod_cali.loc[
+            mask_geod, glamos_variability.columns] *= glamos_variability
+
+    print(gdir.get_filepath('calibration',
+                                       filesuffix=suffix + '_variability'))
+
+    dummy_date = pd.Timestamp('{}-{}-{}'.format(2018,
+                                                cfg.PARAMS['bgmon_hydro'],
+                                                cfg.PARAMS['bgday_hydro']))
+    n_bfill = (dummy_date + pd.tseries.offsets.YearEnd() - dummy_date +
+               pd.Timedelta(days=1)).days
+    n_ffill = dummy_date.dayofyear - 1
+    data = geod_cali.dropna(axis=0, how='all').resample('D').bfill(
+        limit=n_bfill).ffill(limit=n_ffill)
+    data.to_csv(gdir.get_filepath('calibration', filesuffix=suffix +
+                                                            '_variability'))
+
+
 def visualize(mb_xrds, msrd, err, x0, mbname, ax=None):
     if not ax:
         fig, ax = plt.subplots()
