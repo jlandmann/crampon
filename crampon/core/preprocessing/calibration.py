@@ -922,6 +922,8 @@ def to_minimize_mb_calibration_on_fischer_one_set(
 
     return thresholded_error
 
+
+@entity_task(log, writes=['calibration'])
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                           it_thresh=50, cali_suffix='',
                                           **kwargs):
