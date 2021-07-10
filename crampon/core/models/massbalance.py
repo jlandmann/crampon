@@ -1,4 +1,5 @@
 from __future__ import division
+from typing import Optional
 
 from oggm.core.massbalance import *
 from crampon import cfg
@@ -115,9 +116,9 @@ class DailyMassBalanceModel(MassBalanceModel):
         self.mu_star = mu_star
         self.bias = bias
         self.prcp_fac = prcp_fac
-        # temporary solution: Later this should be more flexible: Either the
-        # update should happen in the mass balance method directly or the
-        # heights/widths should be multitemporal
+        # todo: temporary solution: Later this should be more flexible: Either
+        #  the update should happen in the mass balance method directly or the
+        #  heights/widths should be multitemporal
         if (heights_widths[0] is not None) and (heights_widths[1] is not None):
             self.heights, self.widths = heights_widths
         elif (heights_widths[0] is None) and (heights_widths[1] is None):
@@ -261,6 +262,8 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     def get_tempformelt(self, temp):
         # Compute temperature available for melt
+
+        # CAUTION: THIS FUNCTION DOES NOT DISTRIBUTE TEMPERATURES ON HEIGHTs!
         tempformelt = temp - self.t_melt
         tempformelt[tempformelt < 0.] = 0.
         assert (tempformelt >= 0.).all()
