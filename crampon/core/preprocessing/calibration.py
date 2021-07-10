@@ -2325,6 +2325,69 @@ def _impose_variability_on_geodetic_params(gdir, suffix):
                                                             '_variability'))
 
 
+def get_1d_snow_redist_factor(obs_heights, obs, mod_heights, mod, mod_abl=None):
+    """
+    Calculate the snow redistribution factor in 1D.
+
+    To get the values for the model heights, values from the observation
+    heights are interpolated linearly.
+
+    Parameters
+    ----------
+    obs_heights: array
+        Heights of the observations, e.g. elevation band mean heights (m).
+    obs: array
+        Observation snow water equivalents measured at the observation heights
+        (m w.e.). According to Matthias, this can be both accumulation and
+        ablation (not yte separated in GLAMOS!).
+    mod_heights: array
+        Heights of the model, e.g. flowline node heights (m).
+    mod: array
+        Modeled accumulation(!) values with the precipitation gradients from
+        the meteorological grids applied.
+    mod_abl:
+        Modeled ablation (!) values in the mean time. This is just an emergency
+        solution: Since GLAMOS can be both accumulation and ablation and
+        Matthias doesn't want (yet) to extract accumulation only, we calculate
+        it with the melt model...even though it's horrible.
+
+    Returns
+    -------
+    redist_fac: array
+        The snow redistribution factor for the model elevations.
+    """
+
+    half_intvl = (obs_heights[1] - obs_heights[0]) / 2.
+    bin_edges = np.hstack((obs_heights - half_intvl, obs_heights[-1] +
+                           half_intvl))
+    if mod_abl is not None:
+        digitized = np.digitize(mod_heights, bin_edges, right=True)
+        mod_abl_binned = np.array([mod_abl[digitized == i].mean() for i in
+                                   range(1, len(bin_edges))])
+        # there can be NaNs
+        if np.isnan(mod_abl_binned).any():
+            mod_abl_binned = np.interp(obs_heights,
+                                       obs_heights[~np.isnan(mod_abl_binned)],
+                                       mod_abl_binned[~np.isnan(mod_abl_binned)])
+
+        obs = obs - mod_abl_binned
+    else:
+        # emergency break
+        return np.ones_like(mod_heights, dtype=float)
+
+    # left and right margins are not totally correct, but ok....
+    meas_interp = np.interp(mod_heights, obs_heights, obs)
+
+    redist_fac = np.full_like(mod, np.nan)
+
+    for bin_no in range(1, len(bin_edges)):
+        redist_fac[np.where(digitized == bin_no)[0]] = \
+            np.mean(meas_interp[np.where(digitized == bin_no)[0]]) / \
+            np.mean(mod[np.where(digitized == bin_no)[0]])
+
+    return redist_fac
+
+
 def visualize(mb_xrds, msrd, err, x0, mbname, ax=None):
     if not ax:
         fig, ax = plt.subplots()
