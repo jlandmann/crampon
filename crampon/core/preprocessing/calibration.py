@@ -221,7 +221,8 @@ def get_measured_mb_glamos(gdir, mb_dir=None, bw_elev_bands=False):
 
 def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
                                          *args, winteronly=False, scov=None,
-                                         run_hist=None, unc=None, **kwargs):
+                                         run_hist=None, unc=None,
+                                         snow_redist=True,  **kwargs):
     """
     A try to generalize an objective function valid for all MassBalanceModels.
 
@@ -247,6 +248,18 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
         DataFrame. If not given, the date is taken from the maximum date in the
         DataFrame of the measured values.
     *args: tuple
+    winteronly: bool, optional
+        Optimize only the winter mass balance. Default: False.
+    scov: crampon.core.models.massbalance.SnowFirnCover or None,
+        Snow cover to initiate. Default: None (use initalization from mass
+        balance model)
+    run_hist: pd.DatetimeIndex or None
+        Run history as Time index. Default: None (no history).
+    unc: float, optional
+        Uncertainty in observed mass balance (m w.e.). Default: None (do not
+        account for).
+    snow_redist: bool, optional
+        Whether to use snow redistribution. Default: True.
     **kwargs: dict
         Keyword arguments accepted by the function.
 
@@ -278,28 +291,26 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
 
     params = {**calip_dict, **other_dict}
 
-    # todo: cover the case of Braithwaite, where mu_snow has to be defined by the ratio?
-    # => no, this should happen inside the mb_model!, as mu_snow is also in BraithwaiteModel.cali_params
-
-    # todo: maybe discontinue the opton to cut the df: this is actually only for good for testing, otherwise rarely used
     measured_cut = measured[measured.date0.dt.year >= y0]
     measured_cut = measured_cut[measured_cut.date1.dt.year <= y1]
     assert len(measured_cut == 1)
 
     # make entire MB time series
     if winteronly:
-        min_date = measured[measured.date_f.dt.year == y0].date_f.values[0]
+        min_date = np.min(
+            [measured[measured.date0.dt.year == y0].date0.values[0],
+             measured[measured.date_f.dt.year == y0].date_f.values[0]])
         max_date = measured[measured.date1.dt.year == y1].date_s.values[0]
     else:
-        # we take the min of date0 and the found min date from the winter cali
-        min_date = measured[measured.date_f.dt.year == y0].date0.values[0]
+        # Annual balance will always be between date0 and date1
+        min_date = measured[measured.date0.dt.year == y0].date0.values[0]
         max_date = measured[measured.date1.dt.year == y1].date1.values[
                            0] - pd.Timedelta(days=1)
 
     calispan = pd.date_range(min_date, max_date, freq='D')
 
     heights, widths = gdir.get_inversion_flowline_hw()
-    day_model = mb_model(gdir, **params, bias=0.)
+    day_model = mb_model(gdir, **params, bias=0., snow_redist=snow_redist)
 
     # IMPORTANT
     if run_hist is not None:
@@ -319,22 +330,27 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
     # up! as we can't measure melt in the winter campaign anyway, we just
     # subtract it away when tuning the winter balance!
     minimum = np.nanmin(np.nancumsum([0.] + mb))
+    argmin = np.argmin(np.nancumsum([0.] + mb))
 
     err = []
     for ind, row in measured_cut.iterrows():
 
         curr_err = None
         if winteronly:
-            wspan = pd.date_range(row.date_f, row.date_s, freq='D')
-            wsum = mb_ds.sel(time=wspan).apply(np.sum)
+            wspan = pd.date_range(min_date, row.date_s, freq='D')
+            wsum = mb_ds.sel(time=wspan).map(np.sum)
 
             # correct for melt at the beginning of the winter season
-            curr_err = row.Winter - (wsum.MB.values + np.abs(minimum))
+            cs_for_max = np.nancumsum([0.] + mb)
+            cs_for_max[:argmin] = minimum
+            maximum = np.nanmax(cs_for_max)
+            argmax = np.argmax(cs_for_max)
+            curr_err = row.Winter - (wsum.MB.values + np.abs(minimum))# + refrozen_since_max)
         else:
             # annual sum
             span = pd.date_range(row.date0, row.date1 - pd.Timedelta(days=1),
                                  freq='D')
-            asum = mb_ds.sel(time=span).apply(np.sum)
+            asum = mb_ds.sel(time=span).map(np.sum)
 
             correction = 0
 
