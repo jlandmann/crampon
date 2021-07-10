@@ -137,9 +137,12 @@ CBASENAMES['calibration_fischer'] = ('calibration_fischer.csv', _doc)
 _doc = 'The daily climate time series for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_daily'] = ('climate_daily.nc', _doc)
-_doc = 'The daily NWP prediction for this glacier, stored in a netCDF ' \
+_doc = 'The daily ECMWF NWP prediction for this glacier, stored in a netCDF ' \
        'file.'
-CBASENAMES['nwp_daily'] = ('nwp_daily.nc', _doc)
+CBASENAMES['nwp_daily_ecmwf'] = ('nwp_daily_ecmwf.nc', _doc)
+_doc = 'The daily COSMO NWP prediction for this glacier, stored in a netCDF ' \
+       'file.'
+CBASENAMES['nwp_daily_cosmo'] = ('nwp_daily_cosmo.nc', _doc)
 _doc = 'The spinup climate time series for this glacier, stored in a netCDF ' \
        'file.'
 CBASENAMES['climate_spinup'] = ('climate_spinup.nc', _doc)
@@ -202,8 +205,12 @@ CBASENAMES['mb_current'] = ('mb_current.pkl', _doc)
 _doc = 'The current mass balance time series on all heights for this glacier' \
        ' stored in a pickle file.'
 CBASENAMES['mb_current_heights'] = ('mb_current_heights.pkl', _doc)
-_doc = 'The mass balance prediction for this glacier, stored in a pickle file.'
-CBASENAMES['mb_prediction'] = ('mb_prediction.pkl', _doc)
+_doc = 'The mass balance prediction for this glacier with COSMO predictions,' \
+       ' stored in a pickle file.'
+CBASENAMES['mb_prediction_cosmo'] = ('mb_prediction_cosmo.pkl', _doc)
+_doc = 'The mass balance prediction for this glacier with ECMWF extended ' \
+       'range forecasts, stored in a pickle file.'
+CBASENAMES['mb_prediction_ecmwf'] = ('mb_prediction_ecmwf.pkl', _doc)
 _doc = 'A time series of all available DEMs for the glacier, brought to the ' \
        'minimum common resolution.'
 CBASENAMES['homo_dem_ts'] = ('homo_dem_ts.nc', _doc)
@@ -328,6 +335,7 @@ def initialize(file=None, logging_level='INFO', params=None):
     PATHS['working_dir'] = cp['working_dir']
     PATHS['dem_file'] = cp['dem_file']
     PATHS['climate_file'] = cp['climate_file']
+    PATHS['nwp_file_cosmo'] = cp['nwp_file_cosmo']
 
     # Ephemeral paths overrides
     env_wd = os.environ.get('OGGM_WORKDIR')
@@ -418,52 +426,54 @@ def initialize(file=None, logging_level='INFO', params=None):
     PARAMS[k] = cp.as_bool(k)
 
     # Climate
+    PARAMS['sis_delivery_delay'] = cp.as_bool('sis_delivery_delay')
     PARAMS['baseline_climate'] = cp['baseline_climate'].strip().upper()
     PARAMS['hydro_month_nh'] = cp.as_int('hydro_month_nh')
     PARAMS['hydro_month_sh'] = cp.as_int('hydro_month_sh')
     PARAMS['climate_qc_months'] = cp.as_int('climate_qc_months')
     PARAMS['temp_use_local_gradient'] = cp.as_int(
-        'temp_use_local_gradient')
+        'temp_use_local_gradient_cells')  # overwrite
 
     # Delete non-floats
-    ltr = ['working_dir', 'dem_file', 'climate_file', 'climate_dir',
-       'wgms_rgi_links', 'glathida_rgi_links', 'firncore_dir', 'lfi_dir',
-       'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method', 'data_dir',
-       'mp_processes', 'use_multiprocessing', 'use_divides',
-       'temp_use_local_gradient', 'prcp_use_local_gradient',
-       'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
-       'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
-       'precip_ratio_method', 'topo_interp', 'use_compression',
-       'use_tar_shapefiles', 'bed_shape', 'continue_on_error',
-       'use_optimized_inversion_params', 'invert_with_sliding',
-       'optimize_inversion_params', 'use_multiple_flowlines',
-       'leclercq_rgi_links', 'optimize_thick', 'mpi_recv_buf_size',
-       'tstar_search_window', 'use_bias_for_run', 'run_period',
-       'prcp_scaling_factor', 'tminmax_available', 'use_intersects',
-       'filter_min_slope', 'auto_skip_task', 'correct_for_neg_flux',
-       'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
-       'run_mb_calibration', 'albedo_method', 'glamos_ids',
-       'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
-       'alpha_bounds', 'tacc_bounds', 'nwp_file', 'use_mp_spawn', 'working_dir', 'dem_file', 'climate_file', 'use_tar_shapefiles',
-           'grid_dx_method', 'run_mb_calibration',
-           'compress_climate_netcdf', 'mp_processes',
-           'use_multiprocessing', 'climate_qc_months',
-           'temp_use_local_gradient', 'temp_local_gradient_bounds',
-           'topo_interp', 'use_compression', 'bed_shape',
-           'continue_on_error', 'use_multiple_flowlines',
-           'tstar_search_glacierwide', 'border', 'mpi_recv_buf_size',
-           'hydro_month_nh', 'clip_mu_star', 'tstar_search_window',
-           'use_bias_for_run', 'hydro_month_sh', 'use_intersects',
-           'filter_min_slope', 'clip_tidewater_border', 'auto_skip_task',
-           'correct_for_neg_flux', 'filter_for_neg_flux', 'rgi_version',
-           'dl_verify', 'use_mp_spawn', 'calving_use_limiter',
-           'use_shape_factor_for_inversion', 'use_rgi_area',
-           'use_shape_factor_for_fluxbasedmodel', 'baseline_climate',
-           'calving_line_extension', 'use_kcalving_for_run', 'lru_maxsize',
-           'free_board_marine_terminating', 'use_kcalving_for_inversion',
-           'error_when_glacier_reaches_boundaries',
-           'glacier_length_method', 'use_inversion_params_for_run',
-           'ref_mb_valid_window', 'tidewater_type']
+    ltr = [
+        'working_dir', 'dem_file', 'climate_file', 'climate_dir',
+        'wgms_rgi_links', 'glathida_rgi_links', 'firncore_dir', 'lfi_dir',
+        'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method', 'data_dir',
+        'mp_processes', 'use_multiprocessing', 'use_divides',
+        'sis_delivery_delay', 'temp_use_local_gradient',
+        'temp_use_local_gradient_cells', 'prcp_use_local_gradient',
+        'temp_local_gradient_bounds', 'mb_dir', 'modelrun_backup_dir_1',
+        'modelrun_backup_dir_2', 'prcp_local_gradient_bounds',
+        'precip_ratio_method', 'topo_interp', 'use_compression',
+        'use_tar_shapefiles', 'bed_shape', 'continue_on_error',
+        'use_optimized_inversion_params', 'invert_with_sliding',
+        'optimize_inversion_params', 'use_multiple_flowlines',
+        'leclercq_rgi_links', 'optimize_thick', 'nwp_file_ecmwf',
+        'mpi_recv_buf_size', 'tstar_search_window', 'use_bias_for_run',
+        'run_period', 'prcp_scaling_factor', 'tminmax_available',
+        'use_intersects', 'filter_min_slope', 'auto_skip_task',
+        'correct_for_neg_flux', 'problem_glaciers', 'bgmon_hydro',
+        'bgday_hydro', 'run_mb_calibration', 'albedo_method', 'glamos_ids',
+        'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds', 'alpha_bounds',
+        'tacc_bounds', 'nwp_file_cosmo', 'use_mp_spawn', 'working_dir',
+        'dem_file', 'climate_file', 'use_tar_shapefiles', 'grid_dx_method',
+        'run_mb_calibration', 'compress_climate_netcdf', 'mp_processes',
+        'use_multiprocessing', 'climate_qc_months', 'temp_use_local_gradient',
+        'temp_local_gradient_bounds', 'topo_interp', 'use_compression',
+        'bed_shape', 'continue_on_error', 'use_multiple_flowlines',
+        'tstar_search_glacierwide', 'border', 'mpi_recv_buf_size',
+        'hydro_month_nh', 'clip_mu_star', 'tstar_search_window',
+        'use_bias_for_run', 'hydro_month_sh', 'use_intersects',
+        'filter_min_slope', 'clip_tidewater_border', 'auto_skip_task',
+        'correct_for_neg_flux', 'filter_for_neg_flux', 'rgi_version',
+        'dl_verify', 'use_mp_spawn', 'calving_use_limiter',
+        'use_shape_factor_for_inversion', 'use_rgi_area',
+        'use_shape_factor_for_fluxbasedmodel', 'baseline_climate',
+        'calving_line_extension', 'use_kcalving_for_run', 'lru_maxsize',
+        'free_board_marine_terminating', 'use_kcalving_for_inversion',
+        'error_when_glacier_reaches_boundaries', 'glacier_length_method',
+        'use_inversion_params_for_run', 'ref_mb_valid_window',
+        'tidewater_type']
     for k in ltr:
         cp.pop(k, None)
 
@@ -504,6 +514,8 @@ def initialize(file=None, logging_level='INFO', params=None):
     oggmcfg.PATHS['data_dir'] = cp['data_dir']
     oggmcfg.PATHS['hfile'] = cp['hfile']
     oggmcfg.PATHS['climate_file'] = cp['climate_file']
+    oggmcfg.PATHS['nwp_file_cosmo'] = cp['nwp_file_cosmo']
+    oggmcfg.PATHS['nwp_file_ecmwf'] = cp['nwp_file_ecmwf']
     oggmcfg.PATHS['climate_dir'] = cp['climate_dir']
     oggmcfg.PATHS['lfi_worksheet'] = cp['lfi_worksheet']
     oggmcfg.PATHS['firncore_dir'] = cp['firncore_dir']
@@ -692,7 +704,7 @@ def initialize(file=None, logging_level='INFO', params=None):
            'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
            'run_mb_calibration', 'albedo_method', 'glamos_ids',
            'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
-           'alpha_bounds', 'tacc_bounds', 'nwp_file', 'use_mp_spawn']
+           'alpha_bounds', 'tacc_bounds', 'nwp_file_cosmo', 'use_mp_spawn']
     for k in ltr:
         cp.pop(k, None)
 
