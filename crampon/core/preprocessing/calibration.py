@@ -365,6 +365,144 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
     return err
 
 
+def to_minimize_point_mass_balance(x, gdir, mb_model, measured,
+                                   measurement_elevation, date_0, date_1,
+                                   scov_date, *args, winteronly=False,
+                                   scov=None, unc=None, **kwargs):
+    """
+    Calibrate on a point mass balance using a pre-calibrated precipitation
+    correction factor.
+
+    Parameters
+    ----------
+    x: tuple
+        Parameters to optimize. The parameters must be given exactly in the
+        order of the mb_model.cali_params attribute.
+    gdir: `py:class:crampon:GlacierDirectory`
+        The glacier directory to calibrate.
+    mb_model: `crampon.core.models.MassBalanceModel`
+        The model to use for calibration
+    measured: list
+        Measured mass balance in m w.e..
+    measurement_elevation: list
+        Elevation of the measurement (m).
+    date_0: list of pd.Timestamp
+        Beginning of the measurement period.
+    date_1: list of pd.Timestamp
+        End of the measurement period.
+    winteronly: bool, optional
+        Optimize only the winter mass balance. Default: False.
+    scov: crampon.core.models.massbalance.SnowFirnCover or None,
+        Snow cover to initiate. Default: None (use initalization from mass
+        balance model)
+    unc: float, optional
+        Uncertainty in observed mass balance (m w.e.). Default: None (do not
+        account for).
+    scov_date: pd.Timestamp
+        Date of snow cover at the beginning. Can differ from the minimum
+        observation date (we don't save all the snow covers).
+    *args: tuple
+    **kwargs: dict
+        Keyword arguments accepted by the function.
+
+    Returns
+    -------
+    err: list
+        The residuals (squaring is done by scipy.optimize.least_squares).
+    """
+    # number of point measurements to calibrate on
+
+    n_points = len(measured)
+    min_date = np.min(np.hstack((date_0, scov_date)))
+    max_date = np.max(date_1)
+
+    if winteronly:
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], [v for k, v in kwargs.items() if (
+                    (k in mb_model.cali_params_guess.keys()) and (
+                     k not in ['prcp_fac']))]))
+    else:
+        calip_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k not in ['prcp_fac']], x))
+        other_dict = dict(zip(
+            [k for k, v in mb_model.cali_params_guess.items() if
+             k in ['prcp_fac']], [v for k, v in kwargs.items() if k in [
+                'prcp_fac']]))  # prcp_fac is the only excluded for annual cali
+
+    params = {**calip_dict, **other_dict}
+    print(params)
+
+    # calispan = pd.date_range(date_0, date_1, freq='D')
+    calispan = pd.date_range(min_date, max_date, freq='D')
+
+    heights_all, widths_all = gdir.get_inversion_flowline_hw()
+    # todo: here the cam could end up on the wrong flowline
+    obs_ix = np.argmin(np.abs(heights_all -
+                              np.atleast_2d(measurement_elevation).T), axis=1)
+
+    day_model = mb_model(gdir, **params, bias=0.)
+    # heights_widths=([measurement_elevation], measurement_width))
+
+    # IMPORTANT
+    if scov is not None:
+        day_model.snowcover = copy.deepcopy(scov)
+
+    mb = []
+    conv_fac = ((86400 * cfg.RHO) / cfg.RHO_W)  # m ice s-1 to m w.e. d-1
+    for date in calispan:
+        # todo: something doesn't work when we pass the measurement
+        #  elevation only
+        tmp = day_model.get_daily_mb(heights_all, date=date) * conv_fac
+        tmp = tmp[obs_ix]
+        mb.append(tmp)
+
+    mb_ds = xr.Dataset({'MB': (['time', 'height'], np.array(mb))},
+                       # coords={'time': pd.to_datetime(calispan)})
+                       coords={'time': (['time', ], calispan),
+                               'height': (['height', ],
+                                          measurement_elevation)})
+
+    err = []
+    for p in range(n_points):
+        print(date_0[p], date_1[p])
+        mb_sel = mb_ds.sel(time=slice(date_0[p], date_1[p]),
+                           height=measurement_elevation[p])
+        # if melt in winter between the field dates this pushes prcp_fac
+        # up! as we can't measure melt in the winter campaign anyway, we just
+        # subtract it away when tuning the winter balance!
+        # minimum = np.nanmin(np.nancumsum([0.] + mb))
+
+        # annual sum
+        # span = pd.date_range(date_0, date_1 - pd.Timedelta(days=1),
+        #                     freq='D')
+        span = pd.date_range(date_0[p], date_1[p] - pd.Timedelta(days=1),
+                             freq='D')
+        mb_sum = mb_sel.sel(time=span).map(np.sum)
+
+        # if measured > 0.:  # there is still snow
+        if measured[p] > 0.:  # there is still snow
+            # todo: 92 is brute force to catch the rel. min. at the beginning
+            minimum = np.nanmin(np.nancumsum([0.] + mb_sel.MB.values[:92]))
+            correction = np.abs(minimum)
+        else:  # ice
+            correction = 0.
+        print('ASUM, MEAS, CORR: ', mb_sum.MB.values, measured, correction)
+
+        # err = np.abs((measured - (mb_sum.MB.values + correction)))
+        err.append(np.abs((measured[p] - (mb_sum.MB.values + correction))))
+
+    if unc is not None:
+        err /= unc
+
+    print("ERRORS: ", err)
+
+    return [e for e in err if ~np.isnan(e)]
+
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                           it_thresh=50, cali_suffix='',
                                           **kwargs):
