@@ -1762,6 +1762,40 @@ def calibrate_mb_model_on_geod_mb_huss(
         log.info('ERROR to measured MB:{}'.format(error))
 
 
+def use_geodetic_mb_for_multipolygon_or_not(id, poly_df, threshold=0.9):
+    """
+    If a glacier is a multipolygon, decide whether the geodetic mass balance
+    for the whole multipolygon can be used for the entity.
+
+    The way we test this is if the entity polyon makes up more than or equal
+    the threshold times the total area of the multipolygon.
+
+    Parameters
+    ----------
+    id: str
+        ID of the single entity polygon.
+    poly_df: pd.Dataframe or gpd.GeoDataframe
+        Dataframe including an ID and area column.
+    threshold: float
+        Threshold of area ratio to total multipolygon area the that the polygon
+        must be equal to at least. Default: 0.9
+        .
+
+    Returns
+    -------
+    bool:
+        True if geodetic mass balance can be used, False if not.
+    """
+    common_id = id.split('.')[1].split('-')[0]
+    mpoly_areas = poly_df[poly_df['RGIId'].str.contains(common_id)].Area.values
+    mpoly_total_area = np.nansum(mpoly_areas)
+    id_area = poly_df.loc[poly_df.RGIId == id, 'Area'].values
+    if (id_area / mpoly_total_area) >= threshold:
+        return True
+    else:
+        return False
+
+
 
 def visualize(mb_xrds, msrd, err, x0, ax=None):
     if not ax:
