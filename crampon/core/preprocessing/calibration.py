@@ -18,8 +18,7 @@ from crampon import workflow
 from crampon import tasks, entity_task
 from crampon.core.models.massbalance import BraithwaiteModel, \
     run_snowfirnmodel_with_options, PellicciottiModel, HockModel, \
-    OerlemansModel, DailyMassBalanceModel, ReveilletModel, GiesenModel, \
-    SnowFirnCover
+    OerlemansModel, DailyMassBalanceModel, SnowFirnCover
 from crampon.core.models import massbalance
 from collections import OrderedDict
 from crampon import utils
