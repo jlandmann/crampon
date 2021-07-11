@@ -1320,7 +1320,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
 
 # can't write it to cache until we have e.g. a date in the climate_all filename
 @MEMORY.cache
-def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
+def joblib_read_climate_crampon(nc_file, ilon, ilat, default_tgrad,
                                 minmax_tgrad, use_tgrad, default_pgrad,
                                 minmax_pgrad, use_pgrad):
     """
@@ -1328,8 +1328,8 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
 
     Parameters
     ----------
-    ncpath: str
-        Path to the netCDF file in OGGM suitable format.
+    nc_file: str or xr.Dataset
+        Path to the netCDF file in OGGM suitable format, or Dataset itself.
     ilon: int
         Index of a longitude in the netCDF.
     ilat: int
@@ -1367,7 +1367,10 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
         raise ValueError('Window edge width must be odd number or zero.')
 
     # get climate at reference cell
-    climate = xr.open_dataset(ncpath)
+    if isinstance(nc_file, str):
+        climate = xr.open_dataset(nc_file)
+    else:
+        climate = nc_file.copy(deep=True)
     local_climate = climate.isel(dict(lat=ilat, lon=ilon))
     iprcp = local_climate.prcp
     itemp = local_climate.temp
