@@ -182,7 +182,9 @@ def try_backup(gdirs: List[utils.GlacierDirectory]) -> None:
 
     Parameters
     ----------
-    gdirs :
+     gdirs : list
+        List of py:class:`crampon.GlacierDirectory` for which the backup
+        should be run.
 
     Returns
     -------
