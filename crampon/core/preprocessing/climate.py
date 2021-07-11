@@ -338,8 +338,8 @@ def bias_correct_and_add_geosatclim(gdir: utils.GlacierDirectory,
 
     # overwrite SIS in climate file
     climate_file = gdir.get_filepath('climate_daily')
-    # todo: all the load and closes and None assignments seems necessary to not get a PermissionError
-    with xr.open_dataset(climate_file, autoclose=True) as clim:
+    # todo: all assignments necessary to avoid PermissionError?
+    with xr.open_dataset(climate_file) as clim:
         clim_copy = clim.copy(deep=True)
     clim_copy.load()
     clim.close()
