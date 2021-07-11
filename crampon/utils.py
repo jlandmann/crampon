@@ -1395,20 +1395,50 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
 
     # precipitation gradient
     if use_pgrad != 0:
-        ipgrad = get_pgrad_from_window(climate, ilat, ilon, use_pgrad,
-                                       default_pgrad, minmax_pgrad)
+        ipgrad, ipgrad_unc = get_pgrad_from_window(climate, ilat, ilon,
+                                                   use_pgrad, default_pgrad,
+                                                   minmax_pgrad)
     else:
         ipgrad = np.zeros(len(climate.time)) + default_pgrad
+        # todo: come up with estimate for uncertainty in this case
+        ipgrad_unc = np.zeros(len(climate.time))
 
-    return iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ihgt
+    return iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ipgrad_unc, ihgt
 
 
 # IMPORTANT: overwrite OGGM functions with same name
 joblib_read_climate = joblib_read_climate_crampon
 
 
+def _calc_slope(x, y):
+    '''wrapper that returns the slope from a linear regression fit of x and y'''
+    slope = stats.linregress(x.flatten(), y.flatten())[0]  # extract slope only
+    return slope
+
+
+def _calc_pval(x, y):
+    '''wrapper that returns the p-value from a linear regression fit of x and y'''
+    pval = stats.linregress(x.flatten(), y.flatten())[3]  # extract slope only
+    return pval
+
+
+def _calc_stderr(x, y):
+    '''wrapper that returns the stderr from a linear regression fit of x and y'''
+    stderr = stats.linregress(x.flatten(), y.flatten())[
+        4]  # extract slope only
+    return stderr
+
+
+def bayes_slope_post(h, T, sigma_squared, b_0, g=1.):
+    beta_hat = np.sum(h * T) / np.sum(h**2)
+    mean = (g * beta_hat) / (1 + g) + b_0 / (1 + g)
+    var = (g / (1 + g)) * (sigma_squared / np.sum(h**2))
+    return mean, np.sqrt(var)
+
+
 def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
-                          minmax_tgrad):
+                          minmax_tgrad, use_kalmanfilter=False,
+                          use_bayes_post=True):
     """
     Get temperature gradient from linear regression of surrounding grid cells.
 
@@ -1430,12 +1460,27 @@ def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
         Min/Max bounds of the local temperature gradient, in case the window
         regression kernel search delivers strange values (should not happen for
         the MeteoSwiss grids, but who knows...).
+    use_kalmanfilter: bool, optional
+        Whether to use a Kalman Filter to calculate the gradient amd its
+        uncertainty. This method uses a `gradient climatology` with its mean
+        and standard deviation as background and the observed gradient and
+        standard error of the slope as `observation`. Median and standard
+        deviation of the posterior are used as gradient ("itgrad)" and its
+        uncertainty ("itgrad_unc"), respectively. Mutually exclusive with
+        `use_bayes_post`. Default: False.
+    use_bayes_post: bool, optional
+        Use a Bayesian posterior for the slope (see e-mail Hansruedi Künsch
+         13.06.2021). Mutually exclusive with `use_kalmanfilter`. Default: True
 
     Returns
     -------
     itgrad: np.array
         Temperature gradient over time for the given ilat/ilon.
     """
+
+    if use_bayes_post is True and use_kalmanfilter is True:
+        raise ValueError('`use_kalmanfilter` is mutually exclusive with '
+                         '`use_bayes_post`.')
 
     itgrad = np.full(len(climate.time), np.nan)
     itgrad_unc = np.full(len(climate.time), np.nan)
@@ -1446,52 +1491,140 @@ def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
     tlatslice = slice(ilat - tminw, ilat + tmaxw)
     tlonslice = slice(ilon - tminw, ilon + tmaxw)
 
+    # time should be first (we iterate over ttemp.values)
+    climate = climate.transpose('time', ...)
+
     ttemp = climate.temp.isel(dict(lat=tlatslice, lon=tlonslice))
     thgt = climate.hgt.isel(dict(lat=tlatslice, lon=tlonslice))
-    thgt = thgt.values.flatten()
 
-    for t, loct in enumerate(ttemp.values):
-        # NaNs happen a the grid edges:
-        mask = ~np.isnan(loct)
-        slope, _, _, p_val, stderr = stats.linregress(
-            np.ma.masked_array(thgt, ~mask).compressed(),
-            loct[mask].flatten())
-        itgrad[t] = slope if (p_val < 0.01) else np.nan
-        itgrad_unc[t] = stderr if (p_val < 0.01) else np.nan
+    # for predictions
+    if 'member' in ttemp.dims:
+        ttemp_stack = ttemp.stack(ens=['member', 'time'])
+        slope = xr.apply_ufunc(_calc_slope, thgt, ttemp_stack, vectorize=True,
+                              input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                              output_core_dims=[[]], output_dtypes=[np.float],
+                              dask='parallelized')
+        slope = slope.unstack()
+        pval = xr.apply_ufunc(_calc_pval, thgt, ttemp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        pval = pval.unstack()
+        stderr = xr.apply_ufunc(_calc_stderr, thgt, ttemp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        stderr = stderr.unstack()
 
-    # fill not significant gradients with DOY rolling window mean
-    # todo: this could also be not on DOYs
-    grad_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad,
-                           coords={'time': ('time', climate.time)})
-    grad_unc_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad_unc,
-                           coords={'time': ('time', climate.time)})
-    grad_rmean = grad_ds.rolling(time=30, center=True, min_periods=5).mean(
-        skipna=True).groupby('time.dayofyear').mean(skipna=True)
-    grad_unc_rmean = grad_unc_ds.rolling(time=30, center=True, min_periods=5)\
-        .mean(skipna=True).groupby('time.dayofyear').mean(skipna=True)
+        if use_kalmanfilter is True or use_bayes_post is True:
+            # todo implement Kalman filtering for meteorological predictions
+            log.warning('Use of Kalman-filter/Bayes gradient not yet '
+                        'implemented for meteorological predictions. '
+                        'Continuing with standard method....')
+        # replace correlations and stderrs with high pvals
+        # todo: better use rolling window filling also here
+        itgrad = slope.where(pval < 0.01,
+                             cfg.PARAMS['temp_default_gradient'])
+        itgrad_unc = stderr.where(pval < 0.01, np.nanmean(stderr))
 
-    # fill NaNs - to be sure
-    grad_rmean = grad_rmean.fillna(default_tgrad)
-    # todo: define a mean tgrad uncertainty?
-    grad_unc_rmean = grad_unc_rmean.fillna(np.nanmean(itgrad_unc))
+    else:  # past meteorology
+        thgt = thgt.values.flatten()
+        for t, loct in enumerate(ttemp.values):
+            # NaNs happen a the grid edges:
+            mask = ~np.isnan(loct)
+            slope, intcpt, _, p_val, stderr = stats.linregress(
+                np.ma.masked_array(thgt, ~mask).compressed(),
+                loct[mask].flatten())
 
-    # days with nan should be the same in both itgrad and itgrad_unc
-    nan_doys = [pd.Timestamp(x).dayofyear for x in
-                climate.time[np.isnan(itgrad)].values]
+            # for Kalman filtering we need them all
+            if use_kalmanfilter is True:
+                # we insert all slope and correct them later
+                itgrad[t] = slope
+                itgrad_unc[t] = stderr
+            elif use_bayes_post is True:
+                # we calculate is directly
+                h = np.ma.masked_array(thgt, ~mask).compressed()
+                h_diff = h - np.nanmean(h)
+                sigma_squared = np.std((intcpt + slope * h_diff) -
+                                       loct[mask].flatten()) ** 2
+                bayes_mean, bayes_std = bayes_slope_post(
+                    h_diff, loct[mask].flatten(), sigma_squared,
+                    b_0=default_tgrad)
+                itgrad[t] = bayes_mean
+                itgrad_unc[t] = bayes_std
+            else:
+                # otherwise we drop the "bad" correlations already
+                itgrad[t] = slope if (p_val < 0.01) else np.nan
+                itgrad_unc[t] = stderr if (p_val < 0.01) else np.nan
 
-    # fill finally
-    itgrad[np.isnan(itgrad)] = grad_rmean.sel(dayofyear=nan_doys).values
-    itgrad_unc[np.isnan(itgrad_unc)] = \
-        grad_unc_rmean.sel(dayofyear=nan_doys).values
+        # fill not significant gradients with DOY rolling window mean
+        # todo: this could also be not on DOYs
+        grad_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad,
+                               coords={'time': ('time', climate.time)})
+        grad_unc_ds = xr.DataArray(dims={'time': climate.time}, data=itgrad_unc,
+                               coords={'time': ('time', climate.time)})
 
-    # apply the boundaries, in case the gradient goes wild
-    itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
+        grad_rmean = grad_ds.rolling(time=30, center=True, min_periods=5).mean(
+            skipna=True).groupby('time.dayofyear').mean(skipna=True)
+        grad_unc_rmean = grad_unc_ds.rolling(
+            time=30, center=True, min_periods=5).mean(skipna=True).groupby(
+            'time.dayofyear').mean(skipna=True)
+
+        # days with nan should be the same in both itgrad and itgrad_unc
+        nan_doys = [pd.Timestamp(x).dayofyear for x in
+                    climate.time[np.isnan(itgrad)].values]
+
+        if use_kalmanfilter is False and use_bayes_post is False:
+            # fill NaNs - to be sure
+            grad_rmean = grad_rmean.fillna(default_tgrad)
+            # todo: define a mean tgrad uncertainty?
+            grad_unc_rmean = grad_unc_rmean.fillna(np.nanmean(itgrad_unc))
+            # fill finally
+            itgrad[np.isnan(itgrad)] = grad_rmean.sel(dayofyear=nan_doys).values
+            itgrad_unc[np.isnan(itgrad_unc)] = \
+                grad_unc_rmean.sel(dayofyear=nan_doys).values
+        elif use_bayes_post is True:
+            pass
+        elif use_kalmanfilter is True:
+            # here, we want the std of the climatology gradient
+            grad_rstd = grad_ds.rolling(time=30, center=True,
+                min_periods=5).mean(skipna=True).groupby('time.dayofyear').std(
+                skipna=True)
+
+            def gaussian_multiply(g1_mean, g1_var, g2_mean, g2_var):
+                mean = (g1_var * g2_mean + g2_var * g1_mean) / (
+                            g1_var + g2_var)
+                variance = (g1_var * g2_var) / (g1_var + g2_var)
+                return mean, variance
+
+            def update(prior_mean, prior_var, likelihood_mean, likelihood_var):
+                posterior = gaussian_multiply(likelihood_mean, likelihood_var,
+                                              prior_mean, prior_var)
+                return posterior
+
+            itgrad, itgrad_var = update(
+                grad_rmean[climate.time.dt.dayofyear.values-1],
+                grad_rstd[climate.time.dt.dayofyear.values-1]**2,
+                itgrad, itgrad_unc**2)
+            itgrad_unc = np.sqrt(itgrad_var)
+
+        # todo: should this really happen??????
+        # apply the boundaries, in case the gradient goes wild
+        itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
+
+        itgrad = xr.DataArray(itgrad, coords={'time': climate.coords['time']},
+                     dims=('time',), name='tgrad')
+        itgrad_unc = xr.DataArray(itgrad_unc,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='tgrad_unc')
+
 
     return itgrad, itgrad_unc
 
 
 def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
-                          minmax_pgrad):
+                          minmax_pgrad, use_kalmanfilter=False,
+                          use_bayes_post=True):
     """
     Get precipitation gradient from linear regression of surrounding grid cells.
 
@@ -1516,13 +1649,32 @@ def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
         Min/Max bounds of the local temperature gradient, in case the window
         regression kernel search delivers strange values (should not happen for
         the MeteoSwiss grids, but who knows...).
+    use_kalmanfilter: bool, optional
+        Whether to use a Kalman Filter to calculate the gradient and its
+        uncertainty. This method uses a `gradient climatology` with its mean
+        and standard deviation as background and the observed gradient and
+        standard error of the slope as `observation`. Median and standard
+        deviation of the posterior are used as gradient ("ipgrad)" and its
+        uncertainty ("itprad_unc"), respectively. Mutually exclusive with
+        `use_bayes_post`. Default: False.
+    use_bayes_post: bool, optional
+        Use a Bayesian posterior for the slope (see e-mail Hansruedi Künsch
+         13.06.2021). Mutually exclusive with `use_kalmanfilter`. Default: True
+
 
     Returns
     -------
-    itgrad: np.array
-        Temperature gradient over time for the given ilat/ilon.
+    igrad: np.array
+        Precipitation gradient over time for the given ilat/ilon.
     """
-    ipgrad = np.zeros(len(climate.time)) + default_pgrad
+
+    if use_bayes_post is True and use_kalmanfilter is True:
+        raise ValueError('`use_kalmanfilter` is mutually exclusive with '
+                         '`use_bayes_post`.')
+
+    ipgrad = np.full(len(climate.time), np.nan)
+    ipgrad_unc = np.full(len(climate.time), np.nan)
+
     # some min/max constants for the window
     pminw = divmod(win_size, 2)[0]
     pmaxw = divmod(win_size, 2)[0] + 1
@@ -1530,30 +1682,91 @@ def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
     platslice = slice(ilat - pminw, ilat + pmaxw)
     plonslice = slice(ilon - pminw, ilon + pmaxw)
 
+    # time should be first (we iterate over pprcp.values)
+    climate = climate.transpose('time', ...)
+
     pprcp = climate.prcp.isel(dict(lat=platslice, lon=plonslice))
     phgt = climate.hgt.isel(dict(lat=platslice, lon=plonslice))
-    phgt = phgt.values.flatten()
 
-    for t, locp in enumerate(pprcp.values):
-        # NaNs happen at grid edges, 0 should be excluded for slope
-        mask = ~np.isnan(locp) & (locp != 0.)
-        flattened_mask = locp[mask].flatten()
-        if (~mask).all():
-            continue
-        slope, icpt, _, p_val, stderr = stats.linregress(
-            np.ma.masked_array(phgt, ~mask).compressed(),
-            flattened_mask)
-        # Todo: Is that a good method?
-        # gradient in % m-1: mean(all prcp values + slope for 1 m)
-        # p=0. happens if there are only two grids cells
-        ipgrad[t] = np.nanmean(((flattened_mask + slope) /
-                                flattened_mask) - 1) if (
-                (p_val < 0.01) and (p_val != 0.)) else default_pgrad
+    # todo: no kalman/bayes option for prediction implemented yet
+    if 'member' in pprcp.dims:
+        pprcp_stack = pprcp.stack(ens=['member', 'time'])
+        slope = xr.apply_ufunc(_calc_slope, phgt, pprcp_stack, vectorize=True,
+                              input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                              output_core_dims=[[]], output_dtypes=[np.float],
+                              dask='parallelized')
+        slope = slope.unstack()
+        pval = xr.apply_ufunc(_calc_pval, phgt, pprcp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        pval = pval.unstack()
+        stderr = xr.apply_ufunc(_calc_stderr, phgt, pprcp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        stderr = stderr.unstack()
 
-    # apply the boundaries, in case the gradient goes wild
-    ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
+        # replace correlations and stderrs with high pvals
+        # todo: better filling with rolling means also here
+        ipgrad = slope.where(pval < 0.01, cfg.PARAMS['prcp_default_gradient'])
+        ipgrad_unc = stderr.where(pval < 0.01, np.nanmean(stderr))
+    else:
+        phgt = phgt.values.flatten()
 
-    return ipgrad
+        for t, locp in enumerate(pprcp.values):
+            # NaNs happen at grid edges, 0 should be excluded for slope
+            mask = ~np.isnan(locp) & (locp != 0.)
+            flattened_mask = locp[mask].flatten()
+            if (~mask).all():
+                continue
+            slope, icpt, _, p_val, stderr = stats.linregress(
+                np.ma.masked_array(phgt, ~mask).compressed(),
+                flattened_mask)
+
+            # Todo: Is that a good method?
+            # gradient in % m-1: mean(all prcp values + slope for 1 m)
+            # p=0. happens if there are only two grids cells
+            if use_kalmanfilter is True:
+                raise NotImplementedError(
+                    'Use of Kalman-filtered precipitation gradients is not yet'
+                    ' implemented.')
+            elif use_bayes_post is True:
+                # we calculate is directly
+                h = np.ma.masked_array(phgt, ~mask).compressed()
+                h_diff = h - np.nanmean(h)
+                sigma_squared = np.std((flattened_mask - (flattened_mask+flattened_mask*np.nanmean(((flattened_mask + slope) /
+                                        flattened_mask) - 1)*h_diff))) ** 2
+                bayes_mean, bayes_std = bayes_slope_post(h_diff,
+                    locp[mask].flatten(), sigma_squared, b_0=default_pgrad)
+                ipgrad[t] = bayes_mean
+                ipgrad_unc[t] = bayes_std
+            else:
+                ipgrad[t] = np.nanmean(((flattened_mask + slope) /
+                                        flattened_mask) - 1) if (
+                        (p_val < 0.01) and (p_val != 0.)) else default_pgrad
+                # todo: I think this is bullshit: Gradient - Gradient derived with steeper slope
+                ipgrad_unc[t] = (ipgrad[t] - np.nanmean(((flattened_mask + slope + stderr) /
+                                        flattened_mask) - 1)) if ((p_val < 0.01) and (p_val != 0.)) else np.nan
+
+        # todo: fill prcp gradient with rolling window mean?
+        ref_cell = pprcp.values[:, int(win_size/2), int(win_size/2)]
+        prec_true = ref_cell > 0.
+
+        # mean is influenced a lot by outliers!
+        ipgrad[(np.isnan(ipgrad) & prec_true)] = np.nanmedian(ipgrad)
+        # we take std around the median
+        ipgrad_unc[(np.isnan(ipgrad_unc) & prec_true)] = \
+            np.sqrt(np.nanmean((ipgrad_unc - np.nanmedian(ipgrad_unc))**2))
+        # apply the boundaries, in case the gradient goes wild
+        ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
+
+        ipgrad = xr.DataArray(ipgrad, coords={'time': climate.coords['time']},
+                              dims=('time',), name='pgrad')
+        ipgrad_unc = xr.DataArray(ipgrad_unc,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='pgrad_unc')
+    return ipgrad, ipgrad_unc
 
 
 def _cut_with_CH_glac(xr_ds):
@@ -2413,7 +2626,7 @@ class GlacierDirectory(object):
                                    tmin=None, tmax=None, tgrad_sigma=None,
                                    sis=None, prcp_sigma=None, temp_sigma=None,
                                    tmin_sigma=None, tmax_sigma=None,
-                                   sis_sigma=None,
+                                   sis_sigma=None, pgrad_sigma=None,
                                    time_unit='days since 1801-01-01 00:00:00',
                                    file_name='climate_monthly', filesuffix=''):
         """Creates a netCDF4 file with climate data.
@@ -2435,6 +2648,9 @@ class GlacierDirectory(object):
                                        ref_pix_lon, ref_pix_lat)
 
             dtime = nc.createDimension('time', None)
+            # quite hard-coded, but it should anyway not be allowed to mix:
+            if 'member' in prcp.dims:
+                memv = nc.createDimension('member', None)
 
             nc.author = 'OGGM and CRAMPON'
             nc.author_info = 'Open Global Glacier Model and Cryospheric ' \
@@ -2444,83 +2660,95 @@ class GlacierDirectory(object):
             timev.setncatts({'units': time_unit})
             timev[:] = netCDF4.date2num([t for t in time], time_unit)
 
-            v = nc.createVariable('prcp', 'f4', ('time',), zlib=True)
+            # quite hard-coded, but it shoudl anyway not be allowed to mix:
+            if 'member' in prcp.dims:
+                memv = nc.createVariable('member', 'i4', ('member',))
+                memv[:] = prcp.member.values
+
+            v = nc.createVariable('prcp', 'f4', prcp.dims, zlib=True)
             v.units = 'kg m-2'
             v.long_name = 'total daily precipitation amount'
             v[:] = prcp
 
-            v = nc.createVariable('temp', 'f4', ('time',), zlib=True)
+            v = nc.createVariable('temp', 'f4', temp.dims, zlib=True)
             v.units = 'degC'
             v.long_name = 'Mean 2m temperature at height ref_hgt'
             v[:] = temp
 
             if tmin is not None:
-                v = nc.createVariable('tmin', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('tmin', 'f4', tmin.dims, zlib=True)
                 v.units = 'degC'
                 v.long_name = 'Minimum 2m temperature at height ref_hgt'
                 v[:] = tmin
 
             if tmax is not None:
-                v = nc.createVariable('tmax', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('tmax', 'f4', tmax.dims, zlib=True)
                 v.units = 'degC'
                 v.long_name = 'Maximum 2m temperature at height ref_hgt'
                 v[:] = tmax
 
             if sis is not None:
-                v = nc.createVariable('sis', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('sis', 'f4', sis.dims, zlib=True)
                 v.units = 'W m-2'
                 v.long_name = 'daily mean surface incoming shortwave radiation'
                 v[:] = sis
 
             if prcp_sigma is not None:
-                v = nc.createVariable('prcp_sigma', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('prcp_sigma', 'f4', prcp_sigma.dims, zlib=True)
                 v.units = 'kg m-2'
                 v.long_name = 'Precipitation uncertainty as standard deviation'
                 v[:] = prcp_sigma
 
             if temp_sigma is not None:
-                v = nc.createVariable('temp_sigma', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('temp_sigma', 'f4', temp_sigma.dims, zlib=True)
                 v.units = 'deg C'
                 v.long_name = 'Temperature uncertainty as standard deviation'
                 v[:] = temp_sigma
 
             if tmin_sigma is not None:
-                v = nc.createVariable('tmin_sigma', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('tmin_sigma', 'f4', tmin_sigma.dims, zlib=True)
                 v.units = 'deg C'
                 v.long_name = 'minimum temperature uncertainty as standard ' \
                               'deviation'
                 v[:] = tmin_sigma
 
             if tmax_sigma is not None:
-                v = nc.createVariable('tmax_sigma', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('tmax_sigma', 'f4', tmax_sigma.dims, zlib=True)
                 v.units = 'deg C'
                 v.long_name = 'maximum temperature uncertainty as standard ' \
                               'deviation'
                 v[:] = tmax_sigma
 
             if sis_sigma is not None:
-                v = nc.createVariable('sis_sigma', 'f4', ('time',), zlib=True)
+                v = nc.createVariable('sis_sigma', 'f4', sis_sigma.dims, zlib=True)
                 v.units = 'W m-2'
                 v.long_name = 'daily mean surface incoming shortwave ' \
                               'radiation as standard deviation'
                 v[:] = sis_sigma
 
-            v = nc.createVariable('tgrad', 'f4', ('time',), zlib=True)
+            v = nc.createVariable('tgrad', 'f4', tgrad.dims, zlib=True)
             v.units = 'K m-1'
             v.long_name = 'temperature gradient'
             v[:] = tgrad
 
             if tgrad_sigma is not None:
-                v = nc.createVariable('tgrad_sigma', 'f4', ('time',),
+                v = nc.createVariable('tgrad_sigma', 'f4', tgrad_sigma.dims,
                                       zlib=True)
                 v.units = 'K m-1'
                 v.long_name = 'temperature gradient uncertainty'
                 v[:] = tgrad_sigma
 
-            v = nc.createVariable('pgrad', 'f4', ('time',), zlib=True)
+            v = nc.createVariable('pgrad', 'f4', pgrad.dims, zlib=True)
             v.units = 'm-1'
             v.long_name = 'precipitation gradient'
             v[:] = pgrad
+
+            if pgrad_sigma is not None:
+                v = nc.createVariable('pgrad_sigma', 'f4', pgrad_sigma.dims,
+                                      zlib=True)
+                v.units = 'm-1'
+                v.long_name = 'precipitation gradient uncertainty'
+                v[:] = pgrad_sigma
 
     def create_gridded_ncdf_file(self, filename):
         """
