@@ -35,7 +35,7 @@ from configobj import ConfigObj, ConfigObjError
 from joblib import Memory
 from oggm.utils._workflow import _timeout_handler
 from salem import lazy_property, read_shapefile
-from scipy import stats
+from scipy import stats, special
 
 from crampon.core.holfuytools import *
 
@@ -3098,6 +3098,177 @@ def initialize_merged_gdir_crampon(main, tribs=[], glcdf=None,
 
 # overwrite OGGM
 initialize_merged_gdir = initialize_merged_gdir_crampon
+
+
+class LogitNormal(stats.rv_continuous):
+    """
+    Logit normal distribution class in the style of scipy.
+
+    This is copied from [1]_
+
+    References:
+    .. [1] https://bit.ly/3sdRqiZ
+    """
+    def __init__(self, scale=1, loc=0):
+        super().__init__(self)
+        self.scale = scale
+        self.loc = loc
+
+    def _pdf(self, x):
+        return stats.norm.pdf(special.logit(x), loc=self.loc,
+                              scale=self.scale) / (x*(1-x))
+
+
+def physical_to_log(x: float or np.array, lower_bound: float,
+                    fudge_fac: float = 0.) -> float or np.array:
+    """
+    Transformation from physical to log space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for a
+        [0, Inf] interval of the precipitation correction factor.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in log space.
+    """
+
+    # correct bound to avoid discontinuities
+    lower_corr = lower_bound - fudge_fac
+    x[x < lower_bound] = lower_bound
+    xs = x - lower_corr
+
+    # actual transform
+    xts = np.log(xs)
+
+    return xts
+
+
+def log_to_physical(x: float or np.array, lower_bound: float,
+                    fudge_fac: float = 0.) -> float or np.array:
+    """
+    Transformation from log to physical space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for a
+        [0, Inf] interval of the precipitation correction factor.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in physical space.
+    """
+
+    # transform back
+    xt = np.exp(x)
+
+    # correct boundaries
+    lower_corr = lower_bound - fudge_fac
+    xts = xt + lower_corr
+    xts[xts < lower_bound] = lower_bound
+    return xts
+
+
+def physical_to_logit(x: float or np.array, lower_bound: float,
+                      upper_bound: float, fudge_fac: float = 0.) \
+        -> float or np.array:
+    """
+    Transformation from physical to logit space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for
+        albedo.
+    upper_bound : float
+        Upper bound of the variable in physical space. Set e.g. to one for
+        albedo.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in logit space.
+    """
+
+    # correct the bounds numerically
+    l = lower_bound - fudge_fac
+    u = upper_bound + fudge_fac
+
+    # do actual transform
+    xs = (x - l) / (u - l)
+    xts = np.log(xs) - np.log(1 - xs)
+
+    return xts
+
+
+def logit_to_physical(x: float or np.array, lower_bound: float,
+                      upper_bound: float, fudge_fac: float = 0.) \
+        -> float or np.array:
+    """
+    Transformation from physical to logit space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for
+        albedo.
+    upper_bound : float
+        Upper bound of the variable in physical space. Set e.g. to one for
+        albedo.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in logit space.
+    """
+    # correct the bounds numerically
+    lower_corr = lower_bound - fudge_fac
+    upper_corr = upper_bound + fudge_fac
+
+    # do actual backtransform
+    xts = (upper_corr - lower_corr) / (1 + np.exp(-x)) + lower_corr
+    xts[xts < lower_bound] = lower_bound
+    xts[xts > upper_bound] = upper_bound
+
+    return xts
+
 
 if __name__ == '__main__':
     #rgigdf = gpd.read_file('C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp')
