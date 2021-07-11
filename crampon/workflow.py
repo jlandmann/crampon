@@ -2,25 +2,152 @@ from __future__ import absolute_import, division
 import salem
 import os
 import logging
-import crampon.cfg as cfg
+from crampon import cfg
 from crampon import utils
 from crampon.core.preprocessing import gis, centerlines
 from crampon.core.models import flowline
 import crampon
 from shutil import rmtree
-from oggm.workflow import _init_pool_globals, _merge_dicts,\
-    _pickle_copier, execute_entity_task, init_glacier_regions,\
+from oggm.workflow import _merge_dicts, _pickle_copier, init_glacier_regions, \
     merge_glacier_tasks
+import multiprocessing
+from collections.abc import Sequence
 
-# MPI similar to OGGM - not yet implemented
+
+# MPI
 try:
     import oggm.mpi as ogmpi
+
     _have_ogmpi = True
 except ImportError:
     _have_ogmpi = False
 
 # Module logger
 log = logging.getLogger(__name__)
+
+# Multiprocessing Pool
+_mp_manager = None
+_mp_pool = None
+
+
+def _init_pool_globals(_cfg_contents, global_lock):
+    cfg.unpack_config(_cfg_contents)
+    utils.lock = global_lock
+
+
+def init_mp_pool(reset=False):
+    """Necessary because at import time, cfg might be uninitialized"""
+    global _mp_manager, _mp_pool
+    if _mp_pool and _mp_manager and not reset:
+        return _mp_pool
+
+    cfg.CONFIG_MODIFIED = False
+    if _mp_pool:
+        _mp_pool.terminate()
+        _mp_pool = None
+    if _mp_manager:
+        cfg.set_manager(None)
+        _mp_manager.shutdown()
+        _mp_manager = None
+
+    if cfg.PARAMS['use_mp_spawn']:
+        mp = multiprocessing.get_context('spawn')
+    else:
+        mp = multiprocessing
+
+    _mp_manager = mp.Manager()
+
+    cfg.set_manager(_mp_manager)
+    cfg_contents = cfg.pack_config()
+
+    global_lock = _mp_manager.Lock()
+
+    mpp = cfg.PARAMS['mp_processes']
+    _mp_pool = mp.Pool(mpp, initializer=_init_pool_globals,
+                       initargs=(cfg_contents, global_lock))
+    return _mp_pool
+
+
+def _merge_dicts(*dicts):
+    r = {}
+    for d in dicts:
+        r.update(d)
+    return r
+
+
+class _pickle_copier(object):
+    """Pickleable alternative to functools.partial,
+    Which is not pickleable in python2 and thus doesn't work
+    with Multiprocessing."""
+
+    def __init__(self, func, kwargs):
+        self.call_func = func
+        self.out_kwargs = kwargs
+
+    def __call__(self, arg):
+        if self.call_func:
+            gdir = arg
+            call_func = self.call_func
+        else:
+            call_func, gdir = arg
+        if isinstance(gdir, Sequence) and not isinstance(gdir, str):
+            gdir, gdir_kwargs = gdir
+            gdir_kwargs = _merge_dicts(self.out_kwargs, gdir_kwargs)
+            return call_func(gdir, **gdir_kwargs)
+        else:
+            return call_func(gdir, **self.out_kwargs)
+
+
+def reset_multiprocessing():
+    """Reset multiprocessing state
+    Call this if you changed configuration parameters mid-run and need them to
+    be re-propagated to child processes.
+    """
+    global _mp_pool
+    if _mp_pool:
+        _mp_pool.terminate()
+        _mp_pool = None
+    cfg.CONFIG_MODIFIED = False
+
+
+def execute_entity_task(task, gdirs, **kwargs):
+    """Execute a task on gdirs.
+    If you asked for multiprocessing, it will do it.
+    If ``task`` has more arguments than `gdir` they have to be keyword
+    arguments.
+    Parameters
+    ----------
+    task : function
+         the entity task to apply
+    gdirs : list of :py:class:`oggm.GlacierDirectory` objects
+        the glacier directories to process
+    """
+
+    # Should be iterable
+    gdirs = utils.tolist(gdirs)
+
+    if len(gdirs) == 0:
+        return
+
+    log.workflow('Execute entity task %s on %d glaciers', task.__name__,
+                 len(gdirs))
+
+    if task.__dict__.get('global_task', False):
+        return task(gdirs, **kwargs)
+
+    pc = _pickle_copier(task, kwargs)
+
+    if _have_ogmpi:
+        if ogmpi.OGGM_MPI_COMM is not None:
+            return ogmpi.mpi_master_spin_tasks(pc, gdirs)
+
+    if cfg.PARAMS['use_multiprocessing']:
+        mppool = init_mp_pool(cfg.CONFIG_MODIFIED)
+        out = mppool.map(pc, gdirs, chunksize=1)
+    else:
+        out = [pc(gdir) for gdir in gdirs]
+
+    return out
 
 
 def init_glacier_regions_crampon(shapedf=None, reset=False, force=False):
@@ -149,8 +276,8 @@ def merge_glacier_tasks(gdirs, main_rgi_id=None, return_all=False, buffer=None,
     return merged_gdirs
 
 
-def _recursive_merging(gdirs, gdir_main, glcdf=None,
-                       filename='climate_daily', input_filesuffix=''):
+def _recursive_merging(gdirs, gdir_main, glcdf=None, filename='climate_daily',
+                       input_filesuffix=''):
     """ Recursive function to merge all tributary glaciers.
     This function should start with the largest glacier and then be called
     upon all smaller glaciers.
@@ -193,9 +320,9 @@ def _recursive_merging(gdirs, gdir_main, glcdf=None,
         gdirs_to_merge.append(merged)
 
     # create merged glacier directory
-    gdir_merged = utils.initialize_merged_gdir(
-        gdir_main, tribs=gdirs_to_merge, glcdf=glcdf, filename=filename,
-        input_filesuffix=input_filesuffix)
+    gdir_merged = utils.initialize_merged_gdir(gdir_main, tribs=gdirs_to_merge,
+        glcdf=glcdf, filename=filename, input_filesuffix=input_filesuffix)
+    print(gdir_merged)
     flowline.merge_to_one_glacier(gdir_merged, gdirs_to_merge,
                                   filename=filename,
                                   input_filesuffix=input_filesuffix)
