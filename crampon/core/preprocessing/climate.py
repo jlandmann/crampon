@@ -815,13 +815,13 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
         The path to the compiled file.
     """
 
-    if not write_to:
+    if write_to is None:
         try:
             write_to = cfg.PATHS['climate_dir']
         except KeyError:
             raise KeyError('Must supply write_to or initialize the crampon'
                            'configuration.')
-    if not hfile:
+    if hfile is None:
         try:
             hfile = cfg.PATHS['hfile']
         except KeyError:
@@ -834,7 +834,7 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
                     'CZ91': 'TabsD', 'CZ92': 'TminD', 'CZ93': 'TmaxD'}
 
     # encoding used when writing to disk (sves enormous amounts of data
-    io_enc = {'dtype': np.int16, 'scale_factor': 0.01, '_FillValue': -9999}
+    io_enc = {'dtype': 'int16', 'scale_factor': 0.01, '_FillValue': -9999}
 
     # cheap way for platoform-dependent path
     globdir = 'griddata/{}/daily/{}*/netcdf/'
@@ -929,11 +929,14 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
             #  from Cirrus, pause, then only six from FTP)
             log.info('Ensuring time continuity...')
             sda = sda.crampon.ensure_time_continuity()
-            sda.encoding['zlib'] = True
-            sda.to_netcdf(all_file)
+            #sda.encoding['zlib'] = True
+            #sda.to_netcdf(all_file)
         elif how == 'update':
             # a file might arrive 2x on FTP; order should be ok (take latest)
             r = np.unique(r)
+            if len(r) == 0:
+                log.info('{} {} files up to date. Continuing...')
+                continue
             log.info('Updating with {} {} {} files...'
                      .format(len(r), var, mode))
             old = utils.read_netcdf(all_file, chunks={'time': 50})
@@ -948,6 +951,10 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
         # `var` is not always the variable name in the file, so iterate:
         for v in sda.data_vars:
             sda[v].encoding.update(io_enc)
+            # needs the smaller scaling - not sure why though (scaled numbers
+            # shouldn't be larger than 2**16)
+            if v == 'SIS':
+                sda[v].encoding.update({'scale_factor': 0.1})
         sda.to_netcdf(all_file)
 
     # update operational with verified
@@ -964,6 +971,8 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
             data = utils.read_netcdf(v_ve, chunks={'time': 50})
         for v in data.data_vars:
             data[v].encoding.update(io_enc)
+            if v == 'SIS':
+                data[v].encoding.update({'scale_factor': 0.1})
         data.to_netcdf(os.path.join(write_to, '{}_op_ver.nc'.format(var)))
 
     # combine both
