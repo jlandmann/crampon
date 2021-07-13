@@ -981,7 +981,10 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
     # if curr_mb doesn't reach to at least yesterday, first make current MB
     curr = gdir.read_pickle('mb_current', filesuffix=cali_suffix)
     curr_last_day = pd.Timestamp(curr.time[-1].values)
-    if (curr_last_day not in [today_date, yesterday]):
+    if (((now_timestamp.hour <= 12) and (now_timestamp.minute <= 21)) and
+        (curr_last_day not in [yesterday, day_before_yesterday])) or (
+        ((now_timestamp.hour > 12) and (now_timestamp.minute > 21))
+            (curr_last_day not in [today_date, yesterday])):
         make_mb_current_mbyear(gdir, suffix=cali_suffix)
 
     # snow cover realizations from the members of make_mb_current_mbyear
