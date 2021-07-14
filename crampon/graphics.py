@@ -734,7 +734,7 @@ def plot_cumsum_climatology_and_current(
             bg_month=current_begin[0], bg_day=current_begin[1])
 
         # make sure current and prediction do not overlap
-        pq_cosmo.sel(hydro_doys=slice(nq.hydro_doys.max(), None))
+        pq_cosmo = pq_cosmo.sel(hydro_doys=slice(nq.hydro_doys.max(), None))
         if pq_cosmo.hydro_doys.size == 0.:
             log.warning(pred_outdated_msg.format('COSMO'))
             pred_cosmo = None
@@ -744,7 +744,7 @@ def plot_cumsum_climatology_and_current(
             bg_month=current_begin[0], bg_day=current_begin[1])
 
         # make sure current and prediction do not overlap
-        pq_ecmwf.sel(hydro_doys=slice(nq.hydro_doys.max(), None))
+        pq_ecmwf = pq_ecmwf.sel(hydro_doys=slice(nq.hydro_doys.max(), None))
         if pq_ecmwf.hydro_doys.size == 0.:
             log.warning(pred_outdated_msg.format('ECMWF'))
             pred_ecmwf = None
@@ -801,26 +801,27 @@ def plot_cumsum_climatology_and_current(
 
     # pad prediction easier - might work for others as well?
     if pred_cosmo is not None:
-        pq_cosmo_pad = np.full((pq_cosmo.MB.shape[1], len(xvals)), np.nan)
-        pq_cosmo_pad[:, pq_cosmo.hydro_doys.values - 1] = pq_cosmo.MB.values
+        pq_cosmo_pad = np.full((len(xvals), pq_cosmo.MB.shape[1]), np.nan)
+        pq_cosmo_pad[pq_cosmo.hydro_doys.values - 1, :] = pq_cosmo.MB.values
+        # just in case there is an overlap
+        pq_cosmo_pad[:nq.hydro_doys.values[-1], :] = np.nan
 
         # shift prediction to the last quantiles of current
         last_day_mb_current = mb_now_cs_pad[nq.MB.shape[0] - 1, :]
-        pq_cosmo_pad += np.atleast_2d(last_day_mb_current).T
+        pq_cosmo_pad += np.atleast_2d(last_day_mb_current)
         # insert last day of mb_current as well (make visual transition nice)
-        pq_cosmo_pad[:, pq_cosmo.hydro_doys.values[0] - 2] = \
-            last_day_mb_current
-        pq_cosmo_pad = pq_cosmo_pad.T
+        pq_cosmo_pad[nq.hydro_doys.values[-1] - 1, :] = last_day_mb_current
     if pred_ecmwf is not None:
-        # todo: probably too much transposing here...
         pq_ecmwf_pad = np.full((len(xvals), pq_ecmwf.MB.shape[1]), np.nan)
         pq_ecmwf_pad[pq_ecmwf.hydro_doys.values - 1, :] = pq_ecmwf.MB.values
+        # just in case there is an overlap
+        pq_ecmwf_pad[:nq.hydro_doys.values[-1], :] = np.nan
 
         # shift prediction to the last quantiles of current
         last_day_mb_current = mb_now_cs_pad[nq.MB.shape[0] - 1, :]
         pq_ecmwf_pad += np.atleast_2d(last_day_mb_current)
         # insert last day of mb_current as well (make visual transition nice)
-        pq_ecmwf_pad[pq_ecmwf.hydro_doys.values[0] - 2, :] = \
+        pq_ecmwf_pad[nq.hydro_doys.values[-1] - 1, :] = \
             last_day_mb_current
 
     # plot median
