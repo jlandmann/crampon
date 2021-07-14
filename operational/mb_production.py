@@ -983,7 +983,7 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
     curr_last_day = pd.Timestamp(curr.time[-1].values)
     if (((now_timestamp.hour <= 12) and (now_timestamp.minute <= 21)) and
         (curr_last_day not in [yesterday, day_before_yesterday])) or (
-        ((now_timestamp.hour > 12) and (now_timestamp.minute > 21))
+        ((now_timestamp.hour > 12) and (now_timestamp.minute > 21)) and
             (curr_last_day not in [today_date, yesterday])):
         make_mb_current_mbyear(gdir, suffix=cali_suffix)
 
