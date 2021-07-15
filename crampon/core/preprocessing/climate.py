@@ -1871,6 +1871,14 @@ class GlacierMeteo(object):
         date_index = self.get_loc(date)
         prcp = self.prcp[date_index] * prcp_fac
         pgrad = self.pgrad[date_index]
+        # if not rain at reference and no gradient, we can skip the procedure
+        if (prcp == 0.) and (np.isnan(pgrad)):
+            if self.randomize is True:
+                out = np.zeros((len(heights), self.n_random_samples))
+                return out, out
+            else:
+                out = np.zeros(len(heights))
+                return out, out
         prcptot = get_precipitation_at_heights(prcp, pgrad, self.ref_hgt,
                                                heights)
 
