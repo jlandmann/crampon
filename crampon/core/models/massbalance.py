@@ -1351,6 +1351,10 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         # Read timeseries
         isis = self.meteo.sis[ix] + self.sis_bias
 
+        # should only happen in last 2 months & be removed when SIS operational
+        if np.isnan(isis):
+            return np.full_like(heights, np.nan)
+
         if self.sis_scale_factor is not None:
             doy = date.dayofyear
             isis = isis * self.sis_scale_factor[:, doy-1]
@@ -1675,6 +1679,10 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         # Read timeseries
         isis = self.meteo.sis[ix] + self.sis_bias
+
+        # should only happen in last 2 months & be removed when SIS operational
+        if np.isnan(isis):
+            return np.full_like(heights, np.nan)
 
         if self.sis_scale_factor is not None:
             doy = date.dayofyear
