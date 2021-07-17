@@ -173,6 +173,19 @@ CBASENAMES['snow_spinup'] = ('snow_spinup.pkl', _doc)
 _doc = 'The current snow conditions for this glacier on the latest analysis ' \
        'day (yesterday), stored in a pickle file.'
 CBASENAMES['snow_current'] = ('snow_current.pkl', _doc)
+_doc = 'The current snow conditions for this glacier on the latest analysis ' \
+       'day (yesterday) from calibration ' \
+       'on the Fischer et al., 2015 geodetic mass changes with one unique ' \
+       'parameter set for the whole time period, stored in a pickle file.'
+CBASENAMES['snow_current_fischer_unique'] = \
+    ('snow_current_fischer_unique.pkl', _doc)
+_doc = 'The current snow conditions for this glacier on the latest analysis ' \
+       'day (yesterday) from calibration ' \
+       'on the Fischer et al., 2015 geodetic mass changes with one unique ' \
+       'parameter set for the whole time period, but imposed parameter ' \
+       'variability, stored in a pickle file.'
+CBASENAMES['snow_current_fischer_unique_variability'] = \
+    ('mb_current_fischer_unique_variability.pkl', _doc)
 _doc = 'The daily snow condition time series for this glacier in the past, ' \
        'stored in a pickle file.'
 CBASENAMES['snow_daily'] = ('snow_daily.pkl', _doc)
