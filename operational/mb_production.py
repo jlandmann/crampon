@@ -981,9 +981,11 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
     # if curr_mb doesn't reach to at least yesterday, first make current MB
     curr = gdir.read_pickle('mb_current', filesuffix=cali_suffix)
     curr_last_day = pd.Timestamp(curr.time[-1].values)
-    if (((now_timestamp.hour <= 12) and (now_timestamp.minute <= 21)) and
+    if (((now_timestamp.hour < 12) or ((now_timestamp.hour == 12) and
+                                       (now_timestamp.minute <= 21))) and
         (curr_last_day not in [yesterday, day_before_yesterday])) or (
-        ((now_timestamp.hour > 12) and (now_timestamp.minute > 21)) and
+        ((now_timestamp.hour > 12) or ((now_timestamp.hour == 12) and
+                                       (now_timestamp.minute > 21))) and
             (curr_last_day not in [today_date, yesterday])):
         make_mb_current_mbyear(gdir, suffix=cali_suffix)
 
@@ -991,8 +993,10 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
     if snowcover is None:
         curr_snow = gdir.read_pickle('snow_current', filesuffix=cali_suffix)
         # COSMO, ECMWF and MeteoSwiss deliveries
-        if ((now_timestamp.hour <= 12) and (now_timestamp.minute <= 21)) and \
-                ((now_timestamp.hour >= 7) and (now_timestamp.minute >= 40)):
+        if ((now_timestamp.hour < 12) or ((now_timestamp.hour == 12) and
+                                          (now_timestamp.minute < 30))) and \
+           ((now_timestamp.hour > 7) or ((now_timestamp.hour == 7) and
+                                         (now_timestamp.minute >= 40))):
             # NWP has to be update by then
             try:
                 snowcover = curr_snow.sel(time=nwp_beginday-pd.Timedelta(days=2))
@@ -1008,8 +1012,8 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
                                        nwp.time.values]
         else:
             if climate_suffix == '_cosmo':
-                # todo: problem if before 12:21: COSMO there, but analyses not!
-                if (now_timestamp.hour <= 12) and (now_timestamp.minute <= 30):
+                if (now_timestamp.hour < 12) or ((now_timestamp.hour == 12) and
+                                                 (now_timestamp.minute < 30)):
                     snowcover = curr_snow.sel(
                         time=nwp_beginday - pd.Timedelta(days=2))
                 else:
