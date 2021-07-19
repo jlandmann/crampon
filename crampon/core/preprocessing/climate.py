@@ -1018,7 +1018,6 @@ def make_nwp_file_cosmo(write_to: Optional[str] = None) -> None:
                            'crampon configuration.')
 
     cosmo_dir = os.path.join(write_to, 'cosmo')
-    ecmwf_dir = os.path.join(write_to, 'ecmwf')
 
     # current midnight modelrun
     midnight = dt.datetime.now().replace(hour=0, minute=0, second=0,
@@ -1147,8 +1146,7 @@ def make_nwp_file_ecmwf(write_to: Optional[str] = None) -> None:
     # runs always come in on Monday and Thursdays
     now = pd.Timestamp.now()
     yesterday = now - pd.Timedelta(days=1)
-    # todo: 7.50 is CEST: understand the context when
-    if now.hour <= 7 and now.minute > 50:
+    if now.hour <= 8:
         search_date = now
     else:
         search_date = yesterday
