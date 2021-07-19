@@ -1920,6 +1920,8 @@ class GlacierMeteo(object):
                 prcptot += prcptot * (random_grads - pgrad) * \
                            np.atleast_2d((heights + self.ref_hgt)).T
 
+                prcptot[prcptot <= 0.] = 0.
+
         prcpsol = prcptot * frac_solid
         prcpliq = prcptot - prcpsol
 
