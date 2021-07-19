@@ -969,7 +969,7 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
     if ((climate_suffix == '_cosmo') and
         (nwp_beginday not in [today_date, yesterday])) or \
             ((climate_suffix == '_ecmwf') and
-             ((now_timestamp - nwp_beginday) > pd.Timedelta(days=4))):
+             ((now_timestamp - nwp_beginday) > pd.Timedelta(days=5, hours=8))):
         # try and make a new one
         nwp.close()
         climate.make_nwp_files()
