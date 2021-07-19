@@ -15,7 +15,7 @@ import tarfile
 import netCDF4
 from oggm.utils import GlacierDirectory, global_task, SuperclassMeta, mkdir, \
     filter_rgi_name, parse_rgi_meta, tolist, pipe_log, get_demo_file, \
-    nicenumber, haversine, entity_task
+    nicenumber, haversine, entity_task, get_topo_file
 import time
 import zipfile
 from functools import wraps
