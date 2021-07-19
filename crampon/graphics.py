@@ -2,7 +2,7 @@ from __future__ import division
 from typing import Optional, List
 
 from oggm.graphics import *
-from crampon.utils import entity_task
+from crampon.utils import entity_task, popup_html_string
 from crampon import utils, workflow
 from crampon.core.preprocessing.climate import GlacierMeteo
 from crampon.core.models.massbalance import MassBalance, DailyMassBalanceModel, \
@@ -416,46 +416,6 @@ def make_mb_popup_map(
             'weight': 3,
             'fillOpacity': 1
         }
-
-    def popup_html_string(point):
-        """
-        Make an HTML string used in a popup over a glacier.
-
-        Parameters
-        ----------
-        point: pd.Series
-           The Series must contain
-
-        Returns
-        -------
-        html: str
-            HTML string.
-        """
-
-        # a little less hardcoding
-        pure_sgi_id = point.RGIId.split('.')[1]
-        fs = 18
-        clickable_mb_dist = \
-            '<a href="static/plots/mb_dist/{}_mb_dist_' \
-            'ensemble.png" target="_blank"><p style="font-size:{}px;"> Mass ' \
-            'Balance Distribution (click to enlarge)</p>' \
-            '<img src="static/plots/mb_dist/{}_mb_dist_' \
-            'ensemble_prev.png" style="max-width:150%; position:relative; ' \
-            'display:inline; overflow:hidden; margin:0;" /></a>'.format(
-                pure_sgi_id, fs, pure_sgi_id)
-        other_clickables = \
-            '<a href="static/plots/mb_spaghetti/{}_intera' \
-            'ctive_mb_spaghetti.html" target="_blank"><p style="font-size:{}' \
-            'px;"> Mass Balance Spaghetti</p></a>'.format(pure_sgi_id, fs)
-
-        html = '<p style="font-size:{}px;"> '.format(fs) + point.Name + ' (' \
-               + pure_sgi_id + ')</p><br>'
-        html += '<div style="width:420px; height:250px; text-align: ' \
-                'center">{}</div>'.format(clickable_mb_dist)
-        html += '<p style="font-size:{}px;"> Further information: ' \
-                '</p>'.format(fs)
-        html += other_clickables
-        return html
 
     glc_gdf['popup_html'] = glc_gdf.apply(popup_html_string, axis=1)
 

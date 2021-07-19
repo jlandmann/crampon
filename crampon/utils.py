@@ -3273,6 +3273,48 @@ def logit_to_physical(x: float or np.array, lower_bound: float,
     return xts
 
 
+def popup_html_string(point):
+    """
+    Make an HTML string used in a popup over a glacier.
+
+    Parameters
+    ----------
+    point: pd.Series
+       The Series must contain the name "RGIId".
+
+    Returns
+    -------
+    html: str
+        HTML string.
+    """
+
+    # a little less hardcoding
+    pure_sgi_id = point.RGIId.split('.')[1]
+    fs = 18
+    clickable_mb_dist = '<a href="static/plots/mb_dist/{}_mb_dist_' \
+                        'ensemble.png" target="_blank"><p ' \
+                        'style="font-size:{}px;"> Mass ' \
+                        'Balance Distribution (click to enlarge)</p>' \
+                        '<img src="static/plots/mb_dist/{}_mb_dist_' \
+                        'ensemble_prev.png" style="max-width:150%; ' \
+                        'position:relative; ' \
+                        'display:inline; overflow:hidden; margin:0;" ' \
+                        '/></a>'.format(pure_sgi_id, fs, pure_sgi_id)
+    other_clickables = '<a href="static/plots/mb_spaghetti/{}_intera' \
+                       'ctive_mb_spaghetti.html" target="_blank"><p ' \
+                       'style="font-size:{}px;"> Mass Balance ' \
+                       'Spaghetti</p></a>'.format(pure_sgi_id, fs)
+
+    html = '<p style="font-size:{}px;"> '.format(
+        fs) + point.Name + ' (' + pure_sgi_id + ')</p><br>'
+    html += '<div style="width:420px; height:250px; text-align: ' \
+            'center">{}</div>'.format(clickable_mb_dist)
+    html += '<p style="font-size:{}px;"> Further information: ' \
+            '</p>'.format(fs)
+    html += other_clickables
+    return html
+
+
 if __name__ == '__main__':
     #rgigdf = gpd.read_file('C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp')
     #rgigdf = rgigdf.ix[0:1]
