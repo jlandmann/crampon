@@ -121,6 +121,9 @@ def daily_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
         log.info(msg)
         execute_entity_task(task, gdirs, **kwargs)
 
+    log.info('Fetching glacier status...')
+    tasks.fetch_glacier_status(gdirs)
+
     log.info('Making the clickable popup map...')
     tasks.make_mb_popup_map(gdirs=gdirs, plot_dir=plot_dir,
                             allow_unpreferred_mb_suffices=False)

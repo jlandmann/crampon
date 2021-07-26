@@ -1,4 +1,9 @@
 from __future__ import absolute_import, division
+from typing import Optional, List
+
+import numpy as np
+import pandas as pd
+import geopandas as gpd
 import salem
 import os
 import logging
@@ -6,13 +11,15 @@ from crampon import cfg
 from crampon import utils
 from crampon.core.preprocessing import gis, centerlines
 from crampon.core.models import flowline
+from crampon.graphics import popup_html_string
+from crampon.core.models.massbalance import MassBalance, DailyMassBalanceModel
 import crampon
 from shutil import rmtree
 from oggm.workflow import _merge_dicts, _pickle_copier, init_glacier_regions, \
     merge_glacier_tasks
 import multiprocessing
 from collections.abc import Sequence
-
+from scipy.stats import percentileofscore
 
 # MPI
 try:
@@ -328,3 +335,171 @@ def _recursive_merging(gdirs, gdir_main, glcdf=None, filename='climate_daily',
                                   input_filesuffix=input_filesuffix)
 
     return gdir_merged, gdirs
+
+
+@utils.global_task
+def fetch_glacier_status(gdirs: Optional[List[utils.GlacierDirectory]] = None,
+        mb_model: Optional[DailyMassBalanceModel] = None,
+        shp: Optional[str] = None, prefer_mb_suffix: Optional[str] = '',
+        allow_unpreferred_mb_suffices: Optional[bool] = True,
+        exclude_old_status: Optional[pd.Timedelta] = pd.Timedelta(days=7),
+        output_all_attrs: Optional[bool] = True) -> None:
+    """
+    Fetch the glacier status from the current and climatological mass balance.
+
+    todo: compare to individual climate reference periods im clim
+
+    Parameters
+    ----------
+    gdirs : gdirs: list of `py:class:utils.GlacierDirectory` or None, optional
+        If given, only for these GlacierDirectories a status is fetched.
+        Default: None (take all from `shp`).
+    mb_model :
+    shp: str or None, optional
+        Path to the glacier shapefile. If None, search in the data directory.
+        Default: None.
+    prefer_mb_suffix: str, optional
+        Which mass balance suffix shall be preferred for the status, e.g.
+        '_fischer_unique_variability'. Default: '' (take the default order
+        from 'good' to 'bad'.)
+    allow_unpreferred_mb_suffices: bool, optional
+        Whether to allow other suffices than the preferred one at all.
+        Default: True (for final operational runs).
+    exclude_old_status: pd.Timedelta, None
+        If a glacier has not been updated recently, it might still have an
+        outdated `mb_current´ file. If set, all glaciers with a status older
+        than today-exclude_old_status are omitted. Default:
+        pd.Timedelta(days=7), i.e. all status older than a week from today are
+        omitted.
+    output_all_attrs : bool, optional
+        Whether to output all attributed from `shp`, or just the one fetched
+        here. Default: True (output everything).
+
+    Returns
+    -------
+    None
+    """
+
+    # try "from good to bad":
+    suffix_priority_list = ['', '_fischer', '_fischer_unique_variability',
+                            '_fischer_unique']
+    if (len(prefer_mb_suffix) > 0) and (allow_unpreferred_mb_suffices is True):
+        suffix_priority_list = [prefer_mb_suffix] + suffix_priority_list
+    elif (len(prefer_mb_suffix) == 0) and \
+            (allow_unpreferred_mb_suffices is True):
+        pass
+    else:
+        suffix_priority_list = ['']
+
+    last_accepted_status = pd.Timestamp.now() - exclude_old_status
+
+    if shp is None:
+        shp = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                               'mauro_sgi_merge.shp')
+
+    glc_gdf = gpd.GeoDataFrame.from_file(shp)
+    glc_gdf = glc_gdf.sort_values(by='Area', ascending=True)
+
+    if gdirs is not None:
+        gdirs_ids = np.array([g.rgi_id for g in gdirs])
+        glc_gdf = glc_gdf[glc_gdf.RGIId.isin(gdirs_ids)]
+    else:
+        gdirs = init_glacier_regions(glc_gdf, reset=False, force=False)
+
+    if output_all_attrs is True:
+        out_df = glc_gdf.copy(deep=True)
+    else:
+        out_df = pd.DataFrame(data={'RGIId': glc_gdf.RGIId.values})
+    out_df['pctl'] = np.nan
+    out_df['cali_source'] = None
+    out_df['status_date'] = ''
+
+    log.info('Fetching glacier status...')
+    has_current_and_clim = []
+    error = 0
+    cnt = 0
+    for gdir in gdirs:
+
+        cnt += 1
+        if cnt % 100 == 0:
+            log.info('Checking status of {}th glacier...'.format(cnt))
+
+        clim = None
+        current = None
+        src_suffix = None
+
+        for mb_src_suffix in suffix_priority_list:
+            try:
+                clim = gdir.read_pickle('mb_daily' + mb_src_suffix)
+                current = gdir.read_pickle('mb_current' + mb_src_suffix)
+                src_suffix = mb_src_suffix
+                break
+            except (FileNotFoundError, AttributeError):
+                continue
+        if (clim is None) or (current is None):
+            continue
+
+        if exclude_old_status is not None:
+            if current.time.values[-1] < last_accepted_status:
+                log.info('Status for {} older than {}. Omitting...'.format(
+                    gdir.rgi_id, last_accepted_status.strftime('%Y-%m-%d')))
+            continue
+
+        if mb_model is not None:
+            current = current.sel(model=mb_model)
+
+        # stack model and potential members
+        clim = clim.stack(ens=['model', 'member'])
+        # stack model and potential members
+        current = current.stack(ens=['model', 'member'])
+        current_csq = current.mb.make_cumsum_quantiles()
+        # take median as best estimate of the ensemble
+        mbc_values = current_csq.sel(quantile=0.5)
+        mbc_value = mbc_values.MB.isel(hydro_doys=-1)
+
+        hydro_years = clim.mb.make_hydro_years()
+        mb_cumsum = clim.groupby(hydro_years).apply(
+            lambda x: MassBalance.time_cumsum(x))
+
+        # todo: as long as we are not able to calculate cumsum with NaNs
+        mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
+
+        mbd_values = [
+            j.MB.sel(time=mbc_values.hydro_doys[-1].item() - 1).median(
+                dim='ens', skipna=True).item() for i, j in
+            list(mb_cumsum.groupby(hydro_years))[:-1]]
+        mbd_values = sorted(mbd_values)
+        pctl = percentileofscore(mbd_values, mbc_value.item())
+        out_df.loc[out_df.RGIId == gdir.rgi_id, 'pctl'] = pctl
+        out_df.loc[out_df.RGIId == gdir.rgi_id, 'cali_source'] = src_suffix
+        out_df.loc[out_df.RGIId == gdir.rgi_id, 'status_date'] = \
+            pd.to_datetime(str(current.time.values[-1])) .strftime('%Y-%m-%d')
+        has_current_and_clim.append(gdir.rgi_id)
+
+    # select the valid subset
+    out_df = out_df[out_df.RGIId.isin(has_current_and_clim)]
+
+    log.info('Successfully fetched mass balance status for {} out of {} '
+             'glaciers.'.format(len(out_df), len(gdirs)))
+
+    if len(out_df) >= 1:
+        # todo : delete existing glacier status, when out_df is empty?
+        # attach HTML text for popups
+        out_df['popup_html'] = out_df.apply(utils.popup_html_string, axis=1)
+
+        # exclude some strange values
+        out_df = out_df[out_df.avg_specif != '']
+        out_df = out_df[~pd.isnull(out_df.avg_specif.values)]
+        out_df = out_df[out_df.Aspect_mea.values != None]
+        out_df['avg_specif'] = out_df.avg_specif.astype('float')
+        out_df['pctl'] = out_df.pctl.astype('float')
+        out_df['Area'] = out_df.Area.astype('float')
+        out_df['year1'] = out_df.year1.astype('float')
+        out_df['year2'] = out_df.year2.astype('float')
+
+        # write status to working dir
+        out_base = cfg.PATHS['working_dir']
+        out_df.to_file(os.path.join(out_base, 'glacier_status.geojson'),
+                       driver="GeoJSON")
+
+

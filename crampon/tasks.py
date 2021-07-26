@@ -25,6 +25,7 @@ from crampon.core.preprocessing.radiation import \
 #    make_mb_prediction
 from crampon.graphics import plot_cumsum_climatology_and_current, \
     plot_interactive_mb_spaghetti_html
+from crampon.workflow import fetch_glacier_status
 
 from oggm.utils import copy_to_basedir
 from oggm.core.climate import apparent_mb_from_linear_mb
