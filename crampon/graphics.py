@@ -224,6 +224,7 @@ def make_mb_popup_map(
         shp_loc: Optional[str] = None, ch_loc: Optional[str] = None,
         save_suffix: Optional[str] = '', prefer_mb_suffix: Optional[str] = '',
         allow_unpreferred_mb_suffices: Optional[bool] = True,
+        exclude_old_status: Optional[pd.Timedelta] = pd.Timedelta(days=7),
         plot_dir: Optional[str] = None) -> None:
     """
     Create a clickable map of all Swiss glacier outlines.
@@ -254,6 +255,12 @@ def make_mb_popup_map(
     allow_unpreferred_mb_suffices: bool, optional
         Whether to allow other suffices than the preferred one at all.
         Default: True (for final operational runs).
+    exclude_old_status: pd.Timedelta, None
+        If a glacier has not been updated recently, it might still have an
+        outdated `mb_current´ file. If set, all glaciers with a status older
+        than today-exclude_old_status are omitted. Default:
+        pd.Timedelta(days=7), i.e. all status older than a week from today are
+        omitted.
     plot_dir: str or None, optional
         Directory where to save the plot. Default: None (do not save).
 
@@ -328,65 +335,15 @@ def make_mb_popup_map(
             gd_gdf = gd_gdf.to_crs(epsg=crs_int)
             glc_gdf = glc_gdf.append(gd_gdf)
 
-    # try "from good to bad":
-    suffix_priority_list = ['', '_fischer', '_fischer_unique_variability',
-                            '_fischer_unique']
-    if (len(prefer_mb_suffix) > 0) and (allow_unpreferred_mb_suffices is True):
-        suffix_priority_list = [prefer_mb_suffix] + suffix_priority_list
-    else:
-        suffix_priority_list = ['']
-
-    # todo: externalize this function and make it an entity task
-    has_current_and_clim = []
-    error = 0
-    cnt = 0
-    for gdir in gdirs:
-        clim = None
-        current = None
-
-        for mb_source_suffix in suffix_priority_list:
-            try:
-                clim = gdir.read_pickle('mb_daily' + mb_source_suffix)
-                current = gdir.read_pickle('mb_current' + mb_source_suffix)
-                break
-            except (FileNotFoundError, AttributeError):
-                continue
-        if (clim is None) or (current is None):
-            error += 1
-            continue
-        if mb_model is not None:
-            current = current.sel(model=mb_model)
-
-        # stack model and potential members
-        clim = clim.stack(ens=['model', 'member'])
-        # stack model and potential members
-        current = current.stack(ens=['model', 'member'])
-        current_csq = current.mb.make_cumsum_quantiles()
-        mbc_values = current_csq.sel(quantile=0.5)
-        mbc_value = mbc_values.MB.isel(hydro_doys=-1)
-
-        hydro_years = clim.mb.make_hydro_years()
-        mb_cumsum = clim.groupby(hydro_years).apply(
-            lambda x: MassBalance.time_cumsum(x))
-
-        # todo: EMERGENCY SOLUTION as long as we are not able to calculate
-        #  cumsum with NaNs correctly
-        mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
-
-        mbd_values = [j.MB.sel(time=mbc_values.hydro_doys[-1].item() - 1)
-                          .median(dim='ens', skipna=True).item() for i, j in
-                      list(mb_cumsum.groupby(hydro_years))[:-1]]
-        mbd_values = sorted(mbd_values)
-        pctl = percentileofscore(mbd_values, mbc_value.item())
-        glc_gdf.loc[glc_gdf.RGIId == gdir.rgi_id, 'pctl'] = pctl
-        has_current_and_clim.append(gdir.rgi_id)
-
-        cnt += 1
-        if cnt % 100 == 0:
-            log.info('{} glaciers done for popup map.'.format(cnt))
-    log.info('Successfully calculated mb distribution for {} out of {} '
-             'glaciers.'.format(len(gdirs) - error, len(gdirs)))
-    glc_gdf = glc_gdf[glc_gdf.RGIId.isin(has_current_and_clim)]
+    try:
+        glc_gdf = gpd.read_file(cfg.PATHS['glacier_status'])
+    except FileNotFoundError:
+        workflow.fetch_glacier_status(
+            gdirs, mb_model=mb_model, shp=glc_gdf,
+            prefer_mb_suffix=prefer_mb_suffix,
+            allow_unpreferred_mb_suffices=allow_unpreferred_mb_suffices,
+            exclude_old_status=exclude_old_status)
+    glc_gdf = gpd.read_file(cfg.PATHS['glacier_status'])
 
     cmap_str = 'rainbow_r'
     colors = matplotlib.colors.Normalize(vmin=0.0, vmax=100)
@@ -417,7 +374,7 @@ def make_mb_popup_map(
             'fillOpacity': 1
         }
 
-    glc_gdf['popup_html'] = glc_gdf.apply(popup_html_string, axis=1)
+    #glc_gdf['popup_html'] = glc_gdf.apply(popup_html_string, axis=1)
 
     layer_geom = folium.FeatureGroup(name='layer', control=False)
 
