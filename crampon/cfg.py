@@ -545,6 +545,8 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     # create place where to store all plots, if not indicated otherwise
     oggmcfg.PATHS['plots_dir'] = os.path.join(cp['working_dir'], 'plots')
+    oggmcfg.PATHS['glacier_status'] = os.path.join(cp['working_dir'],
+                                                   'glacier_status.geojson')
 
     # run params
     oggmcfg.PARAMS.do_log = False
