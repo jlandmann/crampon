@@ -337,7 +337,6 @@ def _recursive_merging(gdirs, gdir_main, glcdf=None, filename='climate_daily',
     return gdir_merged, gdirs
 
 
-@utils.global_task
 def fetch_glacier_status(gdirs: Optional[List[utils.GlacierDirectory]] = None,
         mb_model: Optional[DailyMassBalanceModel] = None,
         shp: Optional[str] = None, prefer_mb_suffix: Optional[str] = '',
@@ -443,7 +442,7 @@ def fetch_glacier_status(gdirs: Optional[List[utils.GlacierDirectory]] = None,
             if current.time.values[-1] < last_accepted_status:
                 log.info('Status for {} older than {}. Omitting...'.format(
                     gdir.rgi_id, last_accepted_status.strftime('%Y-%m-%d')))
-            continue
+                continue
 
         if mb_model is not None:
             current = current.sel(model=mb_model)
