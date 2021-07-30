@@ -409,11 +409,11 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
                        'RGI50-11.B4504', 'RGI50-11.C1410',
                        'RGI50-11.B2201', 'RGI50-11.B1601', 'RGI50-11.A50D01',
                        'RGI50-11.E2320n', 'RGI50-11.E2316',
-                       'RGI50-11.B5616n-0', 'RGI50-11.A51E08',
+                       'RGI50-11.B5614n', 'RGI50-11.A51E08',
                        'RGI50-11.B3626-1', 'RGI50-11.B5232', 'RGI50-11.A50I06',
                        # 'RGI50-11.A51E12',  # St. Anna
-                       'RGI50-11.B5263n', 'RGI50-11.B5229',
-                       # 'RGI50-11.A50I19-4',  # Clariden
+                       #'RGI50-11.B5263n', 'RGI50-11.B5229',
+                        'RGI50-11.A50I19-4',  # Clariden
                        # 'RGI50-11.A50I07-1',  # Plattalva
                        ]
     mb_gdirs = [utils.GlacierDirectory(g, base_dir=base_dir) for g in
@@ -433,7 +433,10 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
         hypso = hypso[['RGIId', 'Zmin', 'Zmax', 'Zmed', 'Area', 'Slope',
                        'Aspect']]
         print(gdir.rgi_id, model.__name__)
-        cali = gdir.get_calibration(mb_model=model)
+        try:
+            cali = gdir.get_calibration(mb_model=model)
+        except FileNotFoundError:
+            continue
 
         cali['year'] = [pd.Timestamp(t).year if pd.Timestamp(t).month <= 9
                         else pd.Timestamp(t).year+1 for t in cali.index.values]
@@ -586,6 +589,11 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
     feature_importances = sorted(feature_importances, key=lambda x: x[1],
                                  reverse=True)
 
+    importance_threshold = 0.9
+    sorted_importance = np.array([i for v, i in feature_importances])
+    sorted_features = np.array([v for v, i in feature_importances])
+    important_until_ix = np.argmax(np.cumsum(np.array(sorted_importance)) > importance_threshold)
+
     # Print out the feature and importances
     [print('Variable: {:20} Importance: {}'.format(*pair)) for pair in
      feature_importances]
@@ -595,9 +603,8 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
                                               random_state=42)
 
     # Extract the two most important features
-    # todo: this is wrong, because it's hard-coded! We should take those
-    #  variables that make 90% of the importance or so
-    important_features = ['Zmin', 'tsum']
+    important_features = sorted_features[:important_until_ix+1]
+    print('IMPORTANT FEATURES: ', important_features)
     important_indices = [feature_list.index(f) for f in important_features]
     train_important = train_features[:, important_indices]
     test_important = test_features[:, important_indices]
