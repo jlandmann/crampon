@@ -840,6 +840,14 @@ def plot_cumsum_climatology_and_current(
     plt.text(0.05, 0.05, 'Last updated: {}'.format(date_str),
              transform=fig.transFigure, bbox=bprops)
 
+    # just temporary/provisionally (hopefully): date when SIS delivery ended
+    sis_end = pd.Timestamp(current.isel(time=current.sel(
+        model=['PellicciottiModel', 'OerlemansModel']).MB.notnull().argmin(
+        dim='time').max().item()).time.values)
+    ax.axvline((sis_end - current.time.values[0]).days, c='y')
+    ax.text((sis_end - current.time.values[0]).days + 1, plt.ylim()[0] + 0.05,
+            'End radiation delivery', transform=ax.transData, va='bottom',
+            fontsize=fs, c='y')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # include suptitle
 
