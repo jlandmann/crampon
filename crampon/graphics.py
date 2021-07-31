@@ -841,13 +841,30 @@ def plot_cumsum_climatology_and_current(
              transform=fig.transFigure, bbox=bprops)
 
     # just temporary/provisionally (hopefully): date when SIS delivery ended
-    sis_end = pd.Timestamp(current.isel(time=current.sel(
-        model=['PellicciottiModel', 'OerlemansModel']).MB.notnull().argmin(
-        dim='time').max().item()).time.values)
-    ax.axvline((sis_end - current.time.values[0]).days, c='y')
-    ax.text((sis_end - current.time.values[0]).days + 1, plt.ylim()[0] + 0.05,
-            'End radiation delivery', transform=ax.transData, va='bottom',
-            fontsize=fs, c='y')
+    sis_end = np.nan
+    if gdir is not None:
+        sis = GlacierMeteo(gdir).meteo.sis.sel(time=slice(
+            current.time.values[0], None))
+        sis_end = pd.Timestamp(sis.isel(time=sis.notnull().argmin(
+            dim='time').item()).time.values)
+    else: # try the hard way
+        potential_sis_end = []
+        try_sis_models = ['PellicciottiModel', 'OerlemansModel']
+        for sism in try_sis_models:
+            try:
+                se = pd.Timestamp(current.isel(time=current.sel(
+                    model=sism).MB.notnull().argmin(
+                    dim='time').max().item()).time.values)
+                potential_sis_end.append(se)
+            except KeyError:
+                pass  # model not in file
+        if len(potential_sis_end) > 0:
+            sis_end = np.max(potential_sis_end)
+    if ~pd.isnull(sis_end):
+        ax.axvline((sis_end - current.time.values[0]).days, c='y')
+        ax.text((sis_end - current.time.values[0]).days + 1, plt.ylim()[0] + 0.05,
+                'End radiation delivery', transform=ax.transData, va='bottom',
+                fontsize=fs, c='y')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # include suptitle
 
