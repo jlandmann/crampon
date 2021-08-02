@@ -1146,8 +1146,11 @@ def make_nwp_file_ecmwf(write_to: Optional[str] = None) -> None:
     # runs always come in on Monday and Thursdays
     now = pd.Timestamp.now()
     yesterday = now - pd.Timedelta(days=1)
-    if now.hour <= 8:
-        search_date = now
+    if now.hour >= 8:
+        if now.weekday() in [0, 3]:  # file come only on the day after init
+            search_date = yesterday
+        else:
+            search_date = now
     else:
         search_date = yesterday
 
