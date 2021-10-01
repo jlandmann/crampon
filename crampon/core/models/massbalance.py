@@ -2012,7 +2012,7 @@ class ParameterGenerator(object):
             cali_sel = cali_filtered[~cali_filtered.duplicated()]
         except pd.core.indexing.IndexingError:
             log.error(
-                'Desired calibration for {} does not seems to be present. '
+                'Desired calibration for {} does not seem to be present. '
                 'Glacier needs to be recalibrated.'.format(
                     self.mb_model.__name__))
             # todo: trigger calibration here according to cali file was chosen
