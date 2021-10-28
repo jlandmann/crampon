@@ -39,7 +39,7 @@ class DailyMassBalanceModel(MassBalanceModel):
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
                  heights_widths=(None, None), param_ep_func=np.nanmedian,
-                 cali_suffix=''):
+                 cali_suffix='', debris=None): 
 
         """
         Model to calculate the daily mass balance of a glacier.
@@ -83,6 +83,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         # should probably be replaced by a direct access to a file that
         # contains uncertainties (don't know how to handle that yet)
         # todo: think again if this is a good solution to save code
+        #print(mu_star, prcp_fac, bias)
         if any([p is None for p in [mu_star, prcp_fac, bias]]):
             # do not filter for mb_model here, otherwise mu_star is not found
             # ('self' can also be a downstream inheriting class!)
@@ -172,6 +173,17 @@ class DailyMassBalanceModel(MassBalanceModel):
             prcp_fac_annual_cycle[:sum(cfg.DAYS_IN_MONTH_LEAP[:4])]]))
         self.prcp_fac_cycle_multiplier = prcp_fac_annual_cycle / \
                                          prcp_fac_cyc_winter_mean
+        
+        if debris is None:
+            self.debris = cfg.PARAMS['debris']
+            
+        DR = np.array([])
+        fls = gdir.read_pickle('inversion_flowlines')
+        for fl in fls:
+            DR = np.append(DR, fl.debris_ratio)
+        self.DR = DR
+        # Define debris ratio and debris factor
+        self.DF = cfg.PARAMS['DF']
 
     @property
     def temp_bias(self):
@@ -303,7 +315,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
         """
-
+        
         # index of the date of MB calculation
         ix = self.tspan_meteo_dtindex.get_loc(date)
 
@@ -333,8 +345,17 @@ class DailyMassBalanceModel(MassBalanceModel):
             bias = self.bias
 
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
-        mb_day = prcpsol - mu_star * tempformelt - bias
-
+        #mb_day = prcpsol - mu_star * tempformelt - bias
+        
+        acc = prcpsol
+        abl = - (mu_star * tempformelt)
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            abl = abl * (1-DR)
+        
+        mb_day = acc + abl - bias
+        
         self.time_elapsed = date
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
@@ -361,7 +382,7 @@ class DailyMassBalanceModel(MassBalanceModel):
             out = [self.get_daily_specific_mb(heights, widths, date=d)
                    for d in date]
             return np.asarray(out)
-
+        
         # m w.e. d-1
         mbs = self.get_daily_mb(heights, date=date) * \
               cfg.SEC_IN_DAY * cfg.RHO / cfg.RHO_W
@@ -420,7 +441,7 @@ class DailyMassBalanceModel(MassBalanceModel):
     def generate_climatology(self, write_out=True, n_exp=1):
         """
         EXPERIMENTAL!
-
+        
         For this to be a method and still be able to produce current
         conditions, a snow conditions file must be written
         Otherwise, if the script to write the current conditions is not run
@@ -741,8 +762,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         -------
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
-        """
-
+        """  
+        
         # index of the date of MB calculation
         ix = self.tspan_meteo_dtindex.get_loc(date)
 
@@ -827,11 +848,20 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         mu_comb[:] = mu_ice
         np.put(mu_comb, snowdist, mu_snow)
 
-        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
-        mb_day = prcpsol - mu_comb * tempformelt - bias
-
+        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias 
+        #mb_day = prcpsol - mu_comb * tempformelt - bias
+        
+        acc = prcpsol
+        abl = - (mu_comb * tempformelt)
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            abl = abl * (1-DR)
+            
+        mb_day = acc + abl - bias
+        
         self.time_elapsed = date
-
+        
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
             temp + cfg.ZERO_DEG_KELVIN)
@@ -846,7 +876,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
-
+    
     def update_snow(self, date, mb):
         """
         Updates the snow cover on the glacier after a mass balance calculation.
@@ -879,7 +909,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
 class HockModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by Hock (1999).
-
+    
+    
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [1]_.
 
@@ -1103,8 +1134,18 @@ class HockModel(DailyMassBalanceModelWithSnow):
         except IndexError: # end of leap year
             i_pot = self.ipot[:, date.timetuple().tm_yday-2]
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
+        #print(mu_hock, a_comb, i_pot)
         mb_day = prcpsol - (mu_hock + a_comb * i_pot) * tempformelt - bias
-
+        
+        acc = prcpsol
+        abl = - (mu_hock + a_comb * i_pot) * tempformelt
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            abl = abl * (1-DR)
+            
+        mb_day = acc + abl - bias
+        
         self.time_elapsed = date
 
         # todo: take care of temperature!?
@@ -1125,7 +1166,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
 class PellicciottiModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by Pellicciotti et al. (2005).
-
+    
+    
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [1]_.
 
@@ -1328,7 +1370,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
         """
-
+        
         # this is for the case that the glacier shape has changed:
         # at the moment, we can only add constand value to ipot at the tongue
         # todo: this makes life way too easy
@@ -1344,7 +1386,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
                 self.tpos_since_snowfall[:heights.shape[0]]
         else:
             pass
-
+        
         # index of the date of MB calculation
         ix = self.meteo.get_loc(date)
 
@@ -1354,7 +1396,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         # should only happen in last 2 months & be removed when SIS operational
         if np.isnan(isis):
             return np.full_like(heights, np.nan)
-
+        
         if self.sis_scale_factor is not None:
             doy = date.dayofyear
             isis = isis * self.sis_scale_factor[:, doy-1]
@@ -1384,7 +1426,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         tmean = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
         prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
             date, heights, prcp_fac=iprcp_fac)
-
+        
         # redistribute if snowdistfac is given
         if self.snowdistfac is not None:
             try:
@@ -1420,7 +1462,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             except KeyError:
                 srf_now = self.param_ep_func(self.srf)
             if pd.isnull(srf_now):
-               srf_now = self.param_ep_func(self.srf)
+                srf_now = self.param_ep_func(self.srf)
         else:
             srf_now = self.srf
 
@@ -1479,10 +1521,14 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         Tt = 1.
 
         # SIS: doesn't matter when tmean<=Tt => calc. melt possible also w/o!
-        melt_day = tf_now * tmean + srf_now * (1 - albedo) * isis
+        melt_day = - (tf_now * tmean + srf_now * (1 - albedo) * isis)
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            melt_day = melt_day * (1-DR)
+        
         melt_day[tmean <= Tt] = 0.
-
-        mb_day = prcpsol - melt_day
+        mb_day = prcpsol + melt_day
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
@@ -1503,7 +1549,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
 class OerlemansModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by [Oerlemans (2001)]_.
-
+    
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [Gabbi et al. (2014)]_.
 
@@ -1807,10 +1853,14 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         # kg m-2 d-1 = W m-2 * s * J-1 kg
         # we want ice flux, so we drop RHO_W for the first...!?
-        melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
-
+        melt = - (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            melt = melt * (1-DR)
+            
         # kg m-2 = kg m-2 - kg m-2
-        mb_day = prcpsol - melt
+        mb_day = prcpsol + melt
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
@@ -1831,6 +1881,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
 class EnsembleMassBalanceModel(object):
     """A wrapper around mass balance models to get model mass balances at once.
+    # TODO? change get_daily_mb and get_daily_specific_mb to account for debris?
     """
 
     # todo: this is still WIP
@@ -2009,12 +2060,15 @@ class ParameterGenerator(object):
         cali_filtered = cali_df.filter(regex=self.mb_model.__name__)
 
         try:
-            cali_sel = cali_filtered[~cali_filtered.duplicated()]
+            # 'last' for fisch_unique cali and latest_climate=True: otherwise date is 1962-10-01
+            cali_sel = cali_filtered[~cali_filtered.duplicated(keep='last')]
         except pd.core.indexing.IndexingError:
             log.error(
                 'Desired calibration for {} does not seems to be present. '
                 'Glacier needs to be recalibrated.'.format(
                     self.mb_model.__name__))
+            # todo: check if this makes sense
+            return cali_filtered
             # todo: trigger calibration here according to cali file was chosen
             #  or with a function 'cali_best_effort' or so
 
@@ -2078,6 +2132,11 @@ class ParameterGenerator(object):
             Whether parameters should be clipped to specified year range.
         """
         cali_sel = self.single_glacier_params
+
+        if cali_sel.empty:
+            log.error('No calibration values  for {} and {}'.format(
+                self.gdir.id, self.mb_model.__name__))
+            return cali_sel
 
         if clip_years is not None:
             if clip_years[0] is not None:
@@ -2443,7 +2502,7 @@ class SnowFirnCover(object):
                     (np.atleast_2d(self.init_origin), init_array))
             self._last_update = np.hstack(
                 (np.atleast_2d(self.init_last_update),
-                 init_array))
+                 np.full_like(init_array, np.datetime64('nat'), dtype='object')))
             self._temperature = np.hstack((
                 np.atleast_2d(self.init_temperature), init_array))
             self._liq_content = np.hstack(
