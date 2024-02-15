@@ -24,6 +24,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import LeaveOneOut
 from sklearn.model_selection import LeavePOut
+import matplotlib
 
 
 def read_mh_daily_mb(path):
@@ -402,6 +403,11 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
         List of features names used for training and the fitted
         RandomForestRegressor model.
     """
+
+    short_to_long_feature_names = {'tsum': '$\Sigma$ T', 'psum': '$\Sigma$ P',
+        'sissum': '$\Sigma$ SIS', 'ipot': '$\Sigma I_{\textrm{pot}}$',
+        'mbyear': 'Year', 'Zmin': 'Min. z', 'Zmax': 'Max. z', 'Zmed': 'Med. z',
+        'Area': 'Area', 'Slope': 'Slope', 'Aspect': 'Aspect'}
     # get all ever predicted parameters
     if mb_glaciers is None:
         mb_glaciers = ['RGI50-11.B4312n-1', 'RGI50-11.A55F03',
@@ -428,7 +434,7 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
         hypso = pd.read_csv(gdir.get_filepath('hypsometry'))
         hypso['Zrange'] = hypso['Zmax'] - hypso['Zmin']
 
-        # todo: with the hypsometry we also get the altitude-area distribution:
+        # todo: with the hypsometry we also get the altitude-ar, area, slope, aspectea distribution:
         #  make a linear fit of it and take the parameters as predictors
         hypso = hypso[['RGIId', 'Zmin', 'Zmax', 'Zmed', 'Area', 'Slope',
                        'Aspect']]
@@ -496,12 +502,13 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
         # merge cali and hypso
         merged = cali.join(hypso)
 
+        merged = merged[~merged.index.duplicated()].dropna()
+
         if df_all.empty:
             df_all = merged.copy()
         else:
             df_all = pd.concat([df_all, merged])
 
-    df_all = df_all.drop_duplicates().dropna()
     print(df_all.columns.values)
 
     # extract Labels and
@@ -526,13 +533,13 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
     print('features: ', train_features.shape, test_features.shape)
     print('label', train_labels.shape, test_labels.shape)
     accuracy_list = []
-    """
+
     loo = LeaveOneOut()
     for train_ix, test_ix in loo.split(features):
         print("%s %s" % (train_ix.shape, test_ix.shape))
-        train_features, test_features, train_labels, test_labels = 
-        features[train_ix], features[test_ix], labels[train_ix], 
-        labels[test_ix]
+        train_features, test_features, train_labels, test_labels = \
+            features[train_ix], features[test_ix], labels[train_ix], \
+            labels[test_ix]
 
         rf = RandomForestRegressor(n_estimators=1000, random_state=42)
         rf.fit(train_features, train_labels)
@@ -565,7 +572,7 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
         print('acc.', accuracy)
         print('Accuracy:', round(np.mean(accuracy), 2), '%.')
         accuracy_list.append(round(np.mean(accuracy), 2))
-    """
+
 
     # make one training with all and save the model:
     rf = RandomForestRegressor(n_estimators=1000, random_state=42)
@@ -576,7 +583,11 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
                                     model.__name__))
         pickle.dump((feature_list, rf), open(rf_fname, 'wb'))
 
-    print(accuracy_list, np.mean(accuracy_list))
+    # make overview plot which features are important
+    plot_feature_importances(
+        rf, [short_to_long_feature_names[i] for i in feature_list])
+
+    print(accuracy_list, np.median(accuracy_list))
     # Get numerical feature importances
     importances = list(rf.feature_importances_)
 
@@ -639,7 +650,7 @@ def make_param_random_forest(model, base_dir, mb_glaciers=None, write=True,
     # Calculate and display accuracy
     accuracy = 100 - mape
     print('acc.', accuracy)
-    print('Accuracy:', np.round(np.mean(accuracy), 2), '%.')
+    print('Accuracy:', np.round(np.median(accuracy), 2), '%.')
 
     if return_important is True:
         return important_features, rf_most_important
@@ -726,6 +737,44 @@ def predict_params_with_random_forest(gdir):
                 raise
     print(cali_df.drop_duplicates().dropna(axis=1))
     print('stop')
+
+
+def plot_feature_importances(rf, feature_names, ax=None):
+    """
+    Bar plot with errors saying which features are important.
+
+    From [1]_.
+
+    Parameters
+    ----------
+    rf : sklearn.ensemble.RandomForestClassifier or
+         sklearn.ensemble.RandomForestRegressor
+         Random forest predictor class to plot the feature importances for.
+    feature_names : list
+         Names of the features, used as x axis labels. Important: They need to
+         be in the order of the features used in the predictor!
+
+    Returns
+    -------
+    None
+
+    References
+    ----------
+    [1]_.. : Sklearn documentation: https://bit.ly/3yblePr
+    """
+
+    matplotlib.rcParams.update({'font.size': 22})
+    importances = rf.feature_importances_
+    forest_importances = pd.Series(importances, index=feature_names)
+    std = np.std([tree.feature_importances_ for tree in rf.estimators_],
+        axis=0)
+    if ax is None:
+        fig, ax = plt.subplots()
+    forest_importances.plot.bar(yerr=std, ax=ax, rot=0)
+    ax.set_title("Feature importances: {}".format(model.__name__))  # using MDI
+    ax.set_ylabel("Mean decrease in impurity")
+    fig.tight_layout()
+    ax.yaxis.set_ylim(0, None)
 
 
 def cross_validate_percentile_extrapolation(mb_suffix=''):
@@ -1094,3 +1143,183 @@ def validate_percentile_extrapolation_at_glamos_glaciers(
         plt.scatter(np.ones_like(climquant), climquant)
         plt.scatter(1., np.mean(climquant))
         plt.title(gg.name)
+
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+    """
+    validate_percentile_extrapolation_at_glamos_glaciers(
+        '_fischer_unique_variability')
+
+    print('stop')
+
+    plt.figure()
+    before_rand = np.random.choice(mod_pctls_until_assim, 1000)
+    plt.scatter(np.zeros_like(before_rand), before_rand)
+    plt.scatter(np.zeros_like(mod_pctls_until_assim), mod_pctls_until_assim)
+    plt.scatter(0, np.median(before_rand))
+    plt.scatter(0, np.median(mod_pctls_until_assim))
+
+    after_extrap = np.random.choice(mod_pctls_until_assim,
+                                    1000) + np.random.choice(
+        mod_accum_pctls_during_assim, 1000) + np.random.choice(
+        extrap_pctls_melt, 1000)
+    plt.scatter(np.ones_like(after_extrap), after_extrap)
+    plt.scatter(np.ones_like(mod_pctls_until_assim) + 0.05,
+                mod_pctls_until_assim + mod_accum_pctls_during_assim + extrap_pctls_melt)
+    plt.scatter(1, np.mean(after_extrap))
+    plt.scatter(1, np.percentile(after_extrap, 10))
+    plt.scatter(1, np.percentile(after_extrap, 90))
+    plt.scatter(1.05, np.mean(
+        mod_pctls_until_assim + mod_accum_pctls_during_assim + extrap_pctls_melt))
+    plt.scatter(1.05, np.percentile(
+        mod_pctls_until_assim + mod_accum_pctls_during_assim + extrap_pctls_melt,
+        10))
+    plt.scatter(1.05, np.percentile(
+        mod_pctls_until_assim + mod_accum_pctls_during_assim + extrap_pctls_melt,
+        90))
+    # plt.scatter(np.full_like(np.random.choice(mod_pctls_until_assim +
+    # mod_accum_pctls_during_assim + extrap_pctls_melt, 1000), 2),
+    # np.random.choice(mod_pctls_until_assim, 1000) +
+    # np.random.choice(mod_accum_pctls_during_assim, 1000) +
+    # np.random.choice(mod_accum_pctls_during_assim, 1000))
+
+    # plt.scatter(np.full_like(mod_pctls_until_assim +
+    # mod_accum_pctls_during_assim + extrap_pctls_melt, 2),
+    # mod_pctls_until_assim + mod_accum_pctls_during_assim +
+    # mod_accum_pctls_during_assim)
+    """
+    import warnings
+    warnings.filterwarnings('ignore')
+
+    cfg.initialize(file='/sandbox/CH_params.cfg')
+    glaciers = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                            'mauro_sgi_merge.shp')
+    utils.mkdir(cfg.PATHS['working_dir'])
+    rgidf = gpd.read_file(glaciers)
+    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05'])]  # Gries
+    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5616n-1'])]  # Rhone
+    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A55F03'])]  # PLM
+    # gdict = {'RGI50-11.B4504': 'gries'}
+    # gdict = dict(zip([
+    #    'RGI50-11.C1410', 'RGI50-11.B5616n-1', 'RGI50-11.A55F03',
+    #    'RGI50-11.A10G05', 'RGI50-11.A51E08', 'RGI50-11.B5614n',
+    #    'RGI50-11.E2316', 'RGI50-11.A50D01', 'RGI50-11.B1601',
+    #    'RGI50-11.B2201'],
+    #    ['basodino', 'findelen', 'plainemorte', 'silvretta', 'schwarzbach',
+    #    'adler', 'murtel', 'pizol', 'sexrouge', 'tsanfleuron']))
+    # rgidf = rgidf[rgidf.RGIId.isin(gdict.keys())]
+    # glaciername = 'gries'
+
+    glaciers = ['RGI50-11.C1410', 'RGI50-11.B5616n-1',
+                                    'RGI50-11.A55F03', 'RGI50-11.A10G05',
+                                    'RGI50-11.B4504', 'RGI50-11.B4312n-1',
+                                    'RGI50-11.B5616n-1', 'RGI50-11.B5614n',
+                                    'RGI50-11.E2316', 'RGI50-11.A50D01',
+                                    'RGI50-11.B1601', 'RGI50-11.B2201',
+    #                                'RGI50-11.E2320n',
+                                    'RGI50-11.A51E08',  # Schwarzbach
+                                    'RGI50-11.B3626-1',  # Gr. Aletsch
+    #                                'RGI50-11.B5232',  # Hohlaub
+    #                                'RGI50-11.A50I06',  # Limmern
+    #                                'RGI50-11.A51E12',  # St. Anna
+    #                                'RGI50-11.B5263n',  # Schwarzberg
+    #                                'RGI50-11.B5229',  # Allalin
+    #                                'RGI50-11.A50I19-4',  # Clariden
+    #                                'RGI50-11.A50I07-1',  # Plattalva
+                                    ]
+    #rgidf = rgidf[rgidf.RGIId.isin(glaciers)]
+    #rgidf = rgidf[rgidf.RGIId.isin(cfg.PARAMS['glamos_ids'])]
+    #gdirs = workflow.init_glacier_regions(rgidf, reset=False, force=False)
+    mb_models = [BraithwaiteModel, HockModel, PellicciottiModel, OerlemansModel]
+
+    for model in mb_models:
+        make_param_random_forest(
+            model, 'C:\\Users\Johannes\Documents\modelruns\CH\per_glacier', mb_glaciers=glaciers)
+
+
+
+    """
+    rv = []
+    out_dir = 'c:\\users\\johannes\\documents\\paper_2019\\limited_repeats\\'
+    rep_list = [0, 1, 2, 3, 4]
+    #rep = 49
+    latest_climate = True
+    only_param_pairs = True
+    apply_func = None
+    reset = False
+
+    for pc, rep, mbm, gdir in product([1, 2, 3, 4, 5, 10, 20, 30], rep_list,
+                                      mb_models, gdirs):
+
+        print(str(pc), mbm.__name__, gdir.name)
+        try:
+            cal = gdir.get_calibration(mbm).drop_duplicates().dropna()
+        except ValueError:  # model not available
+            print('{} not available for {}'.format(mbm.__name__, gdir.rgi_id))
+            continue
+        #if latest_climate or (rep > len(cal)):
+        #    rep = min(30, len(cal))
+        #rep = max(rep, int(len(cal)/pc))
+        print('Length of rep = {}'.format(str(rep)))
+
+        # we would sample more value than we got from the past!?
+        #if pc > len(cal):
+        #    continue
+
+        # we only need this once
+        if (apply_func is not None) and pc > 1:
+            continue
+
+        # we don't need to repeat either
+        if apply_func is not None:
+            rep = 0
+
+        # build name of output file and see if it's already there
+        ncname = 'param_no_test_' + gdir.rgi_id.split('.')[1] + '_' + \
+                 mbm.prefix + str(pc) + '_samples_' + str(rep + 1) + '_repeats'
+        if only_param_pairs is True:
+            ncname += '_only_pairs'
+        if apply_func is not None:
+            ncname += '_{}'.format(str(np.nanmean).split(' ')[1])
+        ncname += '.nc'
+        if os.path.exists(out_dir + ncname) and (reset is False):
+            print('Skipping {} (validation file already '
+                  'exists.)'.format(str(pc) + ' ' + mbm.__name__ + ' ' +
+                                    gdir.rgi_id))
+            continue
+
+        res_ds, rmse_values = hindcast_winter_and_annual_massbalance(
+            gdir, mbm, max_pcombs=pc, repeat=rep, latest_climate=True,
+            only_param_pairs=only_param_pairs, apply_func=apply_func)
+
+        res_ds.to_netcdf(out_dir + ncname)
+        print('hi')
+    """
+    """
+    gdict = {}
+    for k, v in gdict.items():
+        print(k, v)
+        g = [i for i in gdir if i.id == k][0]
+        past = g.read_pickle('mb_daily')
+        mb_mh = read_mh_daily_mb(
+            'c:\\users\\johannes\\documents\\crampon\\data\\othermodels\\Matthias_daily_MB\\cycle_{}.dat'.format(
+                v))
+
+        time_elap = None
+        snowcover = None
+        mb_list = []
+        for y in range(1962, 2017):
+            print(y)
+            if time_elap is not None:
+                mb, snowcover, time_elap = make_hindcast(g, BraithwaiteModel,
+                                                         dt.datetime(y, 10, 1),
+                                                         dt.datetime(y + 1, 9,
+                                                                     30),
+                                                         snowcover=snowcover,
+                                                         time_elapsed=time_elap)
+            else:
+                mb, snowcover, time_elap = make_hindcast(g, BraithwaiteModel,
+                                                         dt.datetime(y, 10, 1),
+                                                         dt.datetime(y + 1, 9,
+                                                                     30))
+            mb_list.append(mb)"""
