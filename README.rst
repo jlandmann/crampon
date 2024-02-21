@@ -17,7 +17,7 @@ CRAMPON - Cryospheric Monitoring and Prediction Online
         :target: https://github.com/jlandmann/crampon/blob/master/LICENSE.txt
         :alt: BSD-3-Clause License
 .. image:: https://img.shields.io/badge/Citation-TCD%20paper-9cf.svg
-        :target: https://tc.copernicus.org/preprints/tc-2020-281/
+        :target: https://tc.copernicus.org/articles/15/5017/2021/
         :alt: The Cryosphere Paper
 
 **Near real-time glacier mass balances with uncertainty estimates**
@@ -25,7 +25,7 @@ CRAMPON - Cryospheric Monitoring and Prediction Online
 CRAMPON is a Python project to monitor and predict glacier mass balance in near real-time. To obtain daily analyses, we use predictions from a mass balance model ensemble and assimilate both in situ and remotely sensed observations. Some of the code infrastructure builds upon `OGGM <http://github.com/OGGM/oggm>`_.
 
 
-.. image:: https://crampon.glamos.ch/static/plots/mb_dist/B4312n-1_mb_dist_ensemble.png
+.. image:: https://crampon.glamos.ch/static_dir/plots/mb_dist/B43-03_mb_dist_ensemble.png
          :height: 400px
          :width: 800px
          :scale: 100%
@@ -52,31 +52,15 @@ If you would like to contribute to CRAMPON, please create an `issue <http://gith
 
 
 
-Contact
--------
-
-| Johannes Landmann
-| PhD candidate
-| Swiss Federal Institute of Technology (ETH) Zurich
-| Laboratory of Hydraulics, Hydrology and Glaciology (VAW)
-| Hoenggerbergring 26 | HIA D 54.2
-| 8093 Zurich | Switzerland
-| Mail:  landmann@vaw.baug.ethz.ch
-
-
-
 Details
 -------
 
 :Status:
     Under development (alpha)
 
-:Hosting:
-    ETH Zürich and WSL Birmensdorf
-
 :Funding:
 
-    ETH Zürich, WSL Birmensdorf, GLAMOS, and GCOS Switzerland
+    Formerly: ETH Zürich, WSL Birmensdorf, GLAMOS, GCOS Switzerland.
 
 
 .. image:: https://crampon.glamos.ch/img/logos_merged.png
