@@ -467,14 +467,17 @@ def make_mb_current_mbyear(
         last_day = utils.get_cirrus_yesterday()
 
     # we need it often later
-    mbyear_begin = utils.get_begin_last_flexyear(pd.Timestamp.now())
+    if first_day is None:
+        mbyear_begin = utils.get_begin_last_flexyear(pd.Timestamp.now())
+    else:
+        mbyear_begin = first_day
 
     # if first day is not given, take begin of current MB year
     if first_day is None:
         first_day = mbyear_begin
     else:
         if reset_file is True:
-            first_day = mbyear_begin
+            pass
         else:
             # we can be anywhere in the MB year...
             try:
@@ -500,7 +503,7 @@ def make_mb_current_mbyear(
                 # we start one day after the present time series ends
                 first_day = last_day_mbc + pd.Timedelta(days=1)
             else:
-                # tprobably no snow cover from that day: start from scratch
+                # probably no snow cover from that day: start from scratch
                 log.info("We don't have a starting snowcover for the first da"
                          " chosen. We make the time series again...")
                 first_day = mbyear_begin
@@ -687,6 +690,8 @@ def make_mb_current_mbyear(
 
     if write:
         gdir.write_pickle(snow_ens, 'snow_current' + suffix)
+    else:
+        return ens_ds, snow_ens
 
 
 @entity_task(log, writes=['mb_spinup', 'snow_spinup'])
@@ -1098,3 +1103,509 @@ def make_mb_prediction(gdir: utils.GlacierDirectory,
             gdir, 'mb_prediction' + climate_suffix + cali_suffix,
             reset=reset_file)
 
+
+@entity_task(log, writes=['mb_prediction_cosmo', 'mb_prediction_ecmwf'])
+def make_mb_prediction_fast(gdir: utils.GlacierDirectory,
+                       begin_date: pd.Timestamp or None = None,
+                       mb_model: MassBalanceModel or None = None,
+                       snowcover: SnowFirnCover or None = None,
+                       latest_climate: bool = True,
+                       constrain_with_bw_prcp_fac: bool = True,
+                       climate_suffix: str = '',
+                       cali_suffix: str = '', reset_file: bool = True,
+                       write: bool = True) -> None:
+    """
+    Create a mass balance prediction from numerical weather prediction.
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+        GlacierDirectory to calculate the forecast for.
+    begin_date: pd.Timestamp or None, optional
+        Date when forecast should begin. This is only needed for experiments.
+        Default: None (take date of today as begin).
+    mb_model: DailyMassBalanceModel or None
+        Mass balance model to generate the forecast with. If None,
+        cfg.MASSBALANCE_MODELS are used. Default: None.
+    snowcover: SnowFirnCover or None
+        The snow cover at the initialization date of the forecast. Default:
+        None.
+    latest_climate: bool, optional
+        Whether to use parameters from the last 30 years only or not.
+        # todo: In operational assimilation mode it should use the
+           parameters retrieved from the assimilation.
+    constrain_with_bw_prcp_fac: bool, optional
+        Whether to constrain the used parameters with the latest precipitation
+        correction factor as calibrated in the winter mass balance. Default:
+        True.
+        # todo: In operational assimilation mode it should use
+           the parameters retrieved from the assimilation.
+    climate_suffix: str, optional
+        Suffix used to retrieve the climate (NWP) file, called `climate_suffix`
+        for compatibility. Default: '' (no suffix).
+    cali_suffix: str, optional
+        Suffix used to retrieve the calibration parameters and current mass
+        balance files. Default: '' (no suffix).
+    reset_file: bool, optional
+        Whether to reset the file completely. Default: True (we want a new
+        prediction every day).
+    write: bool
+        Whether or not to write the forecast as netCDF file. Default: True
+        (write).
+
+    Returns
+    -------
+    None
+    """
+
+    now_timestamp = pd.Timestamp.today()
+    today_date = now_timestamp.date()
+    yesterday = today_date - pd.Timedelta(days=1)
+    day_before_yesterday = today_date - pd.Timedelta(days=2)
+    begin_mbyear = utils.get_begin_last_flexyear(now_timestamp)
+
+    if mb_model:
+        mb_models = [mb_model]
+    else:
+        mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
+
+    mb_models = [m(gdir, bias=0.) for m in mb_models]
+
+    # meteo predictions
+    nwp = xr.open_dataset(gdir.get_filepath('nwp_daily' + climate_suffix))
+
+    for i, r in enumerate(nwp.member.values):
+        nwp.sel(member=r).to_netcdf(gdir.get_filepath(
+            'nwp_daily' + climate_suffix, filesuffix='_{}'.format(i)))
+
+    # make sure the NWP file is updated
+    nwp_beginday = pd.Timestamp(nwp.time.values[0])
+    nwp_time_timestamps = [pd.Timestamp(t) for t in nwp.time.values]
+    if ((climate_suffix == '_cosmo') and
+        (nwp_beginday not in [today_date, yesterday])) or \
+            ((climate_suffix == '_ecmwf') and
+             ((now_timestamp - nwp_beginday) > pd.Timedelta(days=5, hours=8))):
+        # try and make a new one
+        nwp.close()
+        climate.make_nwp_files()
+        climate.process_nwp_data(gdir)
+        nwp = xr.open_dataset(gdir.get_filepath('nwp_daily' + climate_suffix))
+        nwp_beginday = pd.Timestamp(nwp.time.values[0])
+        nwp_time_timestamps = [pd.Timestamp(t) for t in nwp.time.values]
+
+    # if curr_mb doesn't reach to at least yesterday, first make current MB
+    curr = gdir.read_pickle('mb_current', filesuffix=cali_suffix)
+    curr_last_day = pd.Timestamp(curr.time[-1].values)
+    if (((now_timestamp.hour < 12) or ((now_timestamp.hour == 12) and
+                                       (now_timestamp.minute <= 21))) and
+        (curr_last_day not in [yesterday, day_before_yesterday])) or (
+        ((now_timestamp.hour > 12) or ((now_timestamp.hour == 12) and
+                                       (now_timestamp.minute > 21))) and
+            (curr_last_day not in [today_date, yesterday])):
+        make_mb_current_mbyear(gdir, suffix=cali_suffix)
+
+    # snow cover realizations from the members of make_mb_current_mbyear
+    if snowcover is None:
+        curr_snow = gdir.read_pickle('snow_current', filesuffix=cali_suffix)
+        # COSMO, ECMWF and MeteoSwiss deliveries
+        if ((now_timestamp.hour < 12) or ((now_timestamp.hour == 12) and
+                                          (now_timestamp.minute < 30))) and \
+           ((now_timestamp.hour > 7) or ((now_timestamp.hour == 7) and
+                                         (now_timestamp.minute >= 40))):
+            # NWP has to be update by then
+            try:
+                snowcover = curr_snow.sel(time=nwp_beginday-pd.Timedelta(days=2))
+            except KeyError:
+                # NWP not updated yet
+                nwp.close()
+                climate.make_nwp_files()
+                climate.process_nwp_data(gdir)
+                nwp = xr.open_dataset(
+                    gdir.get_filepath('nwp_daily' + climate_suffix))
+                nwp_beginday = pd.Timestamp(nwp.time.values[0])
+                nwp_time_timestamps = [pd.Timestamp(t) for t in
+                                       nwp.time.values]
+        else:
+            if climate_suffix == '_cosmo':
+                if (now_timestamp.hour < 12) or ((now_timestamp.hour == 12) and
+                                                 (now_timestamp.minute < 30)):
+                    snowcover = curr_snow.sel(
+                        time=nwp_beginday - pd.Timedelta(days=2))
+                else:
+                    snowcover = curr_snow.sel(
+                        time=nwp_beginday - pd.Timedelta(days=1))
+            elif climate_suffix == '_ecmwf':
+                snowcover = curr_snow.isel(time=-1)
+
+    # clip ECMWF forecast (it might be some days old)
+    if climate_suffix == '_ecmwf':
+        # read again (it might be updated)
+        curr = gdir.read_pickle('mb_current', filesuffix=cali_suffix)
+        nwp = nwp.sel(time=slice(pd.Timestamp(curr.time[-1].values) +
+                                 pd.Timedelta(days=1), None))
+        nwp_beginday = pd.Timestamp(nwp.time.values[0])
+        nwp_time_timestamps = [pd.Timestamp(t) for t in nwp.time.values]
+
+    # make the actual prediction
+    stacked = None
+    heights, widths = gdir.get_inversion_flowline_hw()
+    n_param_sets = 0
+    mb_list = []
+    for mbm in mb_models:
+        print(mbm.__name__)
+
+        def tacc_from_alpha_brock(alpha, p1=0.86, p2=0.155):
+            # here we can only take the deep snow equation, otherwise it's not unique
+            tacc = 10. ** ((alpha - p1) / (-p2))
+            # todo: bullshit
+            tacc[tacc < 1.] = 1.
+            return tacc
+
+        def point_albedo_brock(swe, t_acc, icedist, p1=0.713, p2=0.112,
+                               p3=0.442, p4=0.058, a_u=None, d_star=0.024,
+                               alpha_max=0.85, ice_alpha_std=0.075):
+
+            if a_u is None:
+                a_u = cfg.PARAMS['ice_albedo_default']
+            alpha_ds = np.clip((p1 - p2 * np.log10(t_acc)), None, 1.)
+            # shallow snow equation
+            alpha_ss = np.clip((a_u + p3 * np.exp(-p4 * t_acc)), None,
+                               alpha_max)
+            # combining deep and shallow
+            alpha = (1. - np.exp(-swe / d_star)) * alpha_ds + np.exp(
+                -swe / d_star) * alpha_ss
+            return alpha
+
+
+
+        def melt_braithwaite(psol=None, mu_ice=None, tmean=None, swe=None,
+                             prcp_fac=None, tmelt=0., tmax=None, sis=None):
+            tempformelt = tmean - tmelt
+            tempformelt[tmean <= tmelt] = 0.
+            tempformelt = tempformelt[None, :]
+            mu = np.ones_like(swe) * mu_ice
+            mu_repeat = np.repeat(mu_ice * cfg.PARAMS['ratio_mu_snow_ice'],
+                                  swe.shape[-1], axis=-1)
+            mu_repeat = np.repeat(mu_repeat, swe.shape[-2], axis=-2)
+            mu[np.where(swe > 0.)] = mu_repeat[np.where(swe > 0.)]
+            return mu * tempformelt / 1000.
+
+        def melt_hock(psol=None, mu_hock=None, a_ice=None, tmean=None,
+                      ipot=None, prcp_fac=None, swe=None, tmelt=0., tmax=None,
+                      sis=None):
+            tempformelt = tmean - tmelt
+            tempformelt[tmean <= tmelt] = 0.
+            a = np.ones_like(swe) * a_ice
+            a_repeat = np.repeat(a_ice * cfg.PARAMS['ratio_a_snow_ice'],
+                                  swe.shape[-1], axis=-1)
+            a_repeat = np.repeat(a_repeat, swe.shape[-2], axis=-2)
+            a[np.where(swe > 0.)] = a_repeat[np.where(swe > 0.)]
+            melt_day = (mu_hock + a * ipot) * tempformelt
+            return melt_day / 1000.
+
+        def melt_pellicciotti(psol=None, tf=None, srf=None, tmean=None,
+                              sis=None, alpha=None, tmelt=1., prcp_fac=None,
+                              tmax=None):
+            melt_day = tf * tmean + srf * (1 - alpha) * sis
+            melt_day[:, tmean <= tmelt] = 0.
+
+            return melt_day / 1000.
+
+        def melt_oerlemans(psol=None, c0=None, c1=None, tmean=None, sis=None,
+                           alpha=None, prcp_fac=None, tmax=None):
+            # todo: IMPORTANT: sign of c0 is changed to make c0 positive (log!)
+            qmelt = (1 - alpha) * sis - c0 + c1 * tmean
+            # melt only happens where qmelt > 0.:
+            qmelt = np.clip(qmelt, 0., None)
+
+            # kg m-2 d-1 = W m-2 * s * J-1 kg
+            # we want ice flux, so we drop RHO_W for the first...!?
+            melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
+
+            return melt / 1000.
+
+        snowcover_model = snowcover.sel(model=mbm.__name__)
+        h, w = gdir.get_inversion_flowline_hw()
+        pg = ParameterGenerator(gdir, mbm, latest_climate=True,
+            only_pairs=True, constrain_with_bw_prcp_fac=False,
+            bw_constrain_year=pd.Timestamp.now().year - 1,
+            narrow_distribution=0., output_type='array', suffix='')
+
+        param_prod = pg.from_single_glacier()
+        param_prod = param_prod[~np.isnan(param_prod).any(axis=1)]
+
+        if mbm.__name__ in ['PellicciottiModel', 'OerlemansModel']:
+            alpha = mbm.albedo.alpha
+            tacc = tacc_from_alpha_brock(alpha)
+
+            alpha = np.repeat(alpha[None, None, :], nwp.member.size, axis=1)
+            alpha = np.repeat(alpha, param_prod.shape[0], axis=0)
+            tacc = np.repeat(tacc[None, None, :], nwp.member.size, axis=1)
+            tacc = np.repeat(tacc, param_prod.shape[0], axis=0)
+
+            sis_scale_fac = xr.open_dataarray(
+                gdir.get_filepath('sis_scale_factor')).values
+            # make leap year compatible
+            sis_scale_fac = np.hstack(
+                [sis_scale_fac, np.atleast_2d(sis_scale_fac[:, -1]).T])
+
+        # no parameters found, e.g. when using latest_climate = True for A50I06
+        if param_prod.size == 0:
+            log.error('With current settings (`latest_climate=True`, no '
+                      'parameters were found to produce current MB.')
+            return
+        print('found params with shape: ', param_prod.shape)
+        n_param_sets += param_prod.shape[0]
+
+        swe_repeat = (
+            np.repeat(np.nansum(snowcover_model.swe.values[:len(param_prod)],
+                                axis=-1)[:, None, :],
+                      nwp.member.size, axis=1))
+
+        mb_model_list = []
+        for date in nwp.time.values:
+            date = pd.Timestamp(date)
+
+
+            temp_at_hgts = climate.get_temperature_at_heights(
+                nwp.sel(time=date).temp.values,
+                nwp.sel(time=date).tgrad.values, nwp.ref_hgt, h)
+            if mbm.__name__ in ['PellicciottiModel', 'OerlemansModel']:
+                tmax_at_hgts = climate.get_temperature_at_heights(
+                    nwp.sel(time=date).tmax.values,
+                    nwp.sel(time=date).tgrad.values, nwp.ref_hgt, h)
+            prcp_at_hgts = climate.get_precipitation_at_heights(
+                nwp.sel(time=date).prcp.values,
+                nwp.sel(time=date).pgrad.values, nwp.ref_hgt, h)
+
+            if mbm.__name__ in ['PellicciottiModel', 'OerlemansModel']:
+                alpha = point_albedo_brock(swe_repeat, tacc, swe_repeat==0.)
+                tacc += tmax_at_hgts
+                ssf = sis_scale_fac[None, :, date.dayofyear]
+
+            if mbm.__name__ == 'BraithwaiteModel':
+                melt = melt_braithwaite(mu_ice=param_prod[:, 0][:, None, None],
+                                        tmean=temp_at_hgts, swe=swe_repeat,
+                                        tmelt=0.)
+            elif mbm.__name__ == 'HockModel':
+                ipot = mbm.ipot[:, np.clip(date.dayofyear - 1, None, 364)]
+                ipot = np.repeat(ipot[None, None, :], nwp.member.size, axis=1)
+                ipot = np.repeat(ipot, param_prod.shape[0], axis=0)
+                melt = melt_hock(mu_hock=param_prod[:, 0][:, None, None],
+                                 a_ice=param_prod[:, 1][:, None, None],
+                                 tmean=temp_at_hgts, ipot=ipot, tmelt=0.,
+                                 swe=swe_repeat)
+            elif mbm.__name__ == 'PellicciottiModel':
+                sis = nwp.sel(time=date).sis.values[:, None] * ssf
+                #sis = np.repeat(sis[None, None, :], nwp.member.size, axis=1)
+                #sis = np.repeat(sis, param_prod.shape[0], axis=0)
+                sis = np.repeat(sis[None, :], param_prod.shape[0], axis=0)
+                melt = melt_pellicciotti(tf=param_prod[:, 0][:, None, None],
+                                         srf=param_prod[:, 1][:, None, None],
+                                         tmean=temp_at_hgts,
+                              sis=sis, tmelt=1., alpha=alpha)
+            elif mbm.__name__ == 'OerlemansModel':
+                sis = nwp.sel(time=date).sis.values[:, None] * ssf
+                # sis = np.repeat(sis[None, None, :], nwp.member.size, axis=1)
+                # sis = np.repeat(sis, param_prod.shape[0], axis=0)
+                sis = np.repeat(sis[None, :], param_prod.shape[0], axis=0)
+                melt = melt_oerlemans(c0=-param_prod[:, 0][:, None, None],
+                                      c1=param_prod[:, 1][:, None, None],
+                                      tmean=tmax_at_hgts, sis=sis,
+                           alpha=alpha, tmax=None)
+
+            else:
+                raise NotImplementedError(
+                    'Chosen MassBalanceModel not yet available for fast mass '
+                    'balance NWP production.')
+
+            frac_solid = climate.get_fraction_of_snowfall_linear(temp_at_hgts)
+            accum = prcp_at_hgts / 1000. \
+                    * frac_solid \
+                    * mbm.prcp_fac_cycle_multiplier[date.dayofyear - 1] \
+                    * mbm.snowdistfac.sel(time=date, method='nearest').D.values\
+                    * mbm.prcp_fac[mbm.prcp_fac[~pd.isnull(mbm.prcp_fac)].index.get_loc(date,method='nearest')]
+            mb = accum - melt
+            swe_repeat += mb
+            swe_repeat = np.clip(swe_repeat, 0., None)
+            mb_model_list.append(np.average(mb, weights=w, axis=-1))
+        mb_list.append(np.array(mb_model_list).T)
+
+    #mb_for_ds = np.atleast_2d(mb_list).T
+    var_dict = {**{'MB': (['time', 'member'], np.array(mb_list).reshape((-1, np.array(mb_list).shape[-1])).T)}}
+    mb_ds = xr.Dataset(var_dict, coords={'member': (['member'], np.arange(
+        n_param_sets * nwp.member.values.size)),
+                                         'time': (
+                                             ['time'], nwp_time_timestamps)},
+                       attrs={'id': gdir.rgi_id, 'name': gdir.name,
+                              'units': 'm w.e.'})
+
+    if write:
+        mb_ds.mb.append_to_gdir(gdir,
+            'mb_prediction' + climate_suffix + cali_suffix, reset=reset_file)
+
+
+class MBYearHandler(object):
+    """
+    A class controlling important dates around the mass budget year.
+    """
+
+    def __init__(self, mb_clim, mb_current, model, mb_year='current',
+                 clim_bgday_method='fixed'):
+        """
+
+        Parameters
+        ----------
+        mb_clim: xr.Dataset
+            Dataset containing a mass balance time series
+        mb_current: xr.Dataset
+            Dataset containing the mass balance since an estimated begin of the
+             last mass budget year.
+        model: `py:class:crampon.core.models.massbalance.MassBalanceModel` or
+               str
+            Model MB to retrieve the date characteristics for.
+        mb_year: str, int, float
+            Determines the mass budget year for which date metrics shall be
+            evaluated. Can be either of "current" or a number defining a mass
+            budget year. According to the convention, e.g. the mass budget year
+            2016/2017 would be described by the mb_year 2017. Default:
+            "current" take current mass budget year as defined by October 1st.
+        clim_bgday_method: str
+            Method how to determine the beginning of the "climatological"
+            budget year. Allowed are "fixed" and "modeled". Default: "fixed".
+        """
+        self.model = model
+        if isinstance(model, utils.SuperclassMeta):
+            model_pre = model.prefix
+        elif isinstance(model, str):
+            model_pre = model + '_'
+        else:
+            raise ValueError('Model parameter must be string or instance of a '
+                             'crampon.core.models.massbalance.DailyMassbalance'
+                             'Model.')
+
+        self.mb_str = model_pre + 'MB'
+
+        self._mb_clim = mb_clim
+        self._mb_current = mb_current
+
+        self.begin_fixdate = utils.get_begin_last_flexyear(dt.datetime.today(),
+                                                           10, 1)
+        self.clim_bgday_method = clim_bgday_method
+
+        self._begin_clim = None
+        self._end_clim = None
+        self._begin_current = None
+        self._end_current = None
+        self._mbyear = None
+
+    @lazy_property
+    def mb_year(self, mb_year):
+        """Mass budget year."""
+        if mb_year == 'current':
+            self._mbyear = dt.datetime.now().year
+        elif isinstance(mb_year, (int, float)):
+            self._mbyear = mb_year
+        else:
+            raise ValueError('Value for mass budget year specification not '
+                             'accepted.')
+
+    @lazy_property
+    def begin_clim(self):
+        """Begin of the MB climatology."""
+        # todo: does it make sense to drop n?
+        # clim_cumsum = self._mb_clim.drop_sel('n').apply(
+        #    lambda x: MassBalance.time_cumsum(x))
+        clim_cumsum = self._mb_clim.drop_sel('member').map(
+            lambda x: MassBalance.time_cumsum(x))
+        return pd.to_datetime(min(clim_cumsum[self.mb_str]).time.values)
+
+    @lazy_property
+    def begin_current(self):
+        """begin of the current mass budget year."""
+        # begin_current, _ = find_begin_mbyear(self._mb_clim, self._mb_current,
+        # self.model)
+
+        # find real begin of MB year: find min around guessed begin_mbyear
+        # todo: does it make sense to drop n?
+        clim_cumsum = self._mb_clim.drop_sel('n').map(
+            lambda x: MassBalance.time_cumsum(x)).isel(time=slice(-366, -1))
+        clim_cumsum = self._mb_clim.drop_sel('member').map(
+            lambda x: MassBalance.time_cumsum(x)).isel(time=slice(-366, -1))
+        # now_cumsum = self._mb_current.sel(quantile=0.5).drop(
+        #    ['prcp_fac', 'mu_ice', 'mu_snow', 'quantile'])
+        now_cumsum = self._mb_current.sel(quantile=0.5)
+        concat = xr.auto_combine([clim_cumsum, now_cumsum.map(
+            lambda x: x + clim_cumsum.isel(time=-1)[self.mb_str].values[0])],
+                                 concat_dim='time')
+        guess_month = 10
+        guess_day = 1
+        guess_beg = utils.get_begin_last_flexyear(dt.datetime.today(),
+                                                  guess_month, guess_day)
+        # we look for min from June 1st to December 31st
+        search_win \
+        = (guess_beg - dt.timedelta(days=90),
+                      guess_beg + dt.timedelta(days=90))
+        search_mb = concat.sel(time=slice(search_win[0], search_win[1]))
+        bg_date_hydro = pd.to_datetime(min(search_mb[self.mb_str]).time.values)
+
+        # add piece from clim or redo current
+        # min_current_dt = pd.to_datetime(min(self._mb_current.time.values))
+        # if bg_date_hydro > min_current_dt:
+        #    make_mb_current_mbyear(g, bg_date_hydro, time_elap, snow_cond)
+        #    mb_now_cs, curr_snow =
+        # elif bg_date_hydro < min_current_dt:
+        #    clim_piece = mb_ds.sel(time=slice(bg_date_hydro, min_current_dt
+        #                                      - dt.timedelta(days=1)))
+        #    clim_piece = xr.concat(len(QUANTILES) * [clim_piece],
+        #                           dim='quantile')
+        #    clim_piece['quantile'] = QUANTILES
+        #    mb_now_cs_prelim = self._mb_current.apply(
+        #        lambda x: x + clim_piece.isel(time=-1)[mb_str].values[0])
+        #    mb_now_cs = xr.concat([clim_piece, mb_now_cs_prelim.drop_sel(
+        #        ['prcp_fac', 'mu_ice', 'mu_snow'])], dim='time')
+        # else:
+        #    mb_now_cs = self._mb_current.copy()
+
+        return bg_date_hydro
+
+    @lazy_property
+    def end_current(self):
+        """End of the current mass bduget year."""
+        return utils.get_cirrus_yesterday()
+
+    @lazy_property
+    def begin_current_plot(self):
+        """Begin of the current plot."""
+        return self.begin_current
+
+    @lazy_property
+    def begin_clim_plot(self):
+        """Begin of the climate plot."""
+        if self.clim_bgday_method == 'fixed':
+            return self.begin_fixdate
+        elif self.clim_bgday_method == 'modeled':
+            current_year = dt.datetime.now().year
+            guess_max = dt.datetime(current_year, 6, 1)
+            hyears = self._mb_clim.mb.make_hydro_years(self._mb_clim,
+                                                       guess_max.month,
+                                                       guess_max.day)
+            hdoys = self._mb_clim.mb.make_hydro_doys(hyears)
+            mb_cs = self._mb_clim.groupby(hyears).apply(
+                lambda x: MassBalance.time_cumsum(x))
+            stack_mean = mb_cs.groupby(hdoys) \
+                .apply(lambda x: x.mean())
+            return guess_max + dt.timedelta(
+                days=min(stack_mean[self.mb_str]).hydro_doys.item())
+
+    def to_csv(self):
+        """Write the important dates to as CSV."""
+        raise NotImplementedError
+
+
+# Necessary BEFORE main to make multiprocessing work on Windows
+# Initialize CRAMPON (and OGGM, hidden in cfg.py)
+# cfg.initialize(file='~\\crampon\\sandbox\\'
+#                    'CH_params.cfg')
+# cfg.PATHS['working_dir'] = \
+#    '~\\modelruns\\Matthias_new'

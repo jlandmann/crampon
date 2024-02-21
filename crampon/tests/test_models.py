@@ -36,6 +36,10 @@ do_plot = False
 DOM_BORDER = 80
 
 
+from crampon import cfg
+cfg.initialize(
+    '~\\crampon\\sandbox\CH_params.cfg')
+
 @pytest.mark.internet
 class TestMassBalance(unittest.TestCase):
 

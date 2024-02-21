@@ -5,7 +5,6 @@ Various calibration functions for the glaciers.
 import numpy as np
 import xarray as xr
 import pandas as pd
-import geopandas as gpd
 import datetime as dt
 import glob
 import os
@@ -13,18 +12,13 @@ import pickle
 import matplotlib.pyplot as plt
 import itertools
 import scipy.optimize as optimize
-import crampon.cfg as cfg
-from crampon import workflow
 from crampon import tasks, entity_task
-from crampon.core.models.massbalance import BraithwaiteModel, \
-    run_snowfirnmodel_with_options, PellicciottiModel, HockModel, \
-    OerlemansModel, DailyMassBalanceModel, SnowFirnCover
+from crampon.core.models.massbalance import run_snowfirnmodel_with_options, \
+    HockModel, DailyMassBalanceModel, SnowFirnCover
 from crampon.core.models import massbalance
 from collections import OrderedDict
 from crampon import utils
-import matplotlib
 import copy
-import multiprocessing as mp
 from crampon.core.preprocessing import radiation
 from crampon.core.models import assimilation
 from crampon.core.preprocessing import climate
@@ -318,18 +312,32 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
         day_model.snowcover = copy.deepcopy(scov)
 
     mb = []
+    # mb_at_hgts = []
+    # conv_fac = ((86400 * cfg.RHO) / cfg.RHO_W)  # m ice s-1 to m w.e. d-1
     for date in calispan:
         tmp = day_model.get_daily_specific_mb(heights, widths, date=date)
+        # tmp = day_model.get_daily_mb(heights, date) * conv_fac
+        # mb_at_hgts.append(tmp)
+        # mb.append(np.average(tmp, weights=widths))
         mb.append(tmp)
 
     mb_ds = xr.Dataset({'MB': (['time'], mb)},
                        coords={'time': pd.to_datetime(calispan)})
+    # mb_at_hgts_ds = xr.Dataset({'MB': (['time', 'fl_id'], mb_at_hgts)},
+    #                   coords={'time': pd.to_datetime(calispan),
+    #                           'fl_id': (['fl_id',],
+    #                           np.arange(len(heights)))})
 
     # if we have melt in winter between the field dates this pushes prcp_fac
     # up! as we can't measure melt in the winter campaign anyway, we just
     # subtract it away when tuning the winter balance!
     minimum = np.nanmin(np.nancumsum([0.] + mb))
     argmin = np.argmin(np.nancumsum([0.] + mb))
+
+    daily_melt = True
+    # if (gdir.rgi_id in assimilation.id_to_stations.keys()) and
+    # (daily_melt is True):
+    #    assim_data = assimilation.prepare_holfuy_camera_readings(gdir)
 
     err = []
     for ind, row in measured_cut.iterrows():
@@ -344,12 +352,35 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
             cs_for_max[:argmin] = minimum
             maximum = np.nanmax(cs_for_max)
             argmax = np.argmax(cs_for_max)
+
+            # when field visit was after maximum accumulation: let refreeze
+            # what can refreeze (otherwise c_prec goes crazy)
+            #melt_since_max = (maximum - wsum).MB.item()
+            #mean_winter_temp = np.mean([day_model.meteo.get_tmean_at_heights(date, heights) for date in wspan], axis=0)
+            #day_model.snowcover.update_temperature_huss(surface_temp=mean_winter_temp)
+            #refreeze_potential = np.average(np.nansum(day_model.snowcover.refreezing_potential, axis=1), weights=widths)  # sign is negative
+            ## refrozen is part of the observation:
+            #if np.abs(refreeze_potential) >= melt_since_max:
+            #    refrozen_since_max = melt_since_max
+            #else:
+            #    refrozen_since_max = np.abs(refreeze_potential)
+
+            if argmax != len(wspan):
+                if (maximum - wsum).MB.item() > 0.01:
+                    log.info('Difference between maximum {:.2f} on {} and last '
+                          'value {:.2f} on {} of {:.2f}.'.format(maximum,
+                                                             wspan[argmax].strftime("%Y-%m-%d"), wsum.MB.item(), wspan[
+                                                                      -1].strftime("%Y-%m-%d"), (maximum - wsum).MB.item()))
             curr_err = row.Winter - (wsum.MB.values + np.abs(minimum))# + refrozen_since_max)
         else:
             # annual sum
             span = pd.date_range(row.date0, row.date1 - pd.Timedelta(days=1),
                                  freq='D')
-            asum = mb_ds.sel(time=span).map(np.sum)
+            try:
+                asum = mb_ds.sel(time=span).map(np.sum)
+            except KeyError:
+                log.error(f"Given time span {span} is not available in mass "
+                          f"balance dataset for {gdir.rgi_id}.")
 
             correction = 0
 
@@ -358,6 +389,23 @@ def to_minimize_mass_balance_calibration(x, gdir, mb_model, measured, y0, y1,
                             asum.MB.values + np.abs(correction))) / unc
             else:
                 curr_err = (row.Annual - (asum.MB.values + np.abs(correction)))
+
+            # take care of assimilation data
+            # if (assim_data.isel(date=0) >= span[0]) and
+            # (assim_data.isel(date=-1) <= span[1]):
+            #    assim_data = assim_data.sel(date=slice(span[0], span[1]))
+            #    stations = assimilation.id_to_station[gdir.rgi_id]
+            #    station_hgts = [assimilation.station_to_height[s] for s in
+            #    stations]
+            #    s_index = np.argmin(
+            #        np.abs((heights - np.atleast_2d(station_hgts).T)), axis=1)
+            #    for d in assim_data.date.values:
+            #        assim_vals = assim_data.sel(date=d,
+            #        height=station_hgts).swe
+            #        mb_vals = mb_at_hgts_ds.sel(fl_id=s_index, date=d).MB
+            #        day_error = np.array(assim_vals) - np.array(mb_vals)
+            #        day_error = day_error[~np.isnan(day_error)]
+            #        curr_err.append(day_error)
 
         err.append(curr_err)
 
@@ -434,7 +482,6 @@ def to_minimize_point_mass_balance(x, gdir, mb_model, measured,
                 'prcp_fac']]))  # prcp_fac is the only excluded for annual cali
 
     params = {**calip_dict, **other_dict}
-    print(params)
 
     # calispan = pd.date_range(date_0, date_1, freq='D')
     calispan = pd.date_range(min_date, max_date, freq='D')
@@ -468,7 +515,6 @@ def to_minimize_point_mass_balance(x, gdir, mb_model, measured,
 
     err = []
     for p in range(n_points):
-        print(date_0[p], date_1[p])
         mb_sel = mb_ds.sel(time=slice(date_0[p], date_1[p]),
                            height=measurement_elevation[p])
         # if melt in winter between the field dates this pushes prcp_fac
@@ -490,7 +536,7 @@ def to_minimize_point_mass_balance(x, gdir, mb_model, measured,
             correction = np.abs(minimum)
         else:  # ice
             correction = 0.
-        print('ASUM, MEAS, CORR: ', mb_sum.MB.values, measured, correction)
+        log.info('ASUM, MEAS, CORR: ', mb_sum.MB.values, measured, correction)
 
         # err = np.abs((measured - (mb_sum.MB.values + correction)))
         err.append(np.abs((measured[p] - (mb_sum.MB.values + correction))))
@@ -498,7 +544,7 @@ def to_minimize_point_mass_balance(x, gdir, mb_model, measured,
     if unc is not None:
         err /= unc
 
-    print("ERRORS: ", err)
+    log.info("ERRORS: ", err)
 
     return [e for e in err if ~np.isnan(e)]
 
@@ -824,7 +870,7 @@ def to_minimize_mb_calibration_on_fischer_one_set(
                 'prcp_fac']]))  # prcp_fac is the only excluded for annual cali
 
     params = {**calip_dict, **other_dict}
-    print(params)
+    log.info(f"PARAMS: {params}")
     calispan = pd.date_range(min_date, max_date, freq='D')
 
     # check if we need "hybrid calibration" (non radiation dep. model in the
@@ -922,6 +968,30 @@ def to_minimize_mb_calibration_on_fischer_one_set(
     return thresholded_error
 
 
+def update_calibration_file(gdir, cali_df):
+    """
+    Harmlessly update the calibration file - even when multiprocessing is on.
+
+    Parameters
+    ----------
+    gdir
+    cali_df
+
+    Returns
+    -------
+
+    """
+
+    existing = gdir.get_calibration()
+    joined = existing.join(cali_df, how='outer')
+    joined.to_csv(gdir.get_filepath('calibration'))
+
+
+def init(lo):
+    global lock
+    lock = lo
+
+
 @entity_task(log, writes=['calibration'])
 def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                                           it_thresh=50, cali_suffix='',
@@ -970,8 +1040,22 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
     """
     # todo: find a good solution for ratio_s_i
     # todo: do not always hard-code 'mb_model.__name__ + '_' +'
-    # todo go through generalized objective function and see if winter/annual mb works ok
+    # todo go through generalized objective function and see if winter/annual
+    #  mb works ok
 
+    # if (reset_snow_redist is True) and gdir.has_file('snow_redist'):
+    #    print('Deleting old snow redist....')
+    #    sr_out = None
+    #    with xr.open_dataset(gdir.get_filepath('snow_redist')) as sr:
+    #        print(sr)
+    #        try:
+    #            sr_out = sr.where(sr.model != mb_model.__name__, drop=True)
+    #            print('worked out')
+    #        except AttributeError:
+    #            pass
+    #    if sr_out is not None:
+    #        print(sr_out)
+    #        sr_out.to_netcdf(gdir.get_filepath('snow_redist'))
 
     # Get measured MB and we can't calibrate longer than our meteo history
     measured = get_measured_mb_glamos(gdir)
@@ -1058,8 +1142,11 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
                     row.date0.year, row.date1.year))
             for name in to_calibrate_csv:
                 cali_df.loc[row.date0:row.date1, name] = np.nan
+            # lock.acquire()
             cali_df.to_csv(gdir.get_filepath('calibration',
                                              filesuffix=cali_suffix))
+            # update_calibration_file(gdir, cali_df)
+            # lock.release()
             continue
 
         # say what we are doing
@@ -1237,6 +1324,490 @@ def calibrate_mb_model_on_measured_glamos(gdir, mb_model, conv_thresh=0.005,
         error = row.Annual - mb_comp
         log.info('ERROR to measured MB:{}'.format(error))
 
+    # after calculating a snowredist, we should calibr. again but without reset
+    # if reset_snow_redist is True:
+    #    log.info('Second calibration round as snow redistribution was reset.')
+    #    calculate_snow_dist_factor(gdir, reset=True)
+    #    calibrate_mb_model_on_measured_glamos(gdir=gdir, mb_model=mb_model,
+    #                                          conv_thresh=conv_thresh,
+    #                                          it_thresh=it_thresh,
+    #                                          cali_suffix=cali_suffix,
+    #                                          reset_snow_redist=False,
+    #                                          **kwargs)
+
+#@entity_task(log, writes=['calibration_on_holfuy'])
+def calibrate_mb_model_on_measured_holfuy(
+        gdir, mb_model, conv_thresh=0.005, it_thresh=50,
+        cali_suffix='_on_holfuy', snow_redist=True, stations=None,
+        reset_snow_redist=True, **kwargs):
+    """
+    A function to calibrate those glaciers that have a glaciological mass
+    balance in GLAMOS.
+
+    Parameters
+    ----------
+    gdir: py:class:`crampon.GlacierDirectory`
+        The GlacierDirectory of the glacier to be calibrated.
+    mb_model: py:class:`crampon.core.massbalance.MassBalanceModel`
+        The mass balance model to calibrate parameters for.
+    conv_thresh: float
+        Abort criterion for the iterative calibration, defined as the absolute
+        gradient of the calibration parameters between two iterations. Default:
+         Abort when the absolute gradient is smaller than 0.005.
+    it_thresh: float
+        Abort criterion for the iterative calibration by the number of
+        iterations. This criterion is used when after the given number of
+        iteration the convergence threshold hasn't been reached. Default: Abort
+        after 50 iterations.
+    cali_suffix: str
+        Suffix to apply to the calibration file name (read & write).
+    stations: list
+        List of station IDs to use. Default: None (use all available).
+    snow_redist: bool, optional
+        Whether to use snow redistribution. Default: True.
+    reset_snow_redist: bool
+        Reset the snow redistribution factor. This means that before the
+        calibration starts the snow redistrubition factor for a given model
+        will be deleted from the glacier directory. Then the glacier will be
+        calibrated, snow_redist will be written and the glacier will be
+        calibrated again, this time without resetting. Default: True.
+    **kwargs: dict
+        Keyword arguments accepted by the mass balance model.
+
+    Returns
+    -------
+    None
+    """
+    # todo: find a good solution for ratio_s_i
+    # todo: do not always hard-code 'mb_model.__name__ + '_' +'
+    # todo go through general obj. function: see if winter/annual mb works ok
+    if stations is None:
+        stations = holfuytools.id_to_station[gdir.rgi_id]
+
+    # Get measured MB and we can't calibrate longer than our meteo history
+    measured, _ = assimilation.prepare_observations(gdir, stations)
+
+    measured_mindate = pd.Timestamp(measured.date.min().values)
+    measured_maxdate = pd.Timestamp(measured.date.max().values)
+
+    try:
+        snow_cond = gdir.read_pickle('snow_daily').sel(time=measured_mindate,
+                                                       model=mb_model.__name__)
+    except KeyError:
+        # take mean parameters for simplicity (ony one snowcover to handle)
+        pg = massbalance.ParameterGenerator(
+            gdir, mb_model, latest_climate=True, only_pairs=True,
+            constrain_with_bw_prcp_fac=True,
+            bw_constrain_year=measured_mindate.year,
+            narrow_distribution=0., output_type='array')
+        param_prod = pg.from_single_glacier()
+        param_dict = dict(
+            zip([mb_model.__name__+'_'+p for p in mb_model.cali_params_list],
+                np.nanmean(param_prod, axis=0)))
+        _, _, _, _, snow_cond = \
+            assimilation.make_mb_current_mbyear_heights(
+                gdir, mb_models=[mb_model], param_dict=param_dict,
+                begin_mbyear=utils.get_begin_last_flexyear(measured_mindate),
+                last_day=measured_mindate-pd.Timedelta(days=1), write=False)
+
+    # Find out what we will calibrate
+    to_calibrate_csv = [mb_model.prefix + i for i in
+                        mb_model.cali_params_guess.keys()]
+
+    # Is there already a calibration where we just can append, or new file
+    try:
+        cali_df = gdir.get_calibration(filesuffix=cali_suffix)
+        # we need to extend it potentially, otherwise we can't write new years
+        meas_maxdate = measured.date.max()
+        if cali_df.index[-1] < meas_maxdate:
+            new_ix = pd.DatetimeIndex(start=cali_df.index[0],
+                                      end=meas_maxdate, freq='D')
+            cali_df = cali_df.reindex(new_ix)
+    # think about an outer join of the date indices here
+    except FileNotFoundError:
+        try:
+            cali_df = pd.DataFrame(columns=to_calibrate_csv +
+                                   ['mu_star', 'prcp_fac'],  # 4 OGGM
+                                   index=pd.date_range(measured_mindate,
+                                                       measured_maxdate))
+        except ValueError:  # valid time for MB model is outside measured data
+            return
+
+    # we don't know initial snow and time of run history
+    # at the new field date (date0)
+    run_hist = pd.date_range(utils.get_begin_last_flexyear(measured_mindate),
+                             measured_mindate-pd.Timedelta(days=1))
+    scov = copy.deepcopy(snow_cond[0])
+
+    for d in measured.date.values:
+        meas_sel = measured.sel(date=d)
+
+        heights, widths = gdir.get_inversion_flowline_hw()
+        r_ind = 0
+
+        # Check if we are complete
+        if pd.isnull(meas_sel.swe).all():
+            for name in to_calibrate_csv:
+                log.info(f"{meas_sel.date.item()}, {name})
+                cali_df.loc[pd.Timestamp(meas_sel.date.item()), name] = np.nan
+            cali_df.to_csv(gdir.get_filepath('calibration',
+                                             filesuffix=cali_suffix))
+            # prepare history for next round
+            curr_model = mb_model(gdir, bias=0.)
+
+            mb = []
+            # history depends on which start date we choose
+            if scov is not None:
+                curr_model._time_elapsed = run_hist
+                curr_model.snowcover = copy.deepcopy(scov)
+
+                tmp = curr_model.get_daily_specific_mb(heights, widths,
+                                                       date=pd.Timestamp(d))
+                mb.append(tmp)
+
+            run_hist = curr_model.time_elapsed[:-1]  # same here
+            scov = copy.deepcopy(curr_model.snowcover)
+            continue
+
+        # todo: adjust snow conditions in scov according to what camera sees
+
+        param_dict = mb_model.cali_params_guess.copy()
+
+        # get an odict with all but prcp_fac
+        all_but_prcp_fac = [(k, v) for k, v in param_dict.items()
+                            if k not in ['prcp_fac']]
+
+        # todo: no sense to calibrate prcp_fac & melt params on days with both
+        #  melt and solid precip. (1) prcp_fac will be tuned to match sum of
+        #  both, then melt f. won't change anymore except prcp_fac hits bounds)
+        # start with cali on winter MB and optimize only prcp_fac
+        if 'FSNOW' in meas_sel.key_remarks:
+            try:
+                spinupres_w = optimize.least_squares(
+                    to_minimize_point_mass_balance,
+                    x0=np.array([param_dict['prcp_fac']]),
+                    xtol=0.0001,
+                    # in this case, bounds should be relaxed
+                    bounds=(0.0, None),
+                    verbose=2, args=(gdir, mb_model, meas_sel.swe, meas_sel.height,
+                                     [d] * len(meas_sel.swe),
+                                     [d+pd.Timedelta(days=1)] * len(meas_sel.swe),
+                                     [d] * len(meas_sel.swe)),
+                    kwargs={'winteronly': True, 'scov': scov, 'prcp_fac':
+                            param_dict['prcp_fac']})
+
+                # log status
+                log.info('Tuning of prcp_fac:{}'.format(spinupres_w.x[0]))
+                param_dict['prcp_fac'] = spinupres_w.x[0]
+            except ValueError:  # x0 infeasible
+                pass
+        else:
+            pass
+
+        # if there is an annual balance:
+        # take optimized prcp_fac and optimize melt param(s) with annual MB
+        # otherwise: skip and do next round of prcp_fac optimization
+        # In general, params should be lognormal-distributed (zero-bounded)
+        # exception: Oerlamns "c0", which is negative, so the other way around
+        if mb_model.__name__ == 'OerlemansModel':
+            bounds = [(-np.inf, 0), (0, np.inf)]
+        else:
+            bounds = [tuple([0] * (len(mb_model.cali_params_list)-1)), tuple([np.inf] * (len(mb_model.cali_params_list)-1))]
+        # todo: find a good solution to give bounds to the values?
+        if (not pd.isnull(meas_sel.swe).all()) and ((meas_sel.swe <= 0.).any()):
+            spinupres = optimize.least_squares(
+                to_minimize_point_mass_balance,
+                x0=np.array([j for i, j in all_but_prcp_fac]),
+                xtol=0.0001,
+                #bounds=[i[:-1] for i in param_bounds[mb_model.__name__]],
+                bounds=bounds,
+                verbose=2, args=(gdir, mb_model, meas_sel.swe, meas_sel.height,
+                                 [d] * len(meas_sel.swe),
+                                 [d+pd.Timedelta(days=1)] * len(meas_sel.swe),
+                                 [d] * len(meas_sel.swe)),
+                kwargs={'winteronly': False, 'run_hist': run_hist,
+                        'scov': scov,
+                        'prcp_fac': param_dict['prcp_fac'],
+                        'snow_redist': snow_redist})
+
+            # update all but prcp_fac
+            for j, d_i in enumerate(all_but_prcp_fac):
+                param_dict[d_i[0]] = spinupres.x[j]
+
+            # Check whether abort or go on
+            grad_test_param = all_but_prcp_fac[0][
+                1]  # take 1st, for example
+            grad = np.abs(grad_test_param - spinupres.x[0])
+        else:
+            # only WB is given and prcp_fac is optimized, so we can set all
+            # others to NaN (so that we don't enter standard params into
+            # the CSV) and break
+            for j, d_i in enumerate(all_but_prcp_fac):
+                param_dict[d_i[0]] = np.nan
+            break
+
+        # Report result
+        log.info('After whole cali:{}, grad={}'.format(param_dict.__repr__(),
+                                                       grad))
+
+        # Write in cali df
+        for k, v in list(param_dict.items()):
+            cali_df.loc[d, mb_model.prefix + k] = v
+        if isinstance(mb_model, massbalance.BraithwaiteModel):
+            cali_df.loc[d, mb_model.prefix + 'mu_snow'] = \
+                cali_df.loc[d, mb_model.prefix + 'mu_ice'] \
+                * cfg.PARAMS['ratio_mu_snow_ice']
+        if isinstance(mb_model, massbalance.HockModel):
+            cali_df.loc[d, mb_model.prefix + 'a_snow'] = \
+                cali_df.loc[d, mb_model.prefix + 'a_ice'] \
+                * cfg.PARAMS['ratio_a_snow_ice']
+        cali_df.to_csv(gdir.get_filepath('calibration',
+                                         filesuffix=cali_suffix))
+
+        # prepare history for next round
+        curr_model = mb_model(gdir, bias=0.)
+
+        mb = []
+        # determine start_date
+        start_date = d
+        end_date = d
+
+        # history depends on which start date we choose
+        if scov is not None:
+            curr_model.time_elapsed = run_hist
+            curr_model.snowcover = copy.deepcopy(scov)
+        else:
+            raise ValueError('Start date is wrong')
+
+        forward_time = pd.date_range(start_date, end_date)
+        for date in forward_time:
+            tmp = curr_model.get_daily_specific_mb(heights, widths, date=date)
+            mb.append(tmp)
+
+        run_hist = curr_model.time_elapsed  # same here
+        scov = copy.deepcopy(curr_model.snowcover)
+
+
+def calibrate_on_summer_point_mass_balance(gdir: utils.GlacierDirectory,
+                                           obs_d0: pd.Timestamp,
+                                           obs_d1: pd.Timestamp,
+                                           obs_elev: float,
+                                           obs: float,
+                                           obs_type: str,
+                                           # wb_date: pd.Timestamp,
+                                           # wb: float,
+                                           mb_model, conv_thresh=0.005,
+                                           it_thresh=50, cali_suffix='',
+                                           **kwargs):
+    """
+    This function calibrates a glacier on one given summer point mass balance.
+
+    It is used in the context of experiments with the camera data
+    assimilation: we want to test if tuning the parameter on one
+    intermediate reading is as good as the particle filter ensemble.
+    Therefore we take the precipitation correction factor as it was tuned
+    for the glacier-wide winter mass balance (there is not other way) and
+    then tune the melt parameters to match the given point mass balance in
+    a time span between autumn before and a point of time in summer.
+
+    Parameters
+    ----------
+    gdir :
+    obs_d0 : pd.Timestamp
+        Beginning of observation time span.
+    obs_d1: pd.Timestamp
+        End of observation time span.
+    obs_elev: float
+        Observation elevation (m).
+    obs: float
+        Observation in either m snow or m w.e.. The sign should make clear
+        whther there has been accumulation(+) in the time span or ablation (-).
+    obs_type: str
+        Either "snow" or "ice" (decides on the density used)
+        # todo: this should probably reviswed and the function should only
+        accept m w.e.
+    mb_model :
+    conv_thresh :
+    it_thresh :
+    cali_suffix :
+    kwargs :
+
+    Returns
+    -------
+    cali_params: dict
+        Dictionary with calibration parameters.
+    """
+    assert np.array([o in ['snow', 'ice', 'mwe'] for o in obs_type]).all()
+
+    obs = np.asarray(obs)
+    obs_type = np.asarray(obs_type)
+    unc = np.full_like(obs, np.nan)
+
+    dates_min = np.min(obs_d0)
+    dates_max = np.max(obs_d1)
+
+    # get prcp correction factor (should exist already)
+    cali_df = gdir.get_calibration(mb_model, cali_suffix)
+    prcp_fac = np.nanmean(cali_df.loc[dates_min:dates_max,
+                          mb_model.prefix + 'prcp_fac'])
+    # prcp_fac = np.nanmean(cali_df.loc[obs_d0:obs_d1, mb_model.prefix +
+    #                                                       'prcp_fac'])
+    param_guesses = mb_model.cali_params_guess.copy()
+    param_dict = mb_model.cali_params_guess.copy()
+
+    # todo: this is for testing of getting it from cali
+    param_dict['prcp_fac'] = prcp_fac
+
+    try:
+        scov = gdir.read_pickle('snow_daily').sel(model=mb_model.__name__,
+                                                  time=dates_min)
+        # scov = gdir.read_pickle('snow_daily').sel(model=mb_model.__name__,
+        #                                          time=obs_d0)
+    except KeyError:
+        # the tolerance is a guess
+        # scov = gdir.read_pickle('snow_daily').sel(
+        #    time=obs_d0, method='nearest', tolerance=pd.Timedelta(
+        #        days=31)).sel(model=mb_model.__name__)
+        # get one snow cover before
+        scov = gdir.read_pickle('snow_daily').sel(
+            time=dates_min, method='ffill', tolerance=pd.Timedelta(
+                days=62)).sel(model=mb_model.__name__)
+        log.warning(
+            'The snow cover extracted does not exactly match the observation '
+            'time span beginning. Time wanted: {}, time chosen: {}'
+            .format(obs_d0, scov.time.values))
+    scov_date = scov.time.values
+    scov = SnowFirnCover.from_dataset(scov)
+
+    if np.isnan(prcp_fac):
+        raise ValueError('Could not read precipitation correction factor '
+                         'from calibration file.')
+
+    # if obs_type == 'snow':
+    #    obs *= (cfg.PARAMS['autumn_snow_density_guess'] / 1000.)
+    # elif obs_type == 'ice':
+    #    obs *= (cfg.RHO / 1000.)
+    # elif obs_type == 'mwe':
+    #    pass
+    # else:
+    #    raise ValueError('Observation type {} not allowed.'.format(
+    #    'obs_type'))
+    obs[obs_type == 'snow'] = obs[obs_type == 'snow'] * \
+        (cfg.PARAMS['autumn_snow_density_guess'] / 1000.)
+    obs[obs_type == 'ice'] = obs[obs_type == 'ice'] * (cfg.RHO / 1000.)
+
+    # generate uncertainty
+    # todo: uncertainty values okay?
+    unc[obs_type == 'snow'] = obs[obs_type == 'snow'] * 0.2
+    unc[obs_type == 'ice'] = 0.1
+    unc[obs_type == 'mwe'] = 0.1
+    unc = None
+    log.info(f"Uncertainty: {unc}")
+
+    """
+    # first WB optimization
+    wb_result = optimize.least_squares(
+        to_minimize_point_mass_balance,
+        x0=[v for v in param_guesses.values()],
+        xtol=0.0001,
+        verbose=2, args=(gdir, mb_model, obs, obs_elev, obs_d0,
+                         obs_d1, wb_date, wb),
+        kwargs={'scov': scov})  # ,
+    # 'prcp_fac': prcp_fac})
+
+    point_result = optimize.least_squares(
+                    to_minimize_point_mass_balance,
+                    x0=[v for v in param_guesses.values()],
+                    xtol=0.0001,
+                    verbose=2, args=(gdir, mb_model, obs, obs_elev, obs_d0,
+                                     obs_d1, wb_date, wb),
+                    kwargs={'scov': scov})#,
+                            'prcp_fac': prcp_fac})
+    """
+    """
+    r_ind = 0
+    grad = 1
+    print(wb, wb_date)
+    while grad > conv_thresh:
+
+        # log status
+        log.info('{}TH ROUND, grad={}, PARAMETERS: {}'
+                 .format(r_ind, grad, param_dict.__repr__()))
+
+        # get an odict with all but prcp_fac
+        all_but_prcp_fac = [(k, v) for k, v in param_dict.items()
+                            if k not in ['prcp_fac']]
+
+        # start with cali on winter MB and optimize only prcp_fac
+        spinupres_w = optimize.least_squares(
+            to_minimize_point_mass_balance,
+            x0=np.array([param_dict['prcp_fac']]),
+            xtol=0.0001,
+            bounds=(0.1, 5.),
+            verbose=2, args=(gdir, mb_model, wb, obs_elev, obs_d0,
+                             wb_date),
+            kwargs={'scov': scov,
+                    'winteronly': True, **OrderedDict(all_but_prcp_fac)})
+
+        # log status
+        log.info('After winter cali, prcp_fac:{}'.format(spinupres_w.x[0]))
+        param_dict['prcp_fac'] = spinupres_w.x[0]
+        print(param_dict)
+
+        # if there is an annual balance:
+        # take optimized prcp_fac and optimize melt param(s) with annual MB
+        # otherwise: skip and do next round of prcp_fac optimization
+        # todo: find a good solution to give bounds to the values?
+        spinupres = optimize.least_squares(
+            to_minimize_point_mass_balance,
+            x0=np.array([j for i, j in all_but_prcp_fac]),
+            xtol=0.0001,
+            verbose=2, args=(gdir, mb_model, obs, obs_elev, obs_d0,
+                             obs_d1),
+            kwargs={'winteronly': False,
+                    'scov': scov,
+                    'prcp_fac': param_dict['prcp_fac']})
+
+        # update all but prcp_fac
+        for j, d_i in enumerate(all_but_prcp_fac):
+            param_dict[d_i[0]] = spinupres.x[j]
+
+        # Check whether abort or go on
+        grad_test_param = all_but_prcp_fac[0][
+            1]  # take 1st, for example
+        grad = np.abs(grad_test_param - spinupres.x[0])
+
+        r_ind += 1
+        if r_ind > it_thresh:
+            warn_it = 'Iterative calibration reached abort criterion of' \
+                      ' {} iterations and was stopped at a parameter ' \
+                      'gradient of {} for {}.'.format(r_ind, grad,
+                                                      grad_test_param)
+            log.warning(warn_it)
+            break
+    """
+    all_but_prcp_fac = [(k, v) for k, v in param_dict.items()
+                        if k not in ['prcp_fac']]
+    spinupres = optimize.least_squares(
+        to_minimize_point_mass_balance,
+        x0=np.array([j for i, j in all_but_prcp_fac]),
+        xtol=0.0001,
+        bounds=[i[:-1] for i in param_bounds[mb_model.__name__]],
+        verbose=2, args=(gdir, mb_model, obs, obs_elev, obs_d0,
+                         obs_d1, scov_date),
+        kwargs={'winteronly': False,
+                'scov': scov,
+                'prcp_fac': param_dict['prcp_fac'],
+                'unc': unc})
+
+    for j, d_i in enumerate(all_but_prcp_fac):
+        param_dict[d_i[0]] = spinupres.x[j]
+
+    J = spinupres.jac
+    cov = np.linalg.inv(J.T.dot(J))
+    stdev = np.sqrt(np.diagonal(cov))
+
+    return param_dict
 
 
 def calculate_snow_dist_factor(gdir, mb_models=None, reset=True):
@@ -1285,7 +1856,7 @@ def calculate_snow_dist_factor(gdir, mb_models=None, reset=True):
         try:
             day_model = mbm(gdir, bias=0., snow_redist=False)
         except KeyError:  # no calibration for this MB models in cali file
-            print('Glacier not calibrated for {}. Skipping...'
+            log.warning('Glacier not calibrated for {}. Skipping...'
                   .format(mbm.__name__))
             continue
 
@@ -1443,7 +2014,7 @@ def calibrate_mb_model_on_geod_mb_huss(
                              encoding="iso-8859-1")
     fischer_vals = fischer_df[
         fischer_df['SGI2010'].str.contains(gdir.rgi_id.split('.')[1])]
-    print(fischer_vals)
+
     t1_year = fischer_vals.t1_year.item()
     t2_year = fischer_vals.t2_year.item()
     area1 = fischer_vals.area_t1_km2.item() * 10**6  # km2 -> m2
@@ -1573,7 +2144,6 @@ def calibrate_mb_model_on_geod_mb_huss(
         if scov is not None:
             scov.remove_height_nodes(np.arange(len(widths_annual),
                                                scov.swe.shape[0]))
-            print(scov.swe.shape)
         grad = 1
         r_ind = 0
 
@@ -1620,7 +2190,7 @@ def calibrate_mb_model_on_geod_mb_huss(
         param_dict = dict(zip(mb_model.cali_params_list.copy(),
                               param_prediction[0]))
         # param_dict = mb_model.cali_params_guess.copy()
-        print('Initial params predicted: {}'.format(" ".join(
+        log.info('Initial params predicted: {}'.format(" ".join(
             "{} {}".format(k, v) for k, v in param_dict.items())))
 
         # say what we are doing
@@ -1671,12 +2241,12 @@ def calibrate_mb_model_on_geod_mb_huss(
                     # todo: 1.2/0.8 influence the final result => TF will stay at these values
                     all_but_prcp_fac = [(x, y * 1.2) for x, y in all_but_prcp_fac]
                     spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
-                    print(spinupres_w.x[0])
+                    log.info(f"{spinupres_w.x[0]}")
                 while np.isclose(spinupres_w.x[0], prcp_fac_bound_high, 0.01):
                     # start over again, but with TF 20% lower
                     all_but_prcp_fac = [(x, y * 0.8) for x, y in all_but_prcp_fac]
                     spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
-                    print(spinupres_w.x[0])
+                    log.info(f"{spinupres_w.x[0]}")
                 # set the value of the GLOBAL param_dict *now*
                 param_dict['prcp_fac'] = spinupres_w.x[0]
 
@@ -1757,7 +2327,6 @@ def calibrate_mb_model_on_geod_mb_huss(
                 scov = copy.deepcopy(curr_model.snowcover)
 
         error = mb_annual - np.sum(mb)
-        print(error)
         log.info('ERROR to measured MB:{}'.format(error))
 
 
@@ -1795,6 +2364,40 @@ def use_geodetic_mb_for_multipolygon_or_not(id, poly_df, threshold=0.9):
         return False
 
 
+def calibrate_multipolygons_on_geodetic(gdir, cali_func):
+    """
+    If a glacier is a multipolygon, decide whether the geodetic mass balance
+    for the whole multipolygon can be used for the entity.
+
+    The way we test this is if the entity polyon makes up more than or equal
+    the threshold times the total area of the multipolygon.
+
+    Parameters
+    ----------
+    id: str
+        ID of the single entity polygon.
+    poly_df: pd.Dataframe or gpd.GeoDataframe
+        Dataframe including an ID and area column.
+    threshold: float
+        Threshold of area ratio to total multipolygon area the that the polygon
+        must be equal to at least. Default: 0.9
+        .
+
+    Returns
+    -------
+    bool:
+        True if geodetic mass balance can be used, False if not.
+    """
+    poly_df = os.path.join(cfg.PATHS['data_dir'], 'outlines',
+                           'mauro_sgi_merge.shp')
+
+    #merged_gdir = workflow.merge_glacier_tasks(gdirs, main_rgi_id=None,
+    #                                           glcdf=poly_df, return_all=True,
+    #                                           filename='climate_daily',
+    #                                           buffer=100)
+
+    for mbm in [BraithwaiteModel, HockModel]:
+        cali_func(merged_gdir[0], mbm)
 
 @entity_task(log, writes=['calibration_fischer_unique'])
 def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
@@ -1868,7 +2471,7 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
     # if glacier in GLAMOS: make new tree in order not to train the forest with itself.
     glamos_ids = cfg.PARAMS['glamos_ids'].copy()
     if gdir.rgi_id in glamos_ids:
-        from sandbox import validation
+        from core import validation
         # make a random forest that is trained without the glacier itself
         glamos_ids.remove(gdir.rgi_id)
         # remove those that "don't work", bcz there are processing problems
@@ -2096,7 +2699,7 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
         # todo: store the feature_list elsewhere - in the RandomForestRegressor?
         if mb_model.__name__ == 'BraithwaiteModel':
             param_prediction = rf_predictor.predict(np.array([tsum_for_rf, psum_for_rf, mbyear, zmin, zmax, zmed, area, slope, aspect]).reshape(1, -1))
-            print('param prediction ({}): {}'.format(mbyear, param_prediction))
+            log.info('Param prediction ({}): {}'.format(mbyear, param_prediction))
         elif mb_model.__name__ == 'HockModel':
             # todo: let ipot vary with glacier shape
             ipot = gdir.read_pickle('ipot_per_flowline')
@@ -2105,14 +2708,14 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
             param_prediction = rf_predictor.predict(np.array(
                 [area, aspect, slope, zmax, zmed, zmin, ipot, mbyear,
                  psum_for_rf, tsum_for_rf]).reshape(1, -1))
-            print(param_prediction)
+            log.info(f"Param prediction: {param_prediction}")
         elif mb_model.__name__ in ['PellicciottiModel', 'OerlemansModel']:
             feature_list = ['tsum', 'psum', 'sissum', 'Zmin', 'Zmax', 'Zmed',
                             'Area', 'Slope', 'Aspect']
             param_prediction = rf_predictor.predict(np.array(
                 [area, aspect, slope, zmax, zmed, zmin, mbyear, psum_for_rf,
                  sissum_for_rf, tsum_for_rf]).reshape(1, -1))
-            print(param_prediction)
+            log.info(f"Param prediction: {param_prediction}")
         else:
             raise ValueError(
                 'What are the random forest features for {}'.format(
@@ -2125,7 +2728,7 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
     param_dict = dict(zip(mb_model.cali_params_list.copy(), all_predicts_mean))
 
     #param_dict = mb_model.cali_params_guess.copy()
-    print('Initial params predicted: {}'.format(" ".join("{} {}".format(k, v) for k, v in param_dict.items())))
+    log.info('Initial params predicted: {}'.format(" ".join("{} {}".format(k, v) for k, v in param_dict.items())))
 
     # say what we are doing
     log.info('Calibrating all years together')
@@ -2177,8 +2780,6 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
                 # todo: 1.2/0.8 influence the final result => TF will stay at these values
                 all_but_prcp_fac = [(x, y * 1.2) for x, y in all_but_prcp_fac]
                 spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
-                print(all_but_prcp_fac, spinupres_w.x[0])
-                print('stop')
                 r_ind += 1
                 if r_ind > it_thresh:
                     bounds_error = True
@@ -2188,8 +2789,6 @@ def calibrate_mb_model_on_geod_mb_huss_one_paramset(gdir, mb_model,
                 # start over again, but with TF 20% lower
                 all_but_prcp_fac = [(x, y * 0.8) for x, y in all_but_prcp_fac]
                 spinupres_w = prcp_fac_cali(param_dict, all_but_prcp_fac)
-                print(all_but_prcp_fac, spinupres_w.x[0])
-                print('stop')
                 r_ind += 1
                 if r_ind > it_thresh:
                     bounds_error = True
@@ -2309,9 +2908,6 @@ def _impose_variability_on_geodetic_params(gdir, suffix):
         geod_cali.loc[
             mask_geod, glamos_variability.columns] *= glamos_variability
 
-    print(gdir.get_filepath('calibration',
-                                       filesuffix=suffix + '_variability'))
-
     dummy_date = pd.Timestamp('{}-{}-{}'.format(2018,
                                                 cfg.PARAMS['bgmon_hydro'],
                                                 cfg.PARAMS['bgday_hydro']))
@@ -2395,7 +2991,7 @@ def visualize(mb_xrds, msrd, err, x0, mbname, ax=None):
     ax.plot(mb_xrds.sel(
         time=slice(min(msrd.date0), max(msrd.date1))).time,
             np.cumsum(mb_xrds.sel(
-                time=slice(min(msrd.date0), max(msrd.date1))).MB,
+                time=slice(min(msrd.date0), max(msrd.date1)))[mbname],
                       axis='time'), label=" ".join([str(i) for i in x0]))
     ax.scatter(msrd.date1.values, err[0::2],
                label=" ".join([str(i) for i in x0]))
@@ -2464,7 +3060,7 @@ def compile_firn_core_metainfo():
     return data
 
 
-def make_massbalance_at_firn_core_sites(core_meta, reset=False):
+def make_massbalance_at_firn_core_sites(core_meta, reset=False, mb_model=None):
     """
     Makes the mass balance at the firn core drilling sites.
 
@@ -2485,17 +3081,28 @@ def make_massbalance_at_firn_core_sites(core_meta, reset=False):
     """
     if reset:
         for i, row in core_meta.iterrows():
-            print(row.id)
+            log.info(f"Row ID: {row.id}")
             gdir = utils.idealized_gdir(np.array([row.height]),
-                                        np.ndarray([int(1.)]), map_dx=1.,
+                                        np.array([int(1.)]), map_dx=1.,
                                         identifier=row.id, name=i,
                                         coords=(row.lat, row.lon), reset=reset)
 
             tasks.process_custom_climate_data(gdir)
 
             # Start with any params and then trim on accum rate later
-            mb_model = BraithwaiteModel(gdir, mu_ice=10., mu_snow=5.,
-                                        prcp_fac=1.0, bias=0.)
+            if mb_model is None:
+                mb_model = BraithwaiteModel(gdir,  bias=0.,
+                                            **BraithwaiteModel.cali_params_guess)
+            else:
+                if isinstance(mb_model, utils.SuperclassMeta):
+                    try:
+                        mb_model = mb_model(gdir,  bias=0.,
+                                            **mb_model.cali_params_guess)
+                    except FileNotFoundError:  # radiation missing
+                        radiation.get_potential_irradiation_with_toposhade(gdir)
+                        radiation.distribute_ipot_on_flowlines(gdir)
+                else:
+                    mb_model = copy.copy(mb_model)
 
             mb = []
             for date in mb_model.tspan_meteo:
@@ -2505,15 +3112,16 @@ def make_massbalance_at_firn_core_sites(core_meta, reset=False):
                       cfg.RHO / cfg.RHO_W
                 mb.append(tmp)
 
-            mb_ds = xr.Dataset({mb_model.mb_name: (['time', 'n'],
-                                                         np.array(mb))},
-                               coords={
-                                   'time': pd.to_datetime(
-                                       mb_model.time_elapsed),
-                                   'n': (['n'], [1])},
-                               attrs={'id': gdir.rgi_id,
-                                      'name': gdir.name})
-            gdir.write_pickle(mb_ds, 'mb_daily')
+            mb_ds = xr.Dataset(
+                {'MB': (['time', 'n', 'model'], np.atleast_3d(np.array(mb)))},
+                coords={
+                    'time': pd.to_datetime(
+                        mb_model.tspan_meteo),
+                    'n': (['n'], [1]),
+                    'model': (['model'], [mb_model.__name__])},
+                attrs={'id': gdir.rgi_id,
+                       'name': gdir.name})
+            mb_ds.mb.append_to_gdir(gdir, 'mb_daily')
 
             new_mb = fit_core_mb_to_mean_acc(gdir, core_meta, mb_model)
 
@@ -2539,13 +3147,13 @@ def fit_core_mb_to_mean_acc(gdir, c_df, mb_model):
         The new, fitted mass balance.
     """
     old_mb = gdir.read_pickle('mb_daily')
-    mean_mb = old_mb.apply(np.nanmean)
+    mean_mb = old_mb.map(np.nanmean)
 
     mean_acc = c_df.loc[c_df.id == gdir.rgi_id].mean_acc.values[0] / 365.25
 
-    factor = mean_mb.apply(lambda x: x / mean_acc)[
-        mb_model.mb_name].values
-    new_mb = old_mb.apply(lambda x: x / factor)
+    factor = mean_mb.map(lambda x: x / mean_acc)[
+       'MB'].values
+    new_mb = old_mb.map(lambda x: x / factor)
 
     return new_mb
 
@@ -2637,12 +3245,12 @@ def to_minimize_snowfirnmodel(x, gdirs, csites, core_meta, cali_dict,
 
     for i, csite in enumerate(csites):
         # Todo: get rid of "rescaled" to make it more general
-        print(gdirs[i].id)
         mb_daily = gdirs[i].read_pickle('mb_daily_rescaled')
         begindate = dt.datetime(1961, 10, 1)
 
         # try to read dates
         this_core = core_meta[core_meta.id == gdirs[i].id]
+        # todo: is iloc a bug here and we should use "loc" instead?
         y, m, d = this_core.date.iloc[0].split('-')
         # TODO: What do we actually assume if we have no info?
         try:
@@ -2653,7 +3261,6 @@ def to_minimize_snowfirnmodel(x, gdirs, csites, core_meta, cali_dict,
             except ValueError:
                 end_date = dt.datetime(int(y), 1, 1)
 
-        print(gdirs[i].id, x)
         cover = run_snowfirnmodel_with_options(gdirs[i], begindate,
                                        end_date,
                                        mb=mb_daily,
@@ -2700,10 +3307,13 @@ def to_minimize_snowfirnmodel(x, gdirs, csites, core_meta, cali_dict,
                                          [0] + csite_cut.depth.tolist()[
                                                :-1])) /
                              2.).values
-        cri_naninterp = np.interp(
-            csite_cut_centers[1:][np.isnan(coverrho_interp)],
-            csite_cut.depth[1:][~np.isnan(np.array(coverrho_interp))],
-            np.array(coverrho_interp)[~np.isnan(np.array(coverrho_interp))])
+        try:
+            cri_naninterp = np.interp(
+                csite_cut_centers[1:][np.isnan(coverrho_interp)],
+                csite_cut.depth[1:][~np.isnan(np.array(coverrho_interp))],
+                np.array(coverrho_interp)[~np.isnan(np.array(coverrho_interp))])
+        except ValueError:
+            raise
         coverrho_interp = np.array(coverrho_interp)
         coverrho_interp[np.isnan(np.array(coverrho_interp))] = cri_naninterp
 
@@ -2724,18 +3334,18 @@ def to_minimize_snowfirnmodel(x, gdirs, csites, core_meta, cali_dict,
         plt.legend()
         plt.title('F_firn: {0:.2f}, RMSE: {1:.2f}, max_rho={2}'
                   .format(x[0], error, int(np.nanmax(coverrho_interp))))
-        plt.savefig(
-            'c:\\users\\johannes\\desktop\\cali_results\\{}.png'
+        plt.savefig('~\\cali_results\\{}.png'
                 .format((gdirs[i].name + '__' + str(x[0])).replace('.', '-')))
         plt.close()
 
-    print('End round', dt.datetime.now())
-    print(snow_densify_kwargs, firn_densify_kwargs)
+    log.info(f"End round: {dt.datetime.now()}\n{snow_densify_kwargs} "
+             f"{firn_densify_kwargs}")
 
     # weight errors with number of datapoints
     #error_weighted = np.average(errorlist, weights=n_datapoints)
     error_weighted = np.average(errorlist, weights=core_length)
-    print('errors for comparison: ', np.nanmean(errorlist), error_weighted)
+    log.info(f"Errors for comparison: {np.nanmean(errorlist)} "
+             f"{error_weighted}")
     return error_weighted
 
 
@@ -2776,7 +3386,6 @@ def calibrate_snowfirn_model(cali_dict, core_meta, snow_densify_method,
         csites.append(data)
 
         base_dir = cfg.PATHS['working_dir'] + '\\per_glacier'
-        print(rowdata.id)
         gdirs.append(utils.GlacierDirectory(rowdata.id, base_dir=base_dir,
                                             reset=False))
 
@@ -2806,14 +3415,15 @@ def calibrate_snowfirn_model(cali_dict, core_meta, snow_densify_method,
     return res
 
 
-def crossvalidate_snowfirnmodel_calibration(to_calibrate, core_meta, snow_densify_method, firn_densify_method, temp_update_method):
+def crossvalidate_snowfirnmodel_calibration(
+        to_calibrate, core_meta, snow_densify_method, firn_densify_method,
+        temp_update_method, suffix=''):
 
     from sklearn.model_selection import LeavePOut
     X = np.arange(len(core_meta))
-    lpo = LeavePOut(1)
+    leave_out = 3
+    lpo = LeavePOut(leave_out)
     lpo.get_n_splits(X)
-
-    print(lpo)
 
     # todo: this is double code!!!
     gdirs = []
@@ -2824,15 +3434,12 @@ def crossvalidate_snowfirnmodel_calibration(to_calibrate, core_meta, snow_densif
         csites.append(data)
 
         base_dir = cfg.PATHS['working_dir'] + '\\per_glacier'
-        print(rowdata.id)
         gdirs.append(utils.GlacierDirectory(rowdata.id, base_dir=base_dir,
                                             reset=False))
 
     for train_index, test_index in lpo.split(X):
-        print("TRAIN:", train_index, "TEST:", test_index)
+        log.info(f"TRAIN:{train_index}, TEST: {test_index}")
         X_train, X_test = core_meta.iloc[train_index], core_meta.iloc[test_index]
-
-        print(X_train, type(X_train))
 
         result = calibrate_snowfirn_model(to_calibrate, X_train,
                                           snow_densify_method,
@@ -2850,7 +3457,15 @@ def crossvalidate_snowfirnmodel_calibration(to_calibrate, core_meta, snow_densif
                               temp_update=temp_update_method,
                               merge_layers=0.05)
 
-        print(result.cost, np.nansum(cv_result)**2)
+        log.info(f"{result.cost} {np.nansum(cv_result)**2}\n{result.x}")
+
+        with (open(
+                os.path.join(cfg.PATHS['firncore_dir'],
+                f"firnmodel_cv_results_{suffix}_LO{str(leave_out)}.txt"), 'a')
+        as f):
+            f.write(f"Train: {X_train.__repr__()}\nTest: {X_test.__repr__()}\n"
+                    f"{result.__repr__()}{cv_result.__repr__()}"
+                    f"\n\n\n\n\n\n\n\n\n\n\n")
 
 
 def fake_dynamics(gdir, dh_max=-5., da_chg=0.01):
@@ -2877,6 +3492,347 @@ def fake_dynamics(gdir, dh_max=-5., da_chg=0.01):
     # take everything from the principle fowline
 
 
+# THIS IS PRELIM OGGM STUFF
+from crampon.utils import entity_task
+from crampon.core.preprocessing import centerlines
+def _fallback_mu_star_calibration(gdir):
+    """A Fallback function if climate.mu_star_calibration raises an Error.
+￼
+￼	    This function will still read, expand and write a `local_mustar.json`,
+    filled with NANs, if climate.mu_star_calibration fails
+    and if cfg.PARAMS['continue_on_error'] = True.
+    Parameters
+    ----------
+    gdir : :py:class:`oggm.GlacierDirectory`
+        the glacier directory to process
+    """
+    # read json
+    df = gdir.read_json('local_mustar')
+    # add these keys which mu_star_calibration would add
+    df['mu_star_per_flowline'] = [np.nan]
+    df['mu_star_flowline_avg'] = np.nan
+    df['mu_star_allsame'] = np.nan
+    # write
+    gdir.write_json(df, 'local_mustar')
+
+def _recursive_mu_star_calibration(gdir, fls, t_star, first_call=True,
+                                   force_mu=None):
+
+    # Do we have a calving glacier? This is only for the first call!
+    # The calving mass-balance is distributed over the valid tributaries of the
+    # main line, i.e. bad tributaries are not considered for calving
+    cmb = calving_mb(gdir) if first_call else 0.
+
+    # Climate period
+    mu_hp = int(cfg.PARAMS['mu_star_halfperiod'])
+    yr_range = [t_star - mu_hp, t_star + mu_hp]
+
+    # Get the corresponding mu
+    heights = np.array([])
+    widths = np.array([])
+    for fl in fls:
+        heights = np.append(heights, fl.surface_h)
+        widths = np.append(widths, fl.widths)
+
+    _, temp, prcp = mb_yearly_climate_on_height(gdir, heights,
+                                                year_range=yr_range,
+                                                flatten=False)
+
+    if force_mu is None:
+        try:
+            mu_star = optimization.brentq(_mu_star_per_minimization,
+                                          cfg.PARAMS['min_mu_star'],
+                                          cfg.PARAMS['max_mu_star'],
+                                          args=(fls, cmb, temp, prcp, widths),
+                                          xtol=1e-5)
+        except ValueError:
+            # This happens in very rare cases
+            _mu_lim = _mu_star_per_minimization(cfg.PARAMS['min_mu_star'],
+                                                fls, cmb, temp, prcp, widths)
+            if _mu_lim < 0 and np.allclose(_mu_lim, 0):
+                mu_star = 0.
+            else:
+                raise MassBalanceCalibrationError('{} mu* out of specified '
+                                                  'bounds.'.format(gdir.rgi_id)
+                                                  )
+
+        if not np.isfinite(mu_star):
+            raise MassBalanceCalibrationError('{} '.format(gdir.rgi_id) +
+                                              'has a non finite mu.')
+    else:
+        mu_star = force_mu
+
+    # Reset flux
+    for fl in fls:
+        fl.flux = np.zeros(len(fl.surface_h))
+
+    # Flowlines in order to be sure - start with first guess mu*
+    for fl in fls:
+        y, t, p = mb_yearly_climate_on_height(gdir, fl.surface_h,
+                                              year_range=yr_range,
+                                              flatten=False)
+        mu = fl.mu_star if fl.mu_star_is_valid else mu_star
+        fl.set_apparent_mb(np.mean(p, axis=1) - mu*np.mean(t, axis=1),
+                           mu_star=mu)
+
+    # Sometimes, low lying tributaries have a non-physically consistent
+    # Mass-balance. These tributaries wouldn't exist with a single
+    # glacier-wide mu*, and therefore need a specific calibration.
+    # All other mus may be affected
+    if cfg.PARAMS['correct_for_neg_flux']:
+        if np.any([fl.flux_needs_correction for fl in fls]):
+
+            # We start with the highest Strahler number that needs correction
+            not_ok = np.array([fl.flux_needs_correction for fl in fls])
+            fl = np.array(fls)[not_ok][-1]
+
+            # And we take all its tributaries
+            inflows = centerlines.line_inflows(fl)
+
+            # We find a new mu for these in a recursive call
+            # TODO: this is where a flux kwarg can passed to tributaries
+            _recursive_mu_star_calibration(gdir, inflows, t_star,
+                                           first_call=False)
+
+            # At this stage we should be ok
+            assert np.all([~ fl.flux_needs_correction for fl in inflows])
+            for fl in inflows:
+                fl.mu_star_is_valid = True
+
+            # After the above are OK we have to recalibrate all below
+            _recursive_mu_star_calibration(gdir, fls, t_star,
+                                           first_call=first_call)
+
+    # At this stage we are good
+    for fl in fls:
+        fl.mu_star_is_valid = True
+
+@entity_task(log, writes=['inversion_flowlines'],
+             fallback=_fallback_mu_star_calibration)
+def mu_star_calibration(gdir):
+    """Compute the flowlines' mu* and the associated apparent mass-balance.
+    If low lying tributaries have a non-physically consistent Mass-balance
+    this function will either filter them out or calibrate each flowline with a
+    specific mu*. The latter is default and recommended.
+    Parameters
+    ----------
+    gdir : :py:class:`oggm.GlacierDirectory`
+        the glacier directory to process
+    """
+
+    # Interpolated data
+    df = gdir.read_json('local_mustar')
+    t_star = df['t_star']
+    bias = df['bias']
+
+    # For each flowline compute the apparent MB
+    fls = gdir.read_pickle('inversion_flowlines')
+    # If someone calls the task a second time we need to reset this
+    for fl in fls:
+        fl.mu_star_is_valid = False
+
+    force_mu = 0 if df['mu_star_glacierwide'] == 0 else None
+
+    # Let's go
+    _recursive_mu_star_calibration(gdir, fls, t_star, force_mu=force_mu)
+
+    # If the user wants to filter the bad ones we remove them and start all
+    # over again until all tributaries are physically consistent with one mu
+    # This should only work if cfg.PARAMS['correct_for_neg_flux'] == False
+    do_filter = [fl.flux_needs_correction for fl in fls]
+    if cfg.PARAMS['filter_for_neg_flux'] and np.any(do_filter):
+        assert not do_filter[-1]  # This should not happen
+        # Keep only the good lines
+        # TODO: this should use centerline.line_inflows for more efficiency!
+        heads = [fl.orig_head for fl in fls if
+                 not fl.flux_needs_correction]
+        centerlines.compute_centerlines(gdir, heads=heads, reset=True)
+        centerlines.initialize_flowlines(gdir, reset=True)
+        if gdir.has_file('downstream_line'):
+            centerlines.compute_downstream_line(gdir, reset=True)
+            centerlines.compute_downstream_bedshape(gdir, reset=True)
+        centerlines.catchment_area(gdir, reset=True)
+        centerlines.catchment_intersections(gdir, reset=True)
+        centerlines.catchment_width_geom(gdir, reset=True)
+        centerlines.catchment_width_correction(gdir, reset=True)
+        local_t_star(gdir, tstar=t_star, bias=bias, reset=True)
+        # Ok, re-call ourselves
+        return mu_star_calibration(gdir, reset=True)
+
+    # Check and write
+    rho = cfg.PARAMS['ice_density']
+    aflux = fls[-1].flux[-1] * 1e-9 / rho * gdir.grid.dx ** 2
+    # If not marine and a bit far from zero, warning
+    cmb = calving_mb(gdir)
+    if cmb == 0 and not np.allclose(fls[-1].flux[-1], 0., atol=0.01):
+        log.warning('(%s) flux should be zero, but is: '
+                    '%.4f km3 ice yr-1', gdir.rgi_id, aflux)
+    # If not marine and quite far from zero, error
+    if cmb == 0 and not np.allclose(fls[-1].flux[-1], 0., atol=1):
+        msg = ('({}) flux should be zero, but is: {:.4f} km3 ice yr-1'
+               .format(gdir.rgi_id, aflux))
+        #raise MassBalanceCalibrationError(msg)
+        raise ValueError(msg)
+    gdir.write_pickle(fls, 'inversion_flowlines')
+
+    # Store diagnostics
+    mus = []
+    weights = []
+    for fl in fls:
+        mus.append(fl.mu_star)
+        weights.append(np.sum(fl.widths))
+    df['mu_star_per_flowline'] = mus
+    df['mu_star_flowline_avg'] = np.average(mus, weights=weights)
+    all_same = np.allclose(mus, mus[0], atol=1e-3)
+    df['mu_star_allsame'] = all_same
+    if all_same:
+        if not np.allclose(df['mu_star_flowline_avg'],
+                           df['mu_star_glacierwide'],
+                           atol=1e-3):
+            raise ValueError(
+                'Unexpected difference between '
+                'glacier wide mu* and the '
+                'flowlines mu*.')
+    # Write
+    gdir.write_json(df, 'local_mustar')
+
+
+def optimize_ensemble_size(gdir):
+    """
+    Optimize the ensemble size for predicting mass balance.
+
+    Parameters
+    ----------
+    gdir
+
+    Returns
+    -------
+
+    """
+    from sklearn.model_selection import LeavePOut, ShuffleSplit
+    from properscoring import crps_ensemble
+    from collections import OrderedDict
+
+    import pickle
+    def save_obj(obj, fname):
+        with open(fname, 'wb') as f:
+            pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
+
+    def load_obj(fname):
+        with open(fname, 'rb') as f:
+            return pickle.load(f)
+
+    meas = get_measured_mb_glamos(gdir)
+    mb_models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
+    plist = [massbalance.ParameterGenerator(gdir, m).single_glacier_params for
+             m in mb_models]
+
+    cutoff = 30
+
+    # (date0, date1, model, params): value
+    cache_dict_path = 'C:\\users\\johannes\\desktop\\cache_dict.pkl'
+    try:
+        cache_dict = load_obj(cache_dict_path)
+    except:
+        cache_dict = {}
+
+    score_per_ens_size_path = 'C:\\users\\johannes\\desktop\\score_dict.pkl'
+
+    if cutoff is not None:
+        meas = meas.tail(cutoff)
+        plist = [pdf.tail(cutoff).values for pdf in plist]
+
+    heights, widths = gdir.get_inversion_flowline_hw()
+    sc = gdir.read_pickle('snow_daily')
+
+    #error_per_n = []
+    score_per_ens_size = {key: [] for key in np.arange(1, len(meas) - 1)}
+    for n in range(len(meas)):
+        # drop nth year from the series
+        meas_drop = meas.drop(meas.index[n])
+        test_value = meas.iloc[n].Annual
+        test_d0 = meas.iloc[n].date0
+        test_d1 = meas.iloc[n].date1
+        log.info(f"Dropped {str(n)}th row from measurement dataframe.")
+
+        # error_per_k = []
+        # perform LKO for all possible ks on the remaining years
+        for k in range(1, len(meas_drop)):
+            error_per_k = []
+            log.info(f"Performing ShuffleSplit with train size {k} on the "
+                     f"remaining measurement frame.")
+
+            # get shuffled splits and limit them in size
+            lpo = LeavePOut(len(meas_drop)-k)
+            n_splits_lpo = lpo.get_n_splits(meas_drop.values)
+            #max_splits = np.min([n_splits_lpo, 5000])
+            max_splits = 5000
+
+            shufsplit = ShuffleSplit(n_splits=max_splits, train_size=k, random_state=0)
+            log.info(f"N SPLITS: {shufsplit.get_n_splits(meas_drop.values)}")
+            #for train_index, test_index in lpo.split(meas_drop.values):
+            for z, (train_index, _) in enumerate(shufsplit.split(meas_drop.values)):
+                #test_meas = meas_drop.iloc[test_index]
+                #train_meas = meas_drop.iloc[train_index]
+                if z % 500 == 0:
+                    log.info(str(z))
+
+                date_range = pd.date_range(test_d0, test_d1)
+
+                prediction_score = []
+                #for tc, tm in enumerate(train_meas.index):
+                #    print('Calculating {}th test case'.format(tc))
+                    #date_range = pd.date_range(test_meas.ix[tm].date0,
+                    #                           test_meas.ix[tm].date1)
+
+                mb_predicted_ensemble = []
+                for i, m in enumerate(mb_models):
+
+                    modelparams = plist[i]
+
+                    for ti in train_index:
+                        try:
+                            pdict = dict(zip(m.cali_params_list, modelparams[ti]))
+                        except IndexError:  # one of the short mass balance models radiation-based
+                            continue
+
+                        # date0, date1, model, param_dict
+                        p_ordered_vals = list(OrderedDict(sorted(pdict.items())).values())
+                        if (date_range[0], date_range[-1], m, *p_ordered_vals) in cache_dict.keys():
+                            mb_predicted_ensemble.append(cache_dict[(date_range[0], date_range[-1], m, *p_ordered_vals)])
+                            continue
+
+                        sc_in = SnowFirnCover.from_dataset(sc.sel(time=date_range[0], model=m.__name__))
+                        dm = m(gdir, **pdict, bias=0., snowcover=sc_in)
+
+                        mb = []
+                        for date in date_range:
+                            # Get the mass balance and convert to m per day
+                            tmp = dm.get_daily_specific_mb(heights, widths, date=date)
+                            mb.append(tmp)
+                        mb_predicted_ensemble.append((np.nansum(mb)))
+                        if (date_range[0], date_range[-1], m, *p_ordered_vals) not in cache_dict.keys():
+                            cache_dict[(date_range[0], date_range[-1], m, *p_ordered_vals)] = np.nansum(mb)
+                        #print('mb_predicted_ensemble: ', mb_predicted_ensemble)
+                        #print('measured: ', test_value)
+                    #prediction_score.append(np.nanmean(np.abs(np.array(mb_predicted_ensemble) - test_meas.ix[tm].Annual)))
+                    #prediction_score.extend(np.abs(
+                    #    np.array(mb_predicted_ensemble) - test_value))
+                mpe_array = np.array(mb_predicted_ensemble)
+                #prediction_score.append(mean_absolute_error(np.full_like(mpe_array, test_value), mpe_array))
+                #prediction_score.append(np.abs(np.nanmedian(mpe_array) - test_value))
+                prediction_score.append(crps_ensemble(test_value, mpe_array))
+                #print('prediction_score: ', np.nanmean(prediction_score))
+            #error_per_k.append(prediction_score)
+            log.info(f"Prediction score for k={k}: {prediction_score}")
+            extended = score_per_ens_size[k]
+            extended.extend(prediction_score)
+            score_per_ens_size[k] = extended
+        #error_per_n.append(error_per_k)
+        log.info(f"Prediction per ensemble size: {score_per_ens_size}")
+        save_obj(cache_dict, cache_dict_path)
+        save_obj(score_per_ens_size, score_per_ens_size_path)
+    return score_per_ens_size
 
 
 def calibrate_cam_glaciers_on_point_mass_balances(point_data_path, out_path):
@@ -2896,7 +3852,7 @@ def calibrate_cam_glaciers_on_point_mass_balances(point_data_path, out_path):
     -------
 
     """
-
+    # point_data_path = '...\\crampon\\data\\MB\\point\\cam_point_MBs_Matthias.csv'
     pdata = pd.read_csv(point_data_path, index_col=0, parse_dates=[4, 5])
     results = pd.DataFrame(columns=['RGIId', 'stations'])
     stations_per_glacier = {
@@ -2908,15 +3864,14 @@ def calibrate_cam_glaciers_on_point_mass_balances(point_data_path, out_path):
                  massbalance.OerlemansModel]
     it = 0
     for k, v in stations_per_glacier.items():
-        print(k)
         gdir = utils.GlacierDirectory(k)
         for comb_length in range(1, len(v) + 1):
             for combo in itertools.combinations(v, comb_length):
-                print(combo)
+                log.info(f"{combo}")
                 pdata_sel = pdata.loc[[c for c in combo]]
-                print(pdata_sel)
+                log.info(f"{pdata_sel}")
                 for model in mb_models:
-                    print(model.__name__)
+                    log.info(model.__name__)
                     cali_result = calibrate_on_summer_point_mass_balance(
                         gdir,
                         pdata_sel.date0.values,
@@ -2930,65 +3885,5 @@ def calibrate_cam_glaciers_on_point_mass_balances(point_data_path, out_path):
                     for rk, rv in dict(cali_result).items():
                         results.loc[it, model.__name__ + '_' + rk] = rv
                 it += 1
-                print('ITERATION NUMBER: ', it)
+                log.info(f"ITERATION NUMBER: {it}")
     results.to_csv(out_path)
-
-
-if __name__ == '__main__':
-
-    cfg.initialize(file='C:\\Users\\Johannes\\Documents\\crampon\\sandbox\\'
-                        'CH_params.cfg')
-
-    glaciers = 'C:\\Users\\Johannes\\Desktop\\mauro_sgi_merge.shp'
-    rgidf = gpd.read_file(glaciers)
-
-    # "the six"
-    rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504', 'RGI50-11.A10G05', 'RGI50-11.B5616n-1', 'RGI50-11.A55F03', 'RGI50-11.B4312n-1', 'RGI50-11.C1410'])]
-    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4504'])]  # Gries OK
-    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A10G05'])]  # Silvretta OK
-    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5616n-1'])]  # Findel OK
-    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A55F03'])]  # Plaine Morte OK
-    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B4312n-1'])]  # Rhone
-    #rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.C1410'])]  # Basòdino "NaN in smoothed DEM"
-
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5616n-0'])]  # Adler     here the error is -1.14 m we afterwards
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A50I19-4'])]  # Tsanfleuron
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A50D01'])]  # Pizol
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A51E12'])]  # St. Anna
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B8315n'])]  # Corbassière takes ages...
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.E2320n'])]  # Corvatsch-S
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A51E08'])]  # Schwarzbach
-    #### rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B8214'])]  # Gietro has no values left!!!! (no spring balance)
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5232'])]  # Hohlaub
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5229'])]  # Allalin
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B1601'])]  # Sex Rouge
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.B5263n'])]  # Schwarzberg
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.E2404'])]  # Murtèl
-    # rgidf = rgidf[rgidf.RGIId.isin(['RGI50-11.A50I07-1'])]  # Plattalva
-    # rgidf = rgidf[rgidf.RGIId.isin([''])]  #
-    # rgidf = rgidf[rgidf.RGIId.isin([''])]  #
-    # rgidf = rgidf[rgidf.RGIId.isin([''])]  #
-    # rgidf = rgidf[rgidf.RGIId.isin([''])]  #
-    # rgidf = rgidf[rgidf.RGIId.isin([''])]  #
-
-    gdirs = workflow.init_glacier_regions(rgidf, reset=True, force=True)
-
-    task_list = [
-        tasks.glacier_masks,
-        tasks.compute_centerlines,
-        tasks.initialize_flowlines,
-        tasks.compute_downstream_line,
-        tasks.catchment_area,
-        tasks.catchment_intersections,
-        tasks.catchment_width_geom,
-        tasks.catchment_width_correction,
-        tasks.process_custom_climate_data,
-
-    ]
-    for task in task_list:
-        workflow.execute_entity_task(task, gdirs)
-
-    for g in gdirs:
-        calibrate_braithwaite_on_measured_glamos(g)
-
-    print('hallo')

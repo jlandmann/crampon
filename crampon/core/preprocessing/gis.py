@@ -443,6 +443,61 @@ def define_glacier_region_crampon(gdir, entity=None, oggm_dem_source='SRTM',
 define_glacier_region = define_glacier_region_crampon
 
 
+def dem_quality_check(gdir, da, allow_thrs=0.05):
+    """
+    Check DEM for missing values (by threshold) and fill holes if applicable.
+
+    Returns
+    -------
+    smoothed_dem:
+        The DEM
+    """
+
+    min_z = 0.
+    # da_roi = da.salem.roi(shape=shdf)
+    tile_new = da.height.values
+    from scipy.interpolate import griddata
+    from scipy.ndimage.morphology import binary_dilation
+    from scipy import ndimage
+
+    grid = salem.grid_from_dataset(da)
+    roi = grid.region_of_interest(gdir.get_filepath('outlines'))
+    da_res = grid.dx
+
+    struct2 = ndimage.generate_binary_structure(2, 2)
+
+    window = 10.
+    gsize = int(np.rint(window / da_res))
+    xx, yy = np.meshgrid(np.arange(len(da.x)), np.arange(len(da.y)))
+
+    isfinite = np.isfinite(tile_new)
+
+    # fill only small holes, so dilate ok and add inverse to NaN. Reclass.
+    pnan_grid = ((tile_new <= min_z) | (~isfinite))
+    pok_grid = (tile_new > min_z)
+    dila = binary_dilation(pok_grid)  # , structure=struct2)
+    pnan_new = (np.invert(dila).astype(int) + pnan_grid.astype(int))
+    pnan_new[pnan_new == 2.] = 0.
+    pok_new = np.nonzero(np.invert(pnan_new))
+    pnan_new = np.nonzero(pnan_new)
+
+    points = np.array((np.ravel(yy[pok_new]), np.ravel(xx[pok_new]))).T
+    inter = np.array((np.ravel(yy[pnan_new]), np.ravel(xx[pnan_new]))).T
+    tile_new[pnan_new] = griddata(points, np.ravel(tile_new[pok_new]), inter)
+
+    valid_ratio_before = np.count_nonzero(
+        ~np.isnan(da.height.values[roi.astype(bool)])) / np.count_nonzero(roi)
+    valid_ratio = np.count_nonzero(~np.isnan(tile_new[roi.astype(bool)])) / \
+        np.count_nonzero(roi)
+    print(da.time.item(), valid_ratio, valid_ratio_before)
+    if valid_ratio < 1.0:
+        log.info('Skipping DEM (more than {} % missing).'.format(allow_thrs
+                                                                 * 100))
+        return None
+
+    return tile_new
+
+
 def calculate_geodetic_deltav(gdir, fill_threshold=0.1):
     """
     Calculate all possible difference grids and geodetic volume changes.
@@ -539,7 +594,7 @@ def scipy_idw(x, y, z, xi, yi):
 
     References
     ----------
-    _[1]: https://stackoverflow.com/questions/3104781/inverse-distance-weighted-idw-interpolation-with-python
+    _[1]: https://shorturl.at/dMT37
     """
     from scipy.interpolate import Rbf
     interp = Rbf(x, y, z, function='linear')

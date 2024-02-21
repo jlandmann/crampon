@@ -7,7 +7,7 @@ from glob import glob
 import crampon.cfg as cfg
 from crampon import utils
 from crampon.utils import lazy_property
-from scipy.stats import percentileofscore
+from scipy.stats import percentileofscore, t
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -399,7 +399,7 @@ def process_custom_climate_data_crampon(gdir):
     ref_pix_lat = lat[ilat]
 
     # Some special things added in the crampon function
-    iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ipgrad_unc, ihgt = \
+    iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ipgrad_unc, ihgt, itgrad_loc, itgrad_scale, ipgrad_loc, ipgrad_scale = \
         utils.joblib_read_climate(fpath, ilon, ilat, def_tgrad, tg_minmax,
                                   use_tgrad, def_pgrad, pg_minmax, use_pgrad)
 
@@ -437,7 +437,11 @@ def process_custom_climate_data_crampon(gdir):
                                         temp_sigma=temp_sigma,
                                         prcp_sigma=prcp_sigma,
                                         sis_sigma=sis_sigma,
-                                        pgrad_sigma=ipgrad_unc
+                                        pgrad_sigma=ipgrad_unc,
+                                        tgrad_loc=itgrad_loc,
+                                        tgrad_scale=itgrad_scale,
+                                        pgrad_loc=ipgrad_loc,
+                                        pgrad_scale=ipgrad_scale
                                         )
     elif pd.infer_freq(nc_ts.time) == 'M':  # month end frequency
         nc_ts.set_period(t0='{}-10-31'.format(y0), t1='{}-09-30'.format(y1))
@@ -451,7 +455,11 @@ def process_custom_climate_data_crampon(gdir):
                                         temp_sigma=temp_sigma,
                                         prcp_sigma=prcp_sigma,
                                         sis_sigma=sis_sigma,
-                                        pgrad_sigma=ipgrad_unc)
+                                        pgrad_sigma=ipgrad_unc,
+                                        tgrad_loc=itgrad_loc,
+                                        tgrad_scale=itgrad_scale,
+                                        pgrad_loc=ipgrad_loc,
+                                        pgrad_scale=ipgrad_scale)
     elif pd.infer_freq(nc_ts.time) == 'D':  # day start frequency
         # Doesn't matter if entire years or not, BUT a correction for y1 to be
         # the last hydro/glacio year is needed
@@ -469,6 +477,10 @@ def process_custom_climate_data_crampon(gdir):
                                         prcp_sigma=prcp_sigma,
                                         sis_sigma=sis_sigma,
                                         pgrad_sigma=ipgrad_unc,
+                                        tgrad_loc=itgrad_loc,
+                                        tgrad_scale=itgrad_scale,
+                                        pgrad_loc=ipgrad_loc,
+                                        pgrad_scale=ipgrad_scale,
                                         file_name='climate_daily',
                                         time_unit=nc_ts._nc.variables['time']
                                         .units)
@@ -635,7 +647,7 @@ def process_nwp_data(gdir: utils.GlacierDirectory):
 
         # Some special things added in the crampon function
         # we hand over the file directly, because of the fake lat/lon dimensions
-        iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ipgrad_unc, ihgt = \
+        iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad, ipgrad_unc, ihgt, _, _, _, _ = \
             utils.joblib_read_climate(
                 nc_ts, ilon, ilat, def_tgrad, tg_minmax, use_tgrad, def_pgrad,
                 pg_minmax, use_pgrad)
@@ -841,8 +853,8 @@ def make_climate_file(write_to=None, hfile=None, how='from_scratch'):
     if sys.platform.startswith('win'):
         globdir = globdir.replace('/', '\\')
 
-    for var, mode in product(['TabsD', 'TmaxD', 'TminD', 'R', 'msgSISD_'],
-                             ['verified', 'operational']):
+    for var, mode in product(['TabsD'],#, 'R','TabsD', 'TmaxD', 'R', 'msgSISD_'],
+                             ['operational']): #'verified',
 
         # radiation not operational
         if (var == 'msgSISD_') and (mode == 'operational'):
@@ -1340,18 +1352,22 @@ def update_climate(gdir, clim_all=None):
         # todo: handing over clim_all_tsel is bullshit, since we take a 30 day
         #  rolling mean to fill gradient gaps
         # selection [0] for tgrad ([1] is uncertainty)
-        tg, tgu = utils.get_tgrad_from_window(
+        tg, tgu, tgl, tgs = utils.get_tgrad_from_window(
             clim_all_tsel, ilat=ilat, ilon=ilon, win_size=use_tgrad,
             default_tgrad=def_tgrad, minmax_tgrad=tg_minmax)
         clim_all_sel['tgrad'] = (['time'], tg)
         clim_all_sel['tgrad_sigma'] = (['time'], tgu)
+        clim_all_sel['tgrad_loc'] = (['time'], tgl)
+        clim_all_sel['tgrad_scale'] = (['time'], tgs)
 
         # no double output for pgrad
-        pg, pgu = utils.get_pgrad_from_window(
+        pg, pgu, pgl, pgs = utils.get_pgrad_from_window(
             clim_all_tsel, ilat=ilat, ilon=ilon, win_size=use_pgrad,
             default_pgrad=def_pgrad, minmax_pgrad=pg_minmax)
         clim_all_sel['pgrad'] = (['time'], pg)
         clim_all_sel['pgrad_sigma'] = (['time'], pgu)
+        clim_all_sel['pgrad_loc'] = (['time'], pgl)
+        clim_all_sel['pgrad_scale'] = (['time'], pgs)
         updated = gclim.combine_first(clim_all_sel)
         gclim.close()
         updated.to_netcdf(gdir.get_filepath('climate_daily'))
@@ -1369,7 +1385,8 @@ class GlacierMeteo(object):
 
     def __init__(self, gdir, filename='climate_daily', filesuffix='',
                  heights=None, randomize=False, n_random_samples=1000,
-                 use_tgrad_uncertainty=False, use_pgrad_uncertainty=False):
+                 use_tgrad_uncertainty=False, use_pgrad_uncertainty=False,
+                 seed=None):
         """
         Instantiate the GlacierMeteo object.
 
@@ -1412,6 +1429,8 @@ class GlacierMeteo(object):
             top a random gradient derived from the standard error of the slope
             of the calculated temperature gradient. Default: False (do not
             consider).
+        seed: int
+            Random seed to be sued if `randomize` is True. EXPERIMENTAL!
         """
         self.gdir = gdir
         if heights is None:
@@ -1460,7 +1479,25 @@ class GlacierMeteo(object):
         except AttributeError:
             self.pgrad_sigma = None
 
+        try:
+            self.tgrad_loc = self.meteo.tgrad_loc.values
+        except AttributeError:
+            self.tgrad_loc = None
+        try:
+            self.tgrad_scale = self.meteo.tgrad_scale.values
+        except AttributeError:
+            self.tgrad_scale = None
+        try:
+            self.pgrad_loc = self.meteo.pgrad_loc.values
+        except AttributeError:
+            self.pgrad_loc = None
+        try:
+            self.pgrad_scale = self.meteo.pgrad_scale.values
+        except AttributeError:
+            self.pgrad_scale = None
+
         self.randomize = randomize
+        self.seed = seed
         self.n_random_samples = n_random_samples
         self.use_tgrad_uncertainty = use_tgrad_uncertainty
         self.use_pgrad_uncertainty = use_pgrad_uncertainty
@@ -1606,6 +1643,8 @@ class GlacierMeteo(object):
         #    randomized = gauss_noise_mul * var_value
         if random_seed is not None:
             np.random.seed(random_seed)
+        else:
+            np.random.seed(self.seed)
         gauss_noise_add = np.random.normal(0, var_sigma,
                                            self.n_random_samples)
         randomized = gauss_noise_add + var_value
@@ -1643,16 +1682,21 @@ class GlacierMeteo(object):
             temp_sigma = self.temp_sigma[date_index]
             if random_seed is not None:
                 np.random.seed(random_seed)
+            else:
+                np.random.seed(self.seed)
             temp_at_hgts = np.random.normal(
                 0, temp_sigma, size=self.n_random_samples) + \
                 np.atleast_2d(temp_at_hgts).T
 
             if self.use_tgrad_uncertainty is True:
                 tgrad_sigma = self.tgrad_sigma[date_index]
+                tgrad_loc = self.tgrad_loc[date_index]
+                tgrad_scale = self.tgrad_scale[date_index]
                 if random_seed is not None:
                     np.random.seed(random_seed)
-                random_grads = np.random.normal(tgrad, tgrad_sigma,
-                                                size=self.n_random_samples)
+                #random_grads = np.random.normal(tgrad, tgrad_sigma,
+                #                                size=self.n_random_samples)
+                random_grads = t.rvs(df=24, loc=tgrad_loc, scale=tgrad_scale, size=self.n_random_samples)
                 temp_at_hgts += np.atleast_2d(random_grads - tgrad) * \
                     np.atleast_2d(heights - self.ref_hgt).T
 
@@ -1696,10 +1740,15 @@ class GlacierMeteo(object):
 
             if self.use_tgrad_uncertainty is True:
                 tgrad_sigma = self.tgrad_sigma[date_index]
+                tgrad_loc = self.tgrad_loc[date_index]
+                tgrad_scale = self.tgrad_scale[date_index]
                 if random_seed is not None:
                     np.random.seed(random_seed)
-                random_grads = np.random.normal(tgrad, tgrad_sigma,
-                                                size=self.n_random_samples)
+                #random_grads = np.random.normal(tgrad, tgrad_sigma,
+                #                                size=self.n_random_samples)
+                random_grads = t.rvs(df=24, loc=tgrad_loc,
+                                           scale=tgrad_scale,
+                                           size=self.n_random_samples)
                 temp_at_hgts += np.atleast_2d(
                     random_grads - tgrad) * np.atleast_2d(
                     heights - self.ref_hgt).T
@@ -1872,8 +1921,14 @@ class GlacierMeteo(object):
         date_index = self.get_loc(date)
         prcp = self.prcp[date_index] * prcp_fac
         pgrad = self.pgrad[date_index]
+        if self.pgrad_sigma is not None:
+            pgrad_sigma = self.pgrad_sigma[date_index]
+        else:
+            pgrad_sigma = np.nan
         # if not rain at reference and no gradient, we can skip the procedure
-        if (prcp == 0.) and (np.isnan(pgrad)):
+        if (prcp == 0.) and ((np.isnan(pgrad)) or
+                             (np.isnan(pgrad_sigma) and
+                              (self.use_pgrad_uncertainty is True))):
             if self.randomize is True:
                 out = np.zeros((len(heights), self.n_random_samples))
                 return out, out
@@ -1915,13 +1970,29 @@ class GlacierMeteo(object):
             prcptot = np.clip(prcptot, 0., None)
 
             if self.use_pgrad_uncertainty is True:
-                pgrad_sigma = self.pgrad_sigma[date_index]
+                pgrad_loc = self.pgrad_loc[date_index]
+                pgrad_scale = self.pgrad_scale[date_index]
                 if random_seed is not None:
                     np.random.seed(random_seed)
-                random_grads = np.random.normal(pgrad, pgrad_sigma,
-                                                size=self.n_random_samples)
-                prcptot += prcptot * (random_grads - pgrad) * \
-                           np.atleast_2d((heights + self.ref_hgt)).T
+                try:
+                    #random_grads = np.random.normal(pgrad, pgrad_sigma,
+                    #                                size=self.n_random_samples)
+                    random_grads = t.rvs(df=cfg.PARAMS['prcp_use_local_gradient']**2-1, loc=pgrad_loc, scale=pgrad_scale,
+                                                    size=self.n_random_samples)
+                except:
+                    print('stop')
+                #prcptot += prcptot * (random_grads - pgrad) * \
+                #           np.atleast_2d((heights + self.ref_hgt)).T
+
+
+                if prcp > 0.:
+                    #prcptot **= 2
+                    # calculate precip with SQRT, since slope has been derived with SQRT precip values as well
+                    prcptot += (np.sqrt(prcptot) * (
+                            random_grads - pgrad) * np.atleast_2d(
+                        (heights + self.ref_hgt)).T) ** 2
+                else:
+                    prcptot += prcptot * (random_grads - pgrad) *  np.atleast_2d((heights + self.ref_hgt)).T
 
                 prcptot[prcptot <= 0.] = 0.
 
@@ -1929,6 +2000,46 @@ class GlacierMeteo(object):
         prcpliq = prcptot - prcpsol
 
         return prcpsol, prcpliq
+
+
+def daily_from_monthly_precip(gdir, n_realizations=50):
+    """Try to generate daily from monthly precipitation."""
+    # todo: Totally not ready function to generate n daily precipitation
+    #  realizations from a monthly sum '
+    from scipy import stats
+    # generate a histogram distribution from the daily data
+    # todo: generate the histogram on a monthly basis
+    meteo = GlacierMeteo(gdir, filename='spinup_climate_daily')
+
+    # make the bins =>
+    # todo: make upper limit according to max. precip sum per day
+    binlist = list(np.arange(-0.05, 40, 0.1))
+
+    # todo: replace hist plot with hist only
+    histo = meteo.meteo.prcp.plot.hist(bins=binlist)
+
+    #
+    custm = stats.rv_discrete(name='custm', values=(
+                np.arange(len(histo[0])), histo[0] / np.sum(histo[0])))
+
+    # todo: replace with real monthly prcp sum
+    psum = 30.
+    alist = []
+    for i in range(n_realizations):
+        it = 0
+        approx = []
+        approx_sum = 0.
+        while ~np.isclose(psum, approx_sum, atol=0.5):
+            sample = custm.rvs(size=30)
+            approx = (histo[1][sample] + histo[1][sample + 1]) / 2.
+            approx_sum = np.sum(approx)
+            it += 1
+        print('{} iterations.'.format(it))
+        alist.append(approx)
+
+    prcp_realiz = np.vstack(alist)
+
+    return prcp_realiz
 
 
 def get_temperature_at_heights(temp, grad, ref_hgt, heights):
@@ -1991,9 +2102,12 @@ def get_precipitation_at_heights(prcp, pgrad, ref_hgt, heights):
                    np.array(prcp[:, np.newaxis]) * \
                    np.array(pgrad[:, np.newaxis]) * (heights - ref_hgt)
         except IndexError:
-            return np.ones_like(heights) * prcp.values[:, np.newaxis] + \
-                   prcp.values[:, np.newaxis] * pgrad.values[:, np.newaxis] * \
-                   (heights - ref_hgt)
+            try:
+                return np.ones_like(heights) * prcp.values[:, np.newaxis] + \
+                       prcp.values[:, np.newaxis] * pgrad.values[:, np.newaxis] * \
+                       (heights - ref_hgt)
+            except AttributeError:
+                return prcp + prcp * pgrad * (heights - ref_hgt)
 
 
 @numba.jit(nopython=True)

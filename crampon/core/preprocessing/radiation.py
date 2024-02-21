@@ -477,9 +477,26 @@ def ipot_loop(mask, resolution, dem_array, alt_azi,
                                bham_line_cut[:, 0]] > alti).any():
                 # shadow
                 time_array[x, y, tindex] = 0.
+                # small_array[it] = 0.
             else:
                 # sun - uncorrected for terrain
                 time_array[x, y, tindex] = alt_azi.loc[t, 'ipot']
+                # rad_corr = correct_radiation_for_terrain(
+                # alt_azi.loc[t, 'ipot'], 0., slope[y, x], aspect[y, x],
+                # np.pi / 2. - altis_rad[tindex], azis_rad[tindex])
+                # clip zero: diff. rad is set to 0 (direct could be negative!)
+                # rad_corr = np.clip(rad_corr, 0., None)
+                # small_array[it] = alt_azi.loc[t, 'ipot']
+                # small_array[it] = rad_corr
+
+            # if tindex in eod_ix:  # switch of day
+            #    insert_at, = np.where(eod_ix == tindex)
+            #    time_array[x, y, insert_at] = np.nansum(small_array) /
+            #    n_times_per_day
+            #    small_array = np.full(144, np.nan)
+            #    it = 0
+            # else:
+            #    it += 1
 
     # correct potential radiation for terrain
     sy, sx = np.gradient(dem_array, resolution)
@@ -543,7 +560,8 @@ def correct_radiation_for_terrain(r_beam, r_diff, slope, terrain_a, sun_z,
     return r_s
 
 
-def scale_irradiation_with_potential_irradiation(gdir, sis,
+@entity_task(writes=['sis_scale_factor'])
+def scale_irradiation_with_potential_irradiation(gdir, sis=None,
                                                  diff_rad_ratio=0.2):
     """
     Scale actual measured incoming solar radiation with potential irradiation.
@@ -555,7 +573,7 @@ def scale_irradiation_with_potential_irradiation(gdir, sis,
     ----------
     gdir: :py:class:`crampon.GlacierDirectory`
         GlacierDirectory to scale Ipot for.
-    sis: float
+    sis: float, optional
         Mean irradiation over a time span, e.g. one day.
     diff_rad_ratio: float
         Ratio of diffuse to total radiation. We can only guess here,
@@ -599,11 +617,12 @@ def scale_irradiation_with_potential_irradiation(gdir, sis,
 
     da.to_netcdf(gdir.get_filepath('sis_scale_factor'))
 
+    """
     # todo: this assumes that ISIS is the mean! To make this happen,
     #  we actually need to know which Ipot cells the SIS cell covers. Then
     #  we don't take the mean of Ipot in general, but the mean over this area.
     # Ipot as a factor of the mean
-    ipot_fac = ipot / np.nanmean(ipot)
+    ipot_fac = ipot.ipot / ipot.ipot.mean(dim=['x', 'y'])
     ipot_fac = np.clip(ipot_fac, diff_rad_ratio, None)
 
     # todo: this does not include diffuse radiation: if at a time step
@@ -614,6 +633,7 @@ def scale_irradiation_with_potential_irradiation(gdir, sis,
     isis_distr = sis * ipot_fac
 
     return isis_distr
+    """
 
 
 # For whatever reason this 'HAS TO'

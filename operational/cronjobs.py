@@ -243,6 +243,9 @@ def daily_nwp_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
     log.info('Making NWP files from COSMO/ECMWF data...')
     make_nwp_files()
 
+    log.info('Distributing NWP files to glaciers...')
+    execute_entity_task(tasks.process_nwp_data, gdirs)
+
     log.info('Making mass balance prediction from COSMO/ECMWF predictions...')
     execute_entity_task(mb_production.make_mb_prediction, gdirs,
                         climate_suffix='_cosmo')
@@ -285,7 +288,9 @@ def monthly_tasks(gdirs: List[utils.GlacierDirectory]) -> None:
     # recalculate the current MB
     raise NotImplementedError()
 
-
+# necessary for mutliproc. on Windows
+inifile = '~\\crampon\\sandbox\\CH_params.cfg'
+cfg.initialize(file=inifile)
 if __name__ == '__main__':
 
     import argparse
@@ -306,7 +311,7 @@ if __name__ == '__main__':
     # Tasks that should be run at every start of the operational workflow
     # 1) initialize
     inifile = args.params
-
+    inifile = '~\\crampon\\sandbox\\CH_params.cfg'
     if not inifile:
         dec = input("Sure you want to run with the standard params?[y/n]")
         if 'y' in dec:
@@ -357,7 +362,8 @@ if __name__ == '__main__':
 
     # 5) make future MB
     log.info('Making mass balance prediction...')
-    execute_entity_task(mb_production.make_mb_prediction, gdirs)
+    execute_entity_task(mb_production.make_mb_prediction, gdirs, climate_suffix='_cosmo')
+    execute_entity_task(mb_production.make_mb_prediction, gdirs, climate_suffix='_ecmwf')
 
     # Necessary in order not to have spikes anymore
     daily_tasks(gdirs)

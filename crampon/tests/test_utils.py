@@ -18,6 +18,7 @@ from crampon import utils
 from crampon import cfg
 from oggm.tests.test_utils import TestDataFiles as OGGMTestDataFiles
 from oggm.tests.funcs import get_test_dir
+from crampon.tests.funcs import init_ogg
 _url_retrieve = None
 
 # General settings
@@ -29,6 +30,7 @@ TEST_DIR = os.path.join(CURRENT_DIR, 'tmp_download')
 if not os.path.exists(TEST_DIR):
     os.mkdir(TEST_DIR)
 
+ogg = init_ogg()
 
 
 @requires_credentials
@@ -80,7 +82,7 @@ class TestCirrusClient(unittest.TestCase):
 class TestMiscFuncs(unittest.TestCase):
 
     def setUp(self):
-        pass
+        self.gdir = ogg
 
     def tearDown(self):
 

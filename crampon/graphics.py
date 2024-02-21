@@ -1,12 +1,15 @@
 from __future__ import division
 from typing import Optional, List
 
+import pickle
+
 from oggm.graphics import *
 from crampon.utils import entity_task, popup_html_string
 from crampon import utils, workflow
 from crampon.core.preprocessing.climate import GlacierMeteo
 from crampon.core.models.massbalance import MassBalance, DailyMassBalanceModel, \
-    CurrentYearMassBalance
+    CurrentYearMassBalance, BraithwaiteModel, HockModel, PellicciottiModel, \
+    OerlemansModel
 from crampon.core import holfuytools
 import xarray as xr
 from matplotlib.ticker import NullFormatter
@@ -168,7 +171,7 @@ def plot_fog_mb_glaciers(fog_dir=None, y=None, x=None):
     g = GoogleVisibleMap(x=[np.nanmin(x), np.nanmax(x)],
                          y=[np.nanmin(y), np.nanmax(y)])
 
-    # the google static image is a standard rgb image
+    # the Google static image is a standard rgb image
     ggl_img = g.get_vardata()
     sm = Map(g.grid, factor=1)
     sm.set_rgb(ggl_img)  # add background rgb image
@@ -374,7 +377,7 @@ def make_mb_popup_map(
             'fillOpacity': 1
         }
 
-    #glc_gdf['popup_html'] = glc_gdf.apply(popup_html_string, axis=1)
+    # glc_gdf['popup_html'] = glc_gdf.apply(popup_html_string, axis=1)
 
     layer_geom = folium.FeatureGroup(name='layer', control=False)
 
@@ -476,44 +479,33 @@ class AnyObject(object):
 class AnyObjectHandler(object):
     """Manages items in a custom legend."""
 
-    def __init__(self, color='b', facecolor='cornflowerblue'):
+    def __init__(self, color='b', facecolor='cornflowerblue', linestyle='-',
+                 edgecolor=None, edge_linestyle=None, linewidth=None):
         self.facecolor = facecolor
         self.color = color
+        self.linestyle = linestyle
+        self.edgecolor = edgecolor
+        self.edge_linestyle = edge_linestyle
+        self.linewidth = linewidth
 
     def legend_artist(self, legend, orig_handle, fontsize, handlebox):
-        """
-        Create two custom patches in a legend.
-
-        Parameters
-        ----------
-        legend :
-            The original legend object.
-        orig_handle :
-            The original handles of the legend.
-        fontsize : int
-            A font size to use in the legend.
-        handlebox :
-            Box of the legend handles.
-
-        Returns
-        -------
-        [l1, patch1, patch2]: list
-            List of legend and the two custom patches.
-        """
         x0, y0 = handlebox.xdescent, handlebox.ydescent
         width, height = handlebox.width, handlebox.height
         l1 = mlines.Line2D([x0, y0 + width],
                            [0.5 * height, 0.5 * height],
                            linestyle='-', color=self.color)
-        patch1 = mpatches.Rectangle([x0, y0 + 0.25 * height], width,
-                                    0.5 * height,
-                                    facecolor=self.facecolor,
-                                    alpha=0.5,
-                                    transform=handlebox.get_transform())
-        patch2 = mpatches.Rectangle([x0, y0], width, height,
-                                    facecolor=self.facecolor,
-                                    alpha=0.3,
-                                    transform=handlebox.get_transform())
+        patch1 = mpatches.Rectangle((x0, y0 + 0.25 * height), width,
+                                    0.5 * height, facecolor=self.facecolor,
+                                    alpha=0.5, edgecolor=self.edgecolor,
+                                    linestyle=self.edge_linestyle,
+                                    transform=handlebox.get_transform(),
+                                    linewidth=self.linewidth)
+        patch2 = mpatches.Rectangle((x0, y0), width, height,
+                                    facecolor=self.facecolor, alpha=0.3,
+                                    edgecolor=self.edgecolor,
+                                    linestyle=self.edge_linestyle,
+                                    transform=handlebox.get_transform(),
+                                    linewidth=self.linewidth)
         handlebox.add_artist(l1)
         handlebox.add_artist(patch1)
         handlebox.add_artist(patch2)
@@ -675,7 +667,7 @@ def plot_cumsum_climatology_and_current(
         fig, ax = plt.subplots(figsize=(10, 5))
         ax2 = None
 
-    # Say if time on x axis is 365 or 366 long
+    # Say if time on x-axis is 365 or 366 long
     xtime = pd.date_range(
         dt.datetime(current.isel(time=0).time.dt.year.item(), 10, 1),
         periods=366)
@@ -847,7 +839,7 @@ def plot_cumsum_climatology_and_current(
             current.time.values[0], None))
         sis_end = pd.Timestamp(sis.isel(time=sis.notnull().argmin(
             dim='time').item()).time.values)
-    else: # try the hard way
+    else:  # try the hard way
         potential_sis_end = []
         try_sis_models = ['PellicciottiModel', 'OerlemansModel']
         for sism in try_sis_models:
@@ -865,6 +857,46 @@ def plot_cumsum_climatology_and_current(
         ax.text((sis_end - current.time.values[0]).days + 1, plt.ylim()[0] + 0.05,
                 'End radiation delivery', transform=ax.transData, va='bottom',
                 fontsize=fs, c='y')
+
+    if abs_deviations:
+        clim_med = clim.MB.values[:, 2][:len(current.MB.values)]
+        # from cumsum back to actual MBs (stupid!)
+        clim_mbs = np.append(
+            np.array([clim_med[0]]), np.array(clim_med[1:] - clim_med[:-1]),
+            axis=0)
+        curr_mbs = np.append(
+            np.atleast_2d(current.MB.values[0]),
+            current.MB.values[1:] - current.MB.values[:-1], axis=0)
+
+        # we take only the median
+        clim_acc = np.sum(clim_mbs[clim_mbs > 0.])
+        clim_abl = np.sum(clim_mbs[clim_mbs < 0.])
+        # here we take all PCTLs
+        curr_acc = np.sum(np.clip(curr_mbs, 0., None), axis=0)
+        curr_abl = np.sum(np.clip(curr_mbs, None, 0.), axis=0)
+        barlist = ['Accumulation', 'Ablation', 'Budget']
+        bar_ypos = np.arange(len(barlist))
+        # absolute devs
+        devs = np.concatenate((np.atleast_2d(curr_acc - clim_acc),
+                               np.atleast_2d(curr_abl - clim_abl),
+                               np.atleast_2d(current.MB.values[-1, :] -
+                                             clim_med[-1])), axis=0)
+        if ax2 is not None:
+            ax2.barh(bar_ypos, devs[:, 4], left=devs[:, 0], color='g',
+                     edgecolor='g', alpha=0.3)
+            ax2.barh(bar_ypos, devs[:, 3], left=devs[:, 1], color='g',
+                     edgecolor='g', alpha=0.5)
+            ax2.barh(bar_ypos, np.repeat(.1, 3), left=devs[:, 2], color='g',
+                     edgecolor='g')
+            maxabsdev = np.nanmax(np.abs(devs))
+            nextnumber = 10 ** np.ceil(np.log10(maxabsdev))
+            ax2.set_xlim([-nicenumber(maxabsdev, nextnumber),
+                          nicenumber(maxabsdev, nextnumber)])
+
+            ax2.set_yticks(bar_ypos)
+            ax2.set_yticklabels(barlist, fontsize=12)
+            ax2.invert_yaxis()  # labels read top-to-bottom
+            ax2.set_xlabel('Deviation of PCTLs from climatology (mm w.e.)')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # include suptitle
 
@@ -1380,7 +1412,7 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
         Value in data units according to which the colors from textcolors are
         applied.  If None (the default) uses the middle of the colormap as
         separation.  Optional.
-    **kwargs
+    **textkw: dict
         All other arguments are forwarded to each call to `text` used to create
         the text labels.
     """
@@ -1499,7 +1531,7 @@ def plot_holfuy_station_availability(fontsize=14, barheight=0.8):
     """
 
     def add_index(ixlist, g, s):
-        """Tell where the bars shall be placed on the y axis."""
+        """Tell where the bars shall be placed on the y-axis."""
         ix = None
         if g == 'RGI50-11.A55F03':
             ix = 0
@@ -1637,6 +1669,79 @@ def plot_holfuy_station_availability(fontsize=14, barheight=0.8):
     plt.show()
 
 
+class GoogleVisibleMapCrampon(salem.GoogleCenterMap):
+    """Google static map automatically sized and zoomed to a selected region.
+
+    It's usually more practical to use than GoogleCenterMap.
+    """
+
+    def __init__(self, x, y, crs=salem.wgs84, size_x=640, size_y=640, scale=1,
+                 maptype='satellite', use_cache=True, zoom=20, **kwargs):
+        """Initialize
+
+        Parameters
+        ----------
+        x : array
+          x coordinates of the points to include on the map
+        y : array
+          y coordinates of the points to include on the map
+        crs : proj or Grid
+          coordinate reference system of x, y
+        size_x : int
+          image size
+        size_y : int
+          image size
+        scale : int
+          image scaling factor. 1, 2. 2 is higher resolution but takes
+          longer to download
+        maptype : str, default: 'satellite'
+          'roadmap', 'satellite', 'hybrid', 'terrain'
+        use_cache : bool, default: True
+          store the downloaded image in the cache to avoid future downloads
+        kwargs : **
+          any keyword accepted by motionless.CenterMap (e.g. `key` for the API)
+
+        Notes
+        -----
+        To obtain the exact domain specified in `x` and `y` you may have to
+        play with the `size_x` and `size_y` kwargs.
+        """
+
+        global API_KEY
+        import pyproj
+
+        if 'center_ll' in kwargs:
+            raise ValueError('incompatible kwargs.')
+
+        # Transform to lonlat
+        crs = salem.gis.check_crs(crs)
+        if isinstance(crs, pyproj.Proj):
+            lon, lat = gis.transform_proj(crs, salem.wgs84, x, y)
+        elif isinstance(crs, salem.Grid):
+            lon, lat = crs.ij_to_crs(x, y, crs=salem.wgs84)
+        else:
+            raise NotImplementedError()
+
+        # surely not the smartest way to do but should be enough for now
+        mc = (np.mean(lon), np.mean(lat))
+        while zoom >= 0:
+            grid = salem.gis.googlestatic_mercator_grid(
+                center_ll=mc, nx=size_x, ny=size_y, zoom=zoom, scale=scale)
+            dx, dy = grid.transform(lon, lat, maskout=True)
+            if np.any(dx.mask):
+                zoom -= 1
+            else:
+                break
+
+        if 'key' not in kwargs:
+            if API_KEY is None:
+                with open(utils.get_demo_file('.api_key'), 'r') as f:
+                    API_KEY = f.read().replace('\n', '')
+            kwargs['key'] = API_KEY
+
+        salem.GoogleCenterMap.__init__(
+            self, center_ll=mc, size_x=size_x, size_y=size_y, zoom=zoom,
+            scale=scale, maptype=maptype, use_cache=use_cache, **kwargs)
 
 
 def camera_station_map(holfuy_data_path):
@@ -1647,7 +1752,7 @@ def camera_station_map(holfuy_data_path):
     ----------
     holfuy_data_path: str
         Path to the file called `holfuy_data.csv`, e.g.
-        'c:\\users\\johannes\\documents\\holfuyretriever\\holfuy_data.csv'.
+        '..\\documents\\holfuyretriever\\holfuy_data.csv'.
 
     Returns
     -------
@@ -1697,7 +1802,7 @@ def multicolor_axislabel(ax, text_list, color_list, axis='x', anchorpad=0,
     ax: matplotlib.Axis
         Axes object where the labels should be drawn
     text_list: list of str
-        List of all of the text items.
+        List of all the text items.
     color_list: list of str
         Corresponding list of colors for the text.
     axis: str
@@ -1730,7 +1835,7 @@ def multicolor_axislabel(ax, text_list, color_list, axis='x', anchorpad=0,
     if axis == 'y' or axis == 'both':
         boxes = [TextArea(text, textprops=dict(color=color, ha='left',
                                                va='bottom', rotation=90,
-                                               **kw))
+                                               **kwargs))
                  for text, color in zip(text_list[::-1], color_list[::-1])]
         ybox = VPacker(children=boxes, align="center", pad=0, sep=5)
         anchored_ybox = AnchoredOffsetbox(
@@ -1740,7 +1845,7 @@ def multicolor_axislabel(ax, text_list, color_list, axis='x', anchorpad=0,
         ax.add_artist(anchored_ybox)
 
 
-def overview_camera_mb_cumsum(fontsize=20):
+def overview_camera_mb_cumsum(fontsize=32):
     """
     Plot an overview of the cumulative mass balance at the Holfuy cameras.
 
@@ -1757,8 +1862,8 @@ def overview_camera_mb_cumsum(fontsize=20):
     """
     from crampon.core import holfuytools
     fig, (ax1, ax3, ax5) = plt.subplots(
-        3, gridspec_kw={'height_ratios': [3, 1, 1]}, sharex=True,
-        figsize=(66, 36))
+        3, gridspec_kw={'height_ratios': [6, 3, 1.9]}, sharex=True,
+        figsize=(132, 99))
 
     fig, ax2 = plt.subplots()
     colors = ['b', 'orange', 'g']
@@ -1780,7 +1885,7 @@ def overview_camera_mb_cumsum(fontsize=20):
             sid,
             base_dir=os.path.join(cfg.PATHS['working_dir'], 'per_glacier'))
         obs_merge = holfuytools.prepare_holfuy_camera_readings(
-            gdir, ice_only=False)
+            gdir, ice_only=False, holfuy_path='.\\holfuyretriever\\')
 
         for j, h in enumerate(sorted(obs_merge.height.values)):
             to_plot_x = obs_merge.sel(height=h).date.values
@@ -1811,6 +1916,10 @@ def overview_camera_mb_cumsum(fontsize=20):
                      ls=types[j])
 
             if h == 2564.:  # station 1008
+
+                # todo: delete
+                #climate.process_custom_climate_data_crampon(gdir)
+
                 gmet = xr.open_dataset(gdir.get_filepath(
                     'climate_daily')).sel(time=to_plot_x)
                 # ax3.plot(to_plot_x, t_air.temp, linewidth=2, color='r')
@@ -1818,7 +1927,7 @@ def overview_camera_mb_cumsum(fontsize=20):
                 #                 color='r', alpha=0.3)
                 gmeteo = GlacierMeteo(gdir)
                 station_tmean_deg_c = [gmeteo.get_tmean_for_melt_at_heights(
-                    d, heights=h) for d in to_plot_x]
+                    d, heights=np.array([h])) for d in to_plot_x]
                 station_tmean_k = np.array(station_tmean_deg_c) + \
                     cfg.ZERO_DEG_KELVIN
                 sis_scale_fac = xr.open_dataarray(gdir.get_filepath(
@@ -1839,7 +1948,7 @@ def overview_camera_mb_cumsum(fontsize=20):
                     station_tmean_k))/np.ptp(station_tmean_k)))
                 print(heat_wave_mask)
                 print(to_plot_x)
-                print('Heat wave dates:', to_plot_x[heat_wave_mask])
+                #print('Heat wave dates:', to_plot_x[heat_wave_mask])
                 ax3.plot(to_plot_x, (station_sis_scaled - np.min(
                     station_sis_scaled)) / np.ptp(
                     station_sis_scaled), linewidth=2, color='g',
@@ -1898,6 +2007,171 @@ def overview_camera_mb_cumsum(fontsize=20):
         np.datetime64('2019-10-03'))
 
 
+def plot_cali_param_space(gdir=None, cali_suffix='', how='countour'):
+    """
+
+    Parameters
+    ----------
+    gdir: `py:class:crampon.GlacierDirectory`
+    cali_suffix: str
+    how: str
+
+    # todo: this is not finished yet
+
+    Returns
+    -------
+
+    """
+    # get cali
+
+    # there is also a cool example for a 2d scatter plus histograms here:
+    # https://bit.ly/35gyVBa
+    
+    # this is a template for a 3d scatter plot with projection on planes from
+    # https://bit.ly/35iP9cX
+    x = np.random.random(100)
+    y = np.random.random(100)
+    z = np.sin(3 * x ** 2 + y ** 2)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(x, y, z)
+
+    ax.plot(x, z, 'r+', zdir='y', zs=1.5)
+    ax.plot(y, z, 'g+', zdir='x', zs=-0.5)
+    ax.plot(x, y, 'k+', zdir='z', zs=-1.5)
+
+    ax.set_xlim([-0.5, 1.5])
+    ax.set_ylim([-0.5, 1.5])
+    ax.set_zlim([-1.5, 1.5])
+
+    plt.show()
+
+
+def plot_ensemble_size_optimization(error_dict):
+    """
+
+    Parameters
+    ----------
+    error_dict
+
+    Returns
+    -------
+
+    """
+
+    fig, ax = plt.subplots()
+    sorted_dict = OrderedDict(error_dict)
+    std_error = []
+    for k, v in error_dict.items():
+        std_error.append(np.std(v) / np.sqrt(len(v)))
+    xvals = np.array([i[0] for i in list(sorted_dict.items())])
+    yvals = np.array([i[1] for i in list(sorted_dict.items())])
+    yvals_med = np.mean(yvals, axis=1)
+    ax.plot(xvals, yvals_med)
+    ax.fill_between(
+        xvals, yvals_med + std_error, yvals_med - std_error, alpha=0.2)
+    ax.set_title('Ensemble size optimization')
+    ax.set_xlabel('Ensemble size')
+    ax.set_ylabel('CRPS +/- std error (m w.e.)')
+
+
+def plot_comparison_glamos_model_perc_extrap_summer_balance():
+    """
+    Plot MB predicted with percentile extrapolation and GLAMOS summer balance.
+
+    Returns
+    -------
+    None
+    """
+    plt.style.use('seaborn-talk')
+    area = [2.665, 0.0862, 0.0594, 0.2694, 2.595, 4.785, 1.8887, 0.3013,
+            2.168, 2.04]
+    names = ['Silvretta', 'Pizol', 'Schwarzbach', 'Sex Rouge',
+             'Tsanfleuron', 'Gries', 'Basòdino', 'Murtel', 'Clariden',
+             'Adler']
+    labels = [x for _, x in sorted(zip(area, names), reverse=True)]
+    glamos = [-2.88, -2.58, -2.49, -3.35, -3.7, -3.37, -2.817, -2.395, -2.97,
+              -1.93]
+    glamos = [x for _, x in sorted(zip(area, glamos), reverse=True)]
+    glamos_std = [0.175, 0.175, 0.175, 0.175, 0.175, 0.175, 0.175, 0.175,
+                  0.175, 0.175]
+    glamos_std = [x for _, x in sorted(zip(area, glamos_std), reverse=True)]
+    model = [-2.47, -3.52, -3.78, -3.56, -3.73, -3.71, -2.81, -2.36,
+             -2.77, -1.98]
+    model = [x for _, x in sorted(zip(area, model), reverse=True)]
+    model_std = [1.38, 0.68, 1.58, 1.38, 1.37, 1.04, 1.48, 1.04, 1.54,
+                 1.26]
+    model_std = [x for _, x in sorted(zip(area, model_std), reverse=True)]
+    perc_extrap = [-2.79, -3.45, -3.53, -3.35, -3.67, -3.4, -2.8, -2.19,
+                   -2.78, -2.01]
+    perc_extrap = [x for _, x in sorted(zip(area, perc_extrap), reverse=True)]
+    perc_extrap_std = [0.36, 0.23, 0.32, 0.23, 0.29, 0.26, 0.24, 0.36,
+                       0.28, 0.29]
+    perc_extrap_std = [x for _, x in sorted(zip(area, perc_extrap_std),
+                                            reverse=True)]
+    plt.figure()
+    plt.errorbar(np.arange(0., 10., 1), glamos, yerr=glamos_std,
+                 label='GLAMOS analysis', fmt='o')
+    plt.errorbar(np.arange(-0.2, 9.8, 1), model, yerr=model_std,
+                 label='MODEL only', fmt='o')
+    plt.errorbar(np.arange(0.2, 10.2, 1), perc_extrap, yerr=perc_extrap_std,
+                 label='Percentile extrapolation', fmt='o')
+    plt.ylabel('Summer Mass Balance (m w.e.)', fontsize=18)
+    plt.title(
+        'Comparison between GLAMOS analysis, model prediction and percentile '
+        'extrapolation based on GLAMOS climatologies',
+        fontsize=16)
+    plt.grid(which='y')
+    plt.legend(fontsize=18)
+    plt.yticks(fontsize=18)
+    plt.xticks(np.arange(10), labels, fontsize=18, rotation=45)
+    [plt.axvline(p, c='grey', alpha=0.5, lw=1.5) for p in np.arange(9) + 0.5]
+    plt.tight_layout()
+
+
+def plot_comparison_glamos_model_perc_extrap_summer_balance_clim_from_gmb():
+    """
+    Plot MB predicted with percentile extrapolation with calibration on GMB and
+    GLAMOS summer balance.
+    """
+    plt.style.use('seaborn-talk')
+    area = [2.665, 0.0862, 0.0594, 0.2694, 2.595, 4.785, 1.8887, 0.3013]
+    labels = ['Silvretta', 'Pizol', 'Schwarzbach', 'Sex Rouge',
+              'Tsanfleuron', 'Gries', 'Basòdino',
+              'Murtel']  # , 'Clariden','Adler']
+    labels = [x for _, x in sorted(zip(area, labels), reverse=True)]
+    glamos = [-2.88, -2.58, -2.49, -3.35, -3.7, -3.37, -2.817, -2.395]  # ,
+    # -2.97, -1.93]
+    glamos = [x for _, x in sorted(zip(area, glamos), reverse=True)]
+    glamos_std = [0.175, 0.175, 0.175, 0.175, 0.175, 0.175, 0.175, 0.175]  # ,
+    # 0.175, 0.175]
+    glamos_std = [x for _, x in sorted(zip(area, glamos_std), reverse=True)]
+    model = [-3.94, -3.88, -3.95, -3.5, -3.72, -2.87, -3.7, -3.56]
+    model = [x for _, x in sorted(zip(area, model), reverse=True)]
+    model_std = [0.95, 2.33, 0.79, 1.88, 1.66, 1.4, 0.85, 0.75]
+    model_std = [x for _, x in sorted(zip(area, model_std), reverse=True)]
+    perc_extrap = [-3.85, -3.27, -5.53, -3.16, -3.35, -2.52, -3.19, -2.82]
+    perc_extrap = [x for _, x in sorted(zip(area, perc_extrap), reverse=True)]
+    perc_extrap_std = [0.29, 0.45, 0.16, 0.37, 0.43, 0.33, 0.2, 0.21]
+    perc_extrap_std = [x for _, x in sorted(zip(area, perc_extrap_std),
+                                            reverse=True)]
+    plt.figure()
+    plt.errorbar(np.arange(0., len(glamos), 1), glamos, yerr=glamos_std,
+                 label='GLAMOS analysis', fmt='o')
+    plt.errorbar(np.arange(-0.2, len(glamos) - 0.2, 1), model, yerr=model_std,
+                 label='MODEL only', fmt='o')
+    plt.errorbar(np.arange(0.2, len(glamos) + 0.2, 1), perc_extrap,
+                 yerr=perc_extrap_std, label='Percentile extrapolation',
+                 fmt='o')
+    plt.ylabel('Summer Mass Balance (m w.e.)', fontsize=18)
+    plt.grid()
+    plt.legend(fontsize=18)
+    plt.yticks(fontsize=18)
+    plt.xticks(np.arange(10), labels, fontsize=18, rotation=45)
+    plt.tight_layout()
+
+
 def plot_2d_reconstruction_mean_spread(gdir, ens_var, n_mean_levels=20):
     """
     Plot a 2D reconstruction of ensemble mean and spread for a given glacier.
@@ -1918,8 +2192,8 @@ def plot_2d_reconstruction_mean_spread(gdir, ens_var, n_mean_levels=20):
     """
     # todo: implement differentiation by catchments!!
     fl_h, _ = gdir.get_inversion_flowline_hw()
-    varmean = np.mean(ens_var, axis=1)
-    varstd = np.std(ens_var, axis=1)
+    varmean = np.nanmean(ens_var, axis=1)
+    varstd = np.nanstd(ens_var, axis=1)
     dem = xr.open_rasterio(gdir.get_filepath('dem'))
     dem_ds = dem.to_dataset(name='data')
     dem_ds.attrs['pyproj_srs'] = dem.crs
