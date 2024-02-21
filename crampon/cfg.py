@@ -348,6 +348,7 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     # Paths
     PATHS['working_dir'] = cp['working_dir']
+    PATHS['debris_fp'] = cp['debris_fp']
     PATHS['dem_file'] = cp['dem_file']
     PATHS['climate_file'] = cp['climate_file']
     PATHS['nwp_file_cosmo'] = cp['nwp_file_cosmo']
@@ -410,6 +411,7 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     # Some non-trivial params
     PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
+    PARAMS['debris'] = cp.as_bool('debris')
     PARAMS['grid_dx_method'] = cp['grid_dx_method']
     PARAMS['topo_interp'] = cp['topo_interp']
     PARAMS['use_intersects'] = cp.as_bool('use_intersects')
@@ -423,6 +425,7 @@ def initialize(file=None, logging_level='INFO', params=None):
     PARAMS['filter_for_neg_flux'] = cp.as_bool('filter_for_neg_flux')
     PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
     PARAMS['rgi_version'] = cp['rgi_version']
+    PARAMS['DF'] = cp['DF']
     PARAMS['use_rgi_area'] = cp.as_bool('use_rgi_area')
     PARAMS['compress_climate_netcdf'] = cp.as_bool(
         'compress_climate_netcdf')
@@ -451,7 +454,7 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     # Delete non-floats
     ltr = [
-        'working_dir', 'dem_file', 'climate_file', 'climate_dir',
+        'working_dir', 'dem_file', 'debris_fp', 'climate_file', 'climate_dir',
         'wgms_rgi_links', 'glathida_rgi_links', 'firncore_dir', 'lfi_dir',
         'lfi_worksheet', 'dem_dir', 'hfile', 'grid_dx_method', 'data_dir',
         'mp_processes', 'use_multiprocessing', 'use_divides',
@@ -488,7 +491,7 @@ def initialize(file=None, logging_level='INFO', params=None):
         'free_board_marine_terminating', 'use_kcalving_for_inversion',
         'error_when_glacier_reaches_boundaries', 'glacier_length_method',
         'use_inversion_params_for_run', 'ref_mb_valid_window',
-        'tidewater_type']
+        'tidewater_type', 'debris']
     for k in ltr:
         cp.pop(k, None)
 
@@ -527,6 +530,7 @@ def initialize(file=None, logging_level='INFO', params=None):
 
     oggmcfg.PATHS['dem_file'] = cp['dem_file']
     oggmcfg.PATHS['data_dir'] = cp['data_dir']
+    oggmcfg.PATHS['debris_fp'] = cp['debris_fp']
     oggmcfg.PATHS['hfile'] = cp['hfile']
     oggmcfg.PATHS['climate_file'] = cp['climate_file']
     oggmcfg.PATHS['nwp_file_cosmo'] = cp['nwp_file_cosmo']
@@ -572,7 +576,8 @@ def initialize(file=None, logging_level='INFO', params=None):
     oggmcfg.PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
     oggmcfg.PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
     oggmcfg.PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
-
+    oggmcfg.PARAMS['debris'] = cp.as_bool('debris')
+    
     # Climate
     oggmcfg.PARAMS['sis_delivery_delay'] = cp.as_bool('sis_delivery_delay')
     oggmcfg.PARAMS['temp_use_local_gradient'] = cp.as_int(
@@ -641,7 +646,8 @@ def initialize(file=None, logging_level='INFO', params=None):
     PARAMS['auto_skip_task'] = cp.as_bool('auto_skip_task')
     PARAMS['run_mb_calibration'] = cp.as_bool('run_mb_calibration')
     PARAMS['continue_on_error'] = cp.as_bool('continue_on_error')
-
+    PARAMS['debris'] = cp.as_bool('debris')
+    
     # Climate
     PARAMS['temp_use_local_gradient'] = cp.as_int(
         'temp_use_local_gradient_cells')  # overwrite
@@ -723,7 +729,7 @@ def initialize(file=None, logging_level='INFO', params=None):
            'problem_glaciers', 'bgmon_hydro', 'bgday_hydro',
            'run_mb_calibration', 'albedo_method', 'glamos_ids',
            'begin_mbyear_month', 'begin_mbyear_day', 'swe_bounds',
-           'alpha_bounds', 'tacc_bounds', 'nwp_file_cosmo', 'use_mp_spawn']
+           'alpha_bounds', 'tacc_bounds', 'nwp_file_cosmo', 'use_mp_spawn', 'debris_fp', 'debris']
     for k in ltr:
         cp.pop(k, None)
 
