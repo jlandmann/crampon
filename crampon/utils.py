@@ -1,43 +1,42 @@
 """
 A collection of some useful miscellaneous functions.
 """
-
 from __future__ import absolute_import, division
 
-from joblib import Memory
-import posixpath
-import salem
-import os
-import pandas as pd
-import numpy as np
-import logging
-import paramiko as pm
-import ftplib
-import xarray as xr
-import rasterio
-import subprocess
-from rasterio.merge import merge as merge_tool
-from rasterio.warp import transform as transform_tool
-from rasterio.mask import mask as riomask
-import geopandas as gpd
-import shapely
-import datetime as dt
-from configobj import ConfigObj, ConfigObjError
-from itertools import product
-import tarfile
-import zipfile
-import dask
-import sys
-import glob
 import fnmatch
+import ftplib
+import logging
+import posixpath
+import shutil
+import subprocess
+import sys
+import tarfile
 import netCDF4
-from scipy import stats
-from salem import lazy_property, read_shapefile
-from functools import partial, wraps
-from oggm.utils import *
+from oggm.utils import GlacierDirectory, global_task, SuperclassMeta, mkdir, \
+    filter_rgi_name, parse_rgi_meta, tolist, pipe_log, get_demo_file, \
+    nicenumber, haversine, entity_task, get_topo_file
+import time
+import zipfile
+from functools import wraps
+from itertools import product
 # Locals
-import crampon.cfg as cfg
 from pathlib import Path
+from typing import Union, Iterable
+
+import geopandas as gpd
+import pandas as pd
+import paramiko as pm
+import salem
+import shapely
+import shapely.geometry as shpg
+import xarray as xr
+from configobj import ConfigObj, ConfigObjError
+from joblib import Memory
+from oggm.utils._workflow import _timeout_handler
+from salem import lazy_property, read_shapefile
+from scipy import stats, special
+
+from crampon.core.holfuytools import *
 
 
 # I should introduce/alter:
@@ -53,18 +52,30 @@ MEMORY = Memory(cfg.CACHE_DIR, verbose=0)
 SAMPLE_DATA_GH_REPO = 'crampon-sample-data'
 
 
-def get_oggm_demo_file(fname):
+dpm = {'noleap': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       '365_day': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       'standard': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       'gregorian': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       'proleptic_gregorian': [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30,
+                               31],
+       'all_leap': [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       '366_day': [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+       '360_day': [0, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]}
+
+
+def get_oggm_demo_file(fname: str):
     """ Wraps the oggm.utils.get_demo_file function"""
     get_demo_file(fname)  # Calls the func imported from oggm.utils
 
 
-def get_crampon_demo_file():
+def get_crampon_demo_file(fname: str):
     """This should be done once some test data are allowed to be moved to an 
     external repo"""
     raise NotImplementedError
 
 
-def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
+def retry(exceptions: Union[str, Iterable, tuple, Exception], tries=100,
+          delay=60, backoff=1, log_to=None):
     """
     Retry decorator calling the decorated function with an exponential backoff.
 
@@ -72,7 +83,7 @@ def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
 
     Parameters
     ----------
-    exceptions: str or tuple
+    exceptions: str or tuple or Exception
         The exception to check. May be a tuple of exceptions to check. If just
         `Exception` is provided, it will retry after any Exception.
     tries: int
@@ -87,7 +98,7 @@ def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
 
     References
     -------
-    .. [1] https://wiki.python.org/moin/PythonDecoratorLibrary#CA-901f7a51642f4dbe152097ab6cc66fef32bc555f_5
+    .. [1] https://shorturl.at/mqsHX
     .. [2] https://www.calazan.com/retry-decorator-for-python-3/
     """
     def deco_retry(f):
@@ -115,65 +126,65 @@ def retry(exceptions, tries=100, delay=60, backoff=1, log_to=None):
 
 
 def weighted_quantiles(values, quantiles, sample_weight=None,
-                          values_sorted=False, old_style=False):
-        """
-        A function to approximate quantiles of data with corresponding weights.
+                       values_sorted=False, old_style=False):
+    """
+    A function to approximate quantiles of data with corresponding weights.
 
-        Very close to numpy.percentile, but supports weights. Quantiles should
-        be in the range [0, 1].
-        Slightly modified and documentation extended from [1]_.
+    Very close to numpy.percentile, but supports weights. Quantiles should
+    be in the range [0, 1].
+    Slightly modified and documentation extended from [1]_.
 
-        Parameters
-        ----------
-        values: numpy.array
-            Data array with the values to be weighted.
-        quantiles: array-like
-            The quantiles to be calculated. Have to be in range [0, 1].
-        sample_weight: array-like, same shape as `values`
-            Weights for the individual data. If not given, they will be the
-            same (one) for each value.
-        values_sorted: bool
-            If True, will avoid sorting of initial array. Default: False.
-        old_style: bool
-            If True, will correct output to be consistent with
-            numpy.percentile. Default: False
+    Parameters
+    ----------
+    values: numpy.array
+        Data array with the values to be weighted.
+    quantiles: array-like
+        The quantiles to be calculated. Have to be in range [0, 1].
+    sample_weight: array-like, same shape as `values`
+        Weights for the individual data. If not given, they will be the
+        same (one) for each value.
+    values_sorted: bool
+        If True, will avoid sorting of initial array. Default: False.
+    old_style: bool
+        If True, will correct output to be consistent with
+        numpy.percentile. Default: False
 
-        Returns
-        -------
-        numpy.array with computed quantiles.
+    Returns
+    -------
+    numpy.array with computed quantiles.
 
-        References
-        ----------
-        .. [1] https://stackoverflow.com/questions/21844024/weighted-percentile-using-numpy
-        """
+    References
+    ----------
+    .. [1] https://shorturl.at/rtwA2
+    """
 
-        values = np.array(values)
-        quantiles = np.array(quantiles)
-        if sample_weight is None:
-            sample_weight = np.ones(len(values))
-        sample_weight = np.array(sample_weight)
-        assert np.all(quantiles >= 0) and np.all(
-            quantiles <= 1), 'quantiles should be in [0, 1]'
+    values = np.array(values)
+    quantiles = np.array(quantiles)
+    if sample_weight is None:
+        sample_weight = np.ones(len(values))
+    sample_weight = np.array(sample_weight)
+    assert np.all(quantiles >= 0) and np.all(
+        quantiles <= 1), 'quantiles should be in [0, 1]'
 
-        if not values_sorted:
-            sorter = np.argsort(values)
-            values = values[sorter]
-            sample_weight = sample_weight[sorter]
+    if not values_sorted:
+        sorter = np.argsort(values)
+        values = values[sorter]
+        sample_weight = sample_weight[sorter]
 
-        weighted_quantiles = np.cumsum(sample_weight) - 0.5 * sample_weight
-        if old_style:
-            # To be convenient with numpy.percentile
-            weighted_quantiles -= weighted_quantiles[0]
-            weighted_quantiles /= weighted_quantiles[-1]
-        else:
-            weighted_quantiles /= np.sum(sample_weight)
-        return np.interp(quantiles, weighted_quantiles, values)
+    weighted_quantiles = np.cumsum(sample_weight) - 0.5 * sample_weight
+    if old_style:
+        # To be convenient with numpy.percentile
+        weighted_quantiles -= weighted_quantiles[0]
+        weighted_quantiles /= weighted_quantiles[-1]
+    else:
+        weighted_quantiles /= np.sum(sample_weight)
+    return np.interp(quantiles, weighted_quantiles, values)
 
 
-def leap_year(year, calendar='standard'):
+def leap_year(year: int, calendar: str = 'standard') -> bool:
     """
     Determine if year is a leap year.
-    Amended from http://xarray.pydata.org/en/stable/examples/monthly-means.html
+    Amended from https://docs.xarray.dev/en/stable/examples/monthly-means.html
 
     Parameters
     ----------
@@ -201,6 +212,40 @@ def leap_year(year, calendar='standard'):
               (year < 1583)):
             leap = False
     return leap
+
+
+def get_dpm(time: pd.DatetimeIndex or xr.CFTimeIndex,
+            calendar: str = 'standard') -> np.array:
+    """
+    Return array of days per month corresponding to months provided in `time`.
+
+    From an old version of the xarray documentation (link was [1]_).
+
+    time: pd.DatetimeIndex, xr.CFTimeIndex
+        A time index with attributes 'year' and 'month'.
+    calendar: str
+        Calendar for which the days per month shall be returned: Allowed:
+        'standard', 'gregorian', 'proleptic_gregorian', 'julian'. Default:
+        'standard'.
+
+    Returns
+    -------
+    month_length: np.array
+        Array with month lengths in days.
+
+    References
+    ----------
+    [1]_ : https://bit.ly/3sFrsFT
+    """
+    month_length = np.zeros(len(time), dtype=np.int)
+
+    cal_days = dpm[calendar]
+
+    for i, (month, year) in enumerate(zip(time.month, time.year)):
+        month_length[i] = cal_days[month]
+        if leap_year(year, calendar=calendar) and (month == 2):
+            month_length[i] += 1
+    return month_length
 
 
 def closest_date(date, candidates):
@@ -232,7 +277,7 @@ def closest_date(date, candidates):
 
     References
     ----------
-    .. [1] https://stackoverflow.com/questions/32237862/find-the-closest-date-to-a-given-date
+    .. [1] https://bit.ly/2M2Mr4K
     """
     return min(candidates, key=lambda x: abs(x - date))
 
@@ -269,7 +314,7 @@ def justify(arr, invalid_val=0, axis=1, side='left'):
 
     References
     ----------
-    .. [1] https://stackoverflow.com/questions/44558215/python-justifying-numpy-array.
+    .. [1] https://bit.ly/2LMzUT8
     """
 
     if invalid_val is np.nan:
@@ -289,20 +334,20 @@ def justify(arr, invalid_val=0, axis=1, side='left'):
     return out
 
 
-def get_begin_last_flexyear(date, start_month=10, start_day=1):
+def get_begin_last_flexyear(date, start_month=None, start_day=None):
     """
     Get the begin date of the most recent/current ("last") flexible
     year since the given date.
 
     Parameters
     ----------
-    date: datetime.datetime
+    date: datetime.datetime or pd.Timestamp
         Date from which on the most recent begin of the hydrological
         year shall be determined, e.g. today's date.
-    start_month: int
+    start_month: int or None, optional
         Begin month of the flexible year. Default: 10 (for hydrological
-        year)
-    start_day: int
+        year). Default: None (parse from params.cfg)
+    start_day: int or None, optional
         Begin day of month for the flexible year. Default: 1
 
     Returns
@@ -316,12 +361,17 @@ def get_begin_last_flexyear(date, start_month=10, start_day=1):
     2018-01-24.
 
     >>> import datetime as dt
-    >>> get_begin_last_flexyear(dt.datetime(2018,1,24))
+    >>> get_begin_last_flexyear(dt.datetime(2018, 1, 24))
     dt.datetime(2017, 10, 1, 0, 0)
-    >>> get_begin_last_flexyear(dt.datetime(2017,11,30),
+    >>> get_begin_last_flexyear(dt.datetime(2017, 11, 30),
     >>> start_month=9, start_day=15)
     dt.datetime(2017, 9, 15, 0, 0)
     """
+
+    if start_month is None:
+        start_month = cfg.PARAMS['begin_mbyear_month']
+    if start_day is None:
+        start_day = cfg.PARAMS['begin_mbyear_day']
 
     start_year = date.year if dt.datetime(
         date.year, start_month, start_day) <= date else date.year - 1
@@ -352,16 +402,58 @@ def get_nash_sutcliffe_efficiency(simulated, observed):
     return nse
 
 
-def reclassify_heights_widths(gdir, elevation_bin=10.):
+def reclassify_heights_widths(gdir, elevation_bin=10., horizontal_dx=None):
+    """
+    Reclassify the flowline heights and widths of a glacier.
+
+    Parameters
+    ----------
+    gdir : `py:class:crampon.GlacierDirectory`
+        The GlacierDirectory to reclassify the height and widths for.
+    elevation_bin : float, optional
+        Size of the elevation bins in meters to use for reclassification.
+        Mutually exclusive with `horizontal_dx`. Default: 10.
+    horizontal_dx : float, optional
+        Horizontal distance in meters to use for reclassification.
+        Mutually exclusive with `elevation_bin`. Default: None.
+
+    Returns
+    -------
+    new_heights, new_widths: tuple of np.array
+        Reclassified heights and widths.
+    """
+
     heights, widths = gdir.get_inversion_flowline_hw()
 
     height_classes = np.arange(nicenumber(min(heights), 10, lower=True),
                                nicenumber(max(heights), 10, lower=True),
                                elevation_bin)
-    height_bins = np.digitize(heights, height_classes)
-    new_widths = [sum(widths[np.where(height_bins == i)]) for i in
-                  range(1, max(height_bins + 1))]
-    return height_classes, new_widths
+    if (elevation_bin is not None) and (horizontal_dx is None):
+        height_bins = np.digitize(heights, height_classes)
+        new_widths = [sum(widths[np.where(height_bins == i)]) for i in
+                      range(1, max(height_bins + 1))]
+        return height_classes, new_widths
+    elif (elevation_bin is None) and (horizontal_dx is not None):
+        fls = g.read_pickle('inversion_flowlines')
+        new_heights = []
+        new_widths = []
+        for fl in fls:
+            real_distances = fl.dis_on_line * g.grid.dx
+            dx_classes = np.arange(0., nicenumber(np.max(real_distances),
+                                                  horizontal_dx),
+                                   horizontal_dx)
+            dx_bins = np.digitize(real_distances, dx_classes)
+            new_heights.extend(
+                [np.mean(heights[np.where(dx_bins == i)]) for i in
+                 range(1, max(dx_bins + 1))])
+            new_widths.extend([np.sum(widths[np.where(dx_bins == i)]) for i in
+                               range(1, max(dx_bins + 1))])
+
+        return new_heights, new_widths
+    else:
+        raise NotImplementedError('A common usage of the elevation_bin and '
+                                  'map_dx keywords together is not yet '
+                                  'implemented.')
 
 
 def parse_credentials_file(credfile=None):
@@ -630,7 +722,7 @@ class CirrusClient(pm.SSHClient):
             self.ssh_open = False
 
 
-class WSLSFTPClient():
+class WSLSFTPClient:
     """
     Class for interacting with the FTP Server at WSL.
 
@@ -732,6 +824,48 @@ class WSLSFTPClient():
         self.client.quit()
 
 
+def copy_to_webpage_dir(src_dir: str, glob_pattern='*') -> None:
+    """
+    Copy folder content to the CRAMPON webpage directory on the web server.
+
+    Uses SFTP as protocol.
+
+    Parameters
+    ----------
+    src_dir : str
+        Source directory that shall be copied.
+    glob_pattern: str
+        Addition restriction on what shall be selected. Default: '*' (no
+        restriction).
+
+    Returns
+    -------
+    None.
+    """
+
+    to_put = glob.glob(os.path.join(src_dir,  glob_pattern))
+    to_put = [i for i in to_put if os.path.isfile(i)]
+    client = pm.SSHClient()
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(pm.AutoAddPolicy())
+    cred = parse_credentials_file()
+    # first connect to login.ee.ethz.ch, then ssh to web server
+    client.connect(cred['webpage_server']['login_host'],
+                   cred['webpage_server']['port'],
+                   cred['webpage_server']['user'],
+                   cred['webpage_server']['password'])
+    _ = client.exec_command(cred['webpage_server']['remote_cmd'])
+
+    # now we're on webpage server
+    sftp = client.open_sftp()
+    for tp in to_put:
+        common = os.path.commonpath([src_dir, tp])
+        srv_path = './public_html/' + tp[len(common):].replace('\\', '/')
+        sftp.put(tp, srv_path)
+    sftp.close()
+    client.close()
+
+
 @xr.register_dataset_accessor('crampon')
 class MeteoTSAccessor(object):
     def __init__(self, xarray_obj):
@@ -739,6 +873,12 @@ class MeteoTSAccessor(object):
         Class for handling Meteo time series, building upon xarray.
         """
         self._obj = xarray_obj
+        self.grid = salem.Grid.from_json(os.path.join(cfg.PATHS['climate_dir'],
+                                                      'meteoch_grid_ch.json'))
+        # take random file as template
+        self.roi = xr.open_dataset(glob.glob(
+            os.path.join(cfg.PATHS['climate_dir'], '**', 'verified', '**',
+                         'TabsD*20180131000000.nc'), recursive=True)[0])
 
     def update_with_verified(self, ver_path):
         """
@@ -819,22 +959,26 @@ class MeteoTSAccessor(object):
         if not freq:
             freq = pd.infer_freq(self._obj.time.values)
 
-        # still a TO DO in xarray 0.11: if not monotonic, error is thrown
-        # https://github.com/pydata/xarray/blob/6d55f99905d664ef73cb708cfe8c52c2c651e8dc/xarray/core/groupby.py#L234
-        self._obj = self._obj.sortby('time')
-        resampled = self._obj.resample(time=freq, keep_attrs=True,
-                                       **kwargs).mean()
+        # index must be monotonic and should not have gaps
+        dti = pd.DatetimeIndex(self._obj.time.values)
+        if not dti.is_monotonic:
+            self._obj = self._obj.sortby('time')
+        if dti.inferred_freq is None:
+            # .mean() = fill with NaN
+            self._obj = self._obj.resample(
+                time=freq, keep_attrs=True, **kwargs).mean()
+
         if "R" in self._obj.variables:  # fill gaps with zero
-            resampled.fillna(0.)
-        else: # interpolate linearly # todo also for sunshine?
-            resampled = resampled.interpolate_na('time')  # mean = fill with NaN
-        diff_a = len(set(resampled.time.values) - set(self._obj.time.values))
-        diff_r = len(set(self._obj.time.values) - set(resampled.time.values))
+            self._obj.fillna(0.)
+        else:  # interpolate linearly # todo also for sunshine?
+            self._obj = self._obj.interpolate_na('time')
+        diff_a = len(set(self._obj.time.values) - set(dti.values))
+        diff_r = len(set(dti.values) - set(self._obj.time.values))
 
         log.info('{} time steps were added, {} removed during resampling.'
                  .format(diff_a, diff_r))
 
-        return resampled
+        return self._obj
 
     def cut_by_glacio_years(self, method='fixed'):
         """
@@ -891,7 +1035,7 @@ class MeteoTSAccessor(object):
 
         # whatever coordinate that is
         if "crs" in self._obj.data_vars:
-            self._obj = self._obj.drop(['crs'])
+            self._obj = self._obj.drop_vars(['crs'])
 
         # whatever coordinate that is
         if 'dummy' in self._obj.coords:
@@ -899,14 +1043,19 @@ class MeteoTSAccessor(object):
 
         # whatever coordinate that is
         if 'latitude_longitude' in self._obj.coords:
-            self._obj = self._obj.drop(['latitude_longitude'])
+            self._obj = self._obj.drop_sel(['latitude_longitude'])
         if 'latitude_longitude' in self._obj.variables:
-            self._obj = self._obj.drop(['latitude_longitude'])
+            self._obj = self._obj.drop_vars(['latitude_longitude'])
 
         if 'longitude_latitude' in self._obj.coords:
-            self._obj = self._obj.drop(['longitude_latitude'])
+            self._obj = self._obj.drop_sel(['longitude_latitude'])
         if 'longitude_latitude' in self._obj.variables:
-            self._obj = self._obj.drop(['longitude_latitude'])
+            self._obj = self._obj.drop_vars(['longitude_latitude'])
+
+        if 'geographic_projection' in self._obj.coords:
+            self._obj = self._obj.drop_sel(['geographic_projection'])
+        if 'geographic_projection' in self._obj.variables:
+            self._obj = self._obj.drop_vars(['geographic_projection'])
 
         # this is the case for the operational files
         if 'x' in self._obj.coords:
@@ -939,6 +1088,10 @@ class MeteoTSAccessor(object):
         # Christoph Frei says everything smaller than 0.1 can be cut off
         if 'RD' in self._obj.variables:
             self._obj = self._obj.where(self._obj.RD >= 0.1, 0.)
+
+        if (self._obj.time >= pd.Timestamp('2021-12-01')).any() and \
+                ('TabsD' in self._obj.data_vars or 'RD' in self._obj.data_vars):
+            self._obj = self._obj.salem.subset(ds=self.roi)
 
         # THIS IS ABSOLUTELY TEMPORARY AND SHOULD BE REPLACED
         # THE REASON IS A SLIGHT PRECISION PROBLEM IN THE INPUT DATA, CHANGING
@@ -1035,22 +1188,26 @@ class MeteoTSAccessor(object):
         try:
             self._obj.coords['lat'] = lats
         except ValueError:
-            pass
+            pass  # already cut to CH shape
         try:
             self._obj.coords['lon'] = lons
         except ValueError:
-            pass
+            pass  # already cut to CH shape
 
         return self._obj
 
 
-def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
-                              outfile):
+def climate_files_from_netcdf(tfile, pfile, hfile, outfile, tminfile=None,
+                              tmaxfile=None, rfile=None):
     """
     Create a netCDF file with daily temperature, precipitation and
     elevation reference from given files.
 
-    The file format will be as OGGM likes it.
+    There will be at least one file created: the OGGM 'climate_monthly' file,
+    containing the variables 'temp' and 'prcp'. If the given name for outfile
+    is not the path to the monthly climate file, then additionally outfile is
+    generated, containg also all other variables. The monthly climate is in any
+    case calculated from a monthly resampling of the daily values.
     The temporal extent of the file will be the inner or outer join of the time
     series extent of the given input files .
 
@@ -1058,18 +1215,18 @@ def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
     ----------
     tfile: str
         Path to mean temperature netCDF file.
-    tminfile: str
-        Path to minimum temperature netCDF file.
-    tmaxfile: str
-        Path to maximum temperature netCDF file.
     pfile: str
         Path to precipitation netCDF file.
-    rfile: str
-        Path to radiation netCDF file.
     hfile: str
         Path to the elevation netCDF file.
     outfile: str
         Path to and name of the written file.
+    tminfile: str, optional
+        Path to minimum temperature netCDF file.
+    tmaxfile: str, optional
+        Path to maximum temperature netCDF file.
+    rfile: str, optional
+        Path to radiation netCDF file.
 
     Returns
     -------
@@ -1101,14 +1258,31 @@ def daily_climate_from_netcdf(tfile, tminfile, tmaxfile, pfile, rfile, hfile,
 
     # Units cannot be checked anymore at this place (lost in xarray...)
 
+    # it can be that one retrieval was not successful (file not on FTP yet)
+    # todo: include 'sis' once it is delivered operationally
+    for var in ['temp', 'tmin', 'tmax', 'prcp']:
+        if np.isnan(nc_ts[var].isel(time=-1)).all():
+            raise FileNotFoundError("Variable '{}' not (yet) on server for "
+                                    "{}.".format(var, nc_ts.time[-1]))
+
     # ensure it's compressed when exporting
     nc_ts.encoding['zlib'] = True
     nc_ts.to_netcdf(outfile)
 
+    # to be sure, produce the OGGM climate file anyway
+    if 'climate_monthly' not in outfile:
+        outfile_oggm = os.path.join(os.path.dirname(outfile),
+                                    'climate_monthly.nc')
+        temp_monthly = temp.resample(time="MS").mean()
+        prec_monthly = prec.resample(time="MS").sum()
+        nc_ts_monthly = xr.merge([temp_monthly, prec_monthly])
+        nc_ts_monthly.encoding['zlib'] = True
+        nc_ts_monthly.to_netcdf(outfile_oggm)
 
-def read_netcdf(path, chunks=None, tfunc=None):
+
+def read_netcdf(path, chunks=None, tfunc=None, **kwargs):
     # use a context manager, to ensure the file gets closed after use
-    with xr.open_dataset(path, cache=False) as ds:
+    with xr.open_dataset(path, cache=False, **kwargs) as ds:
         # some extra stuff - this is actually stupid and should go away!
         ds = ds.crampon.postprocess_cirrus()
 
@@ -1128,7 +1302,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     """
     Read several netCDF files at once. Requires dask module.
 
-    Changed from:  http://xarray.pydata.org/en/stable/io.html#id7
+    Changed from:  https://xarray.pydata.org/en/stable/io.html#id7
 
     Parameters
     ----------
@@ -1136,7 +1310,7 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
         List with paths to the files to be read.
     dim: str
         Dimension along which to concatenate the files.
-    tfunc: function
+    tfunc: callable
         Transformation function for the data, e.g. 'lambda ds: ds.mean()'
     chunks: dict
         Chunk sizes as can be specified to xarray.open_dataset.
@@ -1149,13 +1323,18 @@ def read_multiple_netcdfs(files, dim='time', chunks=None, tfunc=None):
     paths = sorted(files)
     datasets = [read_netcdf(p, chunks, tfunc) for p in paths]
 
-    combined = xr.auto_combine(datasets, concat_dim=dim)
+    # concat is much faster, so combine only where necessary
+    try:
+        combined = xr.concat(datasets, dim='time')
+    except ValueError:
+        # vars can vary over time (e.g. 'geographic_projection' in msgSISD)
+        combined = xr.combine_by_coords(datasets, data_vars='minimal')
     return combined
 
 
 # can't write it to cache until we have e.g. a date in the climate_all filename
 @MEMORY.cache
-def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
+def joblib_read_climate_crampon(nc_file, ilon, ilat, default_tgrad,
                                 minmax_tgrad, use_tgrad, default_pgrad,
                                 minmax_pgrad, use_pgrad):
     """
@@ -1163,8 +1342,8 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
 
     Parameters
     ----------
-    ncpath: str
-        Path to the netCDF file in OGGM suitable format.
+    nc_file: str or xr.Dataset
+        Path to the netCDF file in OGGM suitable format, or Dataset itself.
     ilon: int
         Index of a longitude in the netCDF.
     ilat: int
@@ -1202,10 +1381,11 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
         raise ValueError('Window edge width must be odd number or zero.')
 
     # get climate at reference cell
-    climate = xr.open_dataset(ncpath)
+    if isinstance(nc_file, str):
+        climate = xr.open_dataset(nc_file)
+    else:
+        climate = nc_file.copy(deep=True)
     local_climate = climate.isel(dict(lat=ilat, lon=ilon))
-    itgrad = np.zeros(len(climate.time)) + default_tgrad
-    ipgrad = np.zeros(len(climate.time)) + default_pgrad
     iprcp = local_climate.prcp
     itemp = local_climate.temp
     itmin = local_climate.tmin
@@ -1222,65 +1402,677 @@ def joblib_read_climate_crampon(ncpath, ilon, ilat, default_tgrad,
 
     # temperature gradient
     if use_tgrad != 0:
-        # some min/max constants for the window
-        tminw = divmod(use_tgrad, 2)[0]
-        tmaxw = divmod(use_tgrad, 2)[0] + 1
-        
-        tlatslice = slice(ilat - tminw, ilat + tmaxw)
-        tlonslice = slice(ilon - tminw, ilon + tmaxw)
-        
-        ttemp = climate.temp.isel(dict(lat=tlatslice, lon=tlonslice))
-        thgt = climate.hgt.isel(dict(lat=tlatslice, lon=tlonslice))
-        thgt = thgt.values.flatten()
+        itgrad, itgrad_unc, itgrad_loc, itgrad_scale = get_tgrad_from_window(climate, ilat, ilon,
+                                                   use_tgrad, default_tgrad,
+                                                   minmax_tgrad)
+    else:
+        # todo: come up with estimate for uncertainty in this case
+        itgrad = np.zeros(len(climate.time)) + default_tgrad
+        itgrad_unc = np.zeros(len(climate.time))
+        itgrad_loc = np.full(len(climate.time), np.nan)
+        itgrad_scale = np.full(len(climate.time), np.nan)
 
-        for t, loct in enumerate(ttemp.values):
-            # NaNs happen a the grid edges:
-            mask = ~np.isnan(loct)
-            slope, _, _, p_val, _ = stats.linregress(
-                np.ma.masked_array(thgt, ~mask).compressed(),
-                loct[mask].flatten())
-            itgrad[t] = slope if (p_val < 0.01) else default_tgrad
+    # precipitation gradient
+    if use_pgrad != 0:
+        ipgrad, ipgrad_unc, ipgrad_loc, ipgrad_scale = (
+            get_pgrad_from_window(climate, ilat, ilon, use_pgrad,
+                                  default_pgrad, minmax_pgrad))
+    else:
+        ipgrad = np.zeros(len(climate.time)) + default_pgrad
+        # todo: come up with estimate for uncertainty in this case
+        ipgrad_unc = np.zeros(len(climate.time))
+        ipgrad_loc = np.full(len(climate.time), np.nan)
+        ipgrad_scale = np.zeros(len(climate.time), np.nan)
 
-        # apply the boundaries, in case the gradient goes wild
-        itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
-
-        # temperature gradient
-        if use_pgrad != 0:
-            # some min/max constants for the window
-            pminw = divmod(use_pgrad, 2)[0]
-            pmaxw = divmod(use_pgrad, 2)[0] + 1
-
-            platslice = slice(ilat - pminw, ilat + pmaxw)
-            plonslice = slice(ilon - pminw, ilon + pmaxw)
-
-            pprcp = climate.prcp.isel(dict(lat=platslice, lon=plonslice))
-            phgt = climate.hgt.isel(dict(lat=platslice, lon=plonslice))
-            phgt = phgt.values.flatten()
-
-            for t, locp in enumerate(pprcp.values):
-                # NaNs happen at grid edges, 0 should be excluded for slope
-                mask = ~np.isnan(locp) & (locp != 0.)
-                flattened_mask = locp[mask].flatten()
-                if (~mask).all():
-                    continue
-                slope, icpt, _, p_val, _ = stats.linregress(
-                    np.ma.masked_array(phgt, ~mask).compressed(),
-                    flattened_mask)
-                # Todo: Is that a good method?
-                # gradient in % m-1: mean(all prcp values + slope for 1 m)
-                # p=0. happens if there are only two grids cells
-                ipgrad[t] = np.nanmean(((flattened_mask + slope) /
-                                        flattened_mask) - 1) if (
-                    (p_val < 0.01) and (p_val != 0.)) else default_pgrad
-
-            # apply the boundaries, in case the gradient goes wild
-            ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
-
-    return iprcp, itemp, itmin, itmax, isis, itgrad, ipgrad, ihgt
+    return (iprcp, itemp, itmin, itmax, isis, itgrad, itgrad_unc, ipgrad,
+            ipgrad_unc, ihgt, itgrad_loc, itgrad_scale, ipgrad_loc,
+            ipgrad_scale)
 
 
 # IMPORTANT: overwrite OGGM functions with same name
 joblib_read_climate = joblib_read_climate_crampon
+
+
+def _calc_slope(x, y):
+    """wrapper that returns the slope from a linear regression fit of x & y"""
+    slope = stats.linregress(x.flatten(), y.flatten())[0]  # extract slope only
+    return slope
+
+
+def _calc_pval(x, y):
+    """wrapper returning the p-value from a linear regression fit of x & y"""
+    pval = stats.linregress(x.flatten(), y.flatten())[3]  # extract slope only
+    return pval
+
+
+def _calc_stderr(x, y):
+    """wrapper that returns the stderr from a linear regression fit of x & y"""
+    stderr = stats.linregress(x.flatten(), y.flatten())[
+        4]  # extract slope only
+    return stderr
+
+
+def bayes_slope_post(h, T, sigma_squared, b_0, g=1.):
+    beta_hat = np.sum(h * T) / np.sum(h**2)
+    mean = (g * beta_hat) / (1 + g) + b_0 / (1 + g)
+    var = (g / (1 + g)) * (sigma_squared / np.sum(h**2))
+    return mean, np.sqrt(var)
+
+
+def bayes_slope_explicit(h, T, sigma_squared, b_0, g=1.):
+    alpha_hat = np.mean(T)
+    beta_hat = np.sum(h * T) / np.sum(h**2)
+    s_t_squared = np.sum((T - alpha_hat - beta_hat * h)**2)
+
+    return np.sqrt(sigma_squared)**(-T.size-2) * np.exp(-( ((1+g)/g) * np.sum(h ** 2 * (beta_t - (g/(1+g))* beta_hat - (1/(1+g)*b_0)) ** 2) + (1 / (1+g)) * np.sum(h ** 2 * (beta_hat + b_0) ** 2) + s_t_squared ) / (2 * sigma_squared))
+
+
+def bayes_slope_from_t_dist(x, y, df, b_0, g=1.):
+    """
+    Get Bayesian slope mean and standard deviation using a g-prior of Zellner.
+
+    Source: E-Mail Hansruedi Künsch 14.07.2021 (PDF page 2, approach 1).
+
+    Parameters
+    ----------
+    x : np.array
+        Independent variable, e.g. height.
+    y : np.array
+        Dependent variable, e.g. temperature or precipitation.
+    df : int
+        Degrees of freedom for the t-distribution form which is sampled. For
+        25 grid cells this is 24.
+    b_0 : float
+        Prior mean (slope), e.g. -0.0065 K m-1 for temperature.
+    g : float
+        "g" of the g-prior of Zellner _[1], here we set: Default = 1.
+
+    Returns
+    -------
+    slope_mean, slope_std, loc, scale
+        Bayesian slope mean and standard deviation from a t-distribution
+        sample, and the underyling `loc` and `scale` parameters from the t
+        distribution.
+    """
+
+    alpha_hat = np.mean(y)
+    beta_hat = np.sum(x * y) / np.sum(x ** 2)
+    loc = (g * beta_hat + b_0) / (1 + g)
+    s_t_squared = np.sum((y - alpha_hat - beta_hat * x) ** 2)
+    c_squared = (g / (df * (1 + g) * np.sum(x ** 2))) * \
+                (s_t_squared + 1 / (1 + g) *
+                 np.sum(x ** 2 * (beta_hat - b_0) ** 2))
+    scale = np.sqrt(c_squared)
+    sample = stats.t.rvs(df=df, loc=loc, scale=scale, size=5000)
+
+    # we sampled from a t-dist, but I am cheeky to make the big sample Normal
+    slope_mean = np.mean(sample)
+    slope_std = np.std(sample)
+    return slope_mean, slope_std, loc, scale
+
+
+def get_tgrad_from_window(climate, ilat, ilon, win_size, default_tgrad,
+                          minmax_tgrad, use_kalmanfilter=False,
+                          use_bayes_post=True):
+    """
+    Get temperature gradient from linear regression of surrounding grid cells.
+
+    Parameters
+    ----------
+    climate: xr.Dataset
+        Climate dataset, needs to contain variables/coordinates "time", "temp"
+        and "hgt".
+    win_size:
+        Search window size in number of grid cells.
+    ilat: int
+        Index of latitude of the central grid cell.
+    ilon: int
+        Index of longitude of the central grid cell.
+    default_tgrad: float
+        Default temperature gradient to be used when regression fails (i.e. not
+        significant).
+    minmax_tgrad: tuple
+        Min/Max bounds of the local temperature gradient, in case the window
+        regression kernel search delivers strange values (should not happen for
+        the MeteoSwiss grids, but who knows...).
+    use_kalmanfilter: bool, optional
+        Whether to use a Kalman Filter to calculate the gradient amd its
+        uncertainty. This method uses a `gradient climatology` with its mean
+        and standard deviation as background and the observed gradient and
+        standard error of the slope as `observation`. Median and standard
+        deviation of the posterior are used as gradient ("itgrad)" and its
+        uncertainty ("itgrad_unc"), respectively. Mutually exclusive with
+        `use_bayes_post`. Default: False.
+    use_bayes_post: bool, optional
+        Use a Bayesian posterior for the slope (see e-mail Hansruedi Künsch
+         13.06.2021). Mutually exclusive with `use_kalmanfilter`. Default: True
+
+    Returns
+    -------
+    itgrad: np.array
+        Temperature gradient over time for the given ilat/ilon.
+    """
+
+    if use_bayes_post is True and use_kalmanfilter is True:
+        raise ValueError('`use_kalmanfilter` is mutually exclusive with '
+                         '`use_bayes_post`.')
+
+    itgrad = np.full(len(climate.time), np.nan)
+    itgrad_unc = np.full(len(climate.time), np.nan)
+    itgrad_loc = np.full(len(climate.time), np.nan)
+    itgrad_scale = np.full(len(climate.time), np.nan)
+
+    # some min/max constants for the window
+    tminw = divmod(win_size, 2)[0]
+    tmaxw = divmod(win_size, 2)[0] + 1
+
+    tlatslice = slice(ilat - tminw, ilat + tmaxw)
+    tlonslice = slice(ilon - tminw, ilon + tmaxw)
+
+    # time should be first (we iterate over ttemp.values)
+    climate = climate.transpose('time', ...)
+
+    ttemp = climate.temp.isel(dict(lat=tlatslice, lon=tlonslice))
+    thgt = climate.hgt.isel(dict(lat=tlatslice, lon=tlonslice))
+
+    # for predictions
+    if 'member' in ttemp.dims:
+        ttemp_stack = ttemp.stack(ens=['member', 'time'])
+        slope = xr.apply_ufunc(_calc_slope, thgt, ttemp_stack, vectorize=True,
+                              input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                              output_core_dims=[[]], output_dtypes=[np.float],
+                              dask='parallelized')
+        slope = slope.unstack()
+        pval = xr.apply_ufunc(_calc_pval, thgt, ttemp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        pval = pval.unstack()
+        stderr = xr.apply_ufunc(_calc_stderr, thgt, ttemp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        stderr = stderr.unstack()
+
+        if use_kalmanfilter is True or use_bayes_post is True:
+            # todo implement Kalman filtering for meteorological predictions
+            log.warning('Use of Kalman-filter/Bayes gradient not yet '
+                        'implemented for meteorological predictions. '
+                        'Continuing with standard method....')
+        # replace correlations and stderrs with high pvals
+        # todo: better use rolling window filling also here
+        itgrad = slope.where(pval < 0.01,
+                             cfg.PARAMS['temp_default_gradient'])
+        itgrad_unc = stderr.where(pval < 0.01, np.nanmean(stderr))
+
+    else:  # past meteorology
+
+        thgt = thgt.values.flatten()
+
+        # make a gradient climatology
+        for t, loct in enumerate(ttemp.values):
+            # NaNs happen a the grid edges:
+            mask = ~np.isnan(loct)
+            slope, intcpt, _, p_val, stderr = stats.linregress(
+                np.ma.masked_array(thgt, ~mask).compressed(),
+                loct[mask].flatten())
+            # otherwise we drop the "bad" correlations already
+            itgrad[t] = slope if (p_val < 0.01) else np.nan
+            itgrad_unc[t] = stderr if (p_val < 0.01) else np.nan
+
+        # fill not significant gradients with DOY rolling window mean
+        # todo: this could also be not on DOYs
+        grad_ds = xr.DataArray(dims={'time': climate.time.data},
+                               data=itgrad.data,
+                               coords={'time': ('time', climate.time.data)})
+        grad_unc_ds = xr.DataArray(dims={'time': climate.time.data},
+                                   data=itgrad_unc.data,
+                                   coords={'time': ('time', climate.time.data)})
+
+        grad_rmean = grad_ds.rolling(time=30, center=True,
+                                     min_periods=5).mean(
+            skipna=True).groupby('time.dayofyear').mean(skipna=True)
+        grad_unc_rmean = grad_unc_ds.rolling(time=30, center=True,
+            min_periods=5).mean(skipna=True).groupby(
+            'time.dayofyear').mean(skipna=True)
+        # fill NaNs - to be sure
+        grad_rmean = grad_rmean.fillna(default_tgrad)
+        # todo: define a mean tgrad uncertainty?
+        grad_unc_rmean = grad_unc_rmean.fillna(np.nanmean(itgrad_unc))
+
+        # start the actual calculation
+        itgrad = np.full(len(climate.time), np.nan)
+        itgrad_unc = np.full(len(climate.time), np.nan)
+        itgrad_loc = np.full(len(climate.time), np.nan)
+        itgrad_scale = np.full(len(climate.time), np.nan)
+        for t, loct in enumerate(ttemp.values):
+            # NaNs happen at the grid edges:
+            mask = ~np.isnan(loct)
+            slope, intcpt, _, p_val, stderr = stats.linregress(
+                np.ma.masked_array(thgt, ~mask).compressed(),
+                loct[mask].flatten())
+
+            # for Kalman filtering we need them all
+            if use_kalmanfilter is True:
+                # we insert all slope and correct them later
+                itgrad[t] = slope
+                itgrad_unc[t] = stderr
+            elif use_bayes_post is True:
+                # we calculate is directly
+                h = np.ma.masked_array(thgt, ~mask).compressed()
+                h_diff = h - np.nanmean(h)
+
+                doy = pd.Timestamp(ttemp.isel(time=t).time.values).dayofyear
+                climate_tgrad_at_doy = grad_rmean.sel(dayofyear=doy).item()
+                bayes_mean, bayes_std, loc, scale = bayes_slope_from_t_dist(
+                    h_diff, loct[mask].flatten(), df=win_size**2-1,
+                    b_0=climate_tgrad_at_doy)
+
+                # we draw from a t-distribution, but assume Gaussianity
+                itgrad[t] = bayes_mean
+                itgrad_unc[t] = bayes_std
+                itgrad_loc[t] = loc
+                itgrad_scale[t] = scale
+            else:
+                # otherwise we drop the "bad" correlations already
+                itgrad[t] = slope if (p_val < 0.01) else np.nan
+                itgrad_unc[t] = stderr if (p_val < 0.01) else np.nan
+
+            if itgrad_unc[t] <= 0.:
+                print('stop')
+
+        # fill not significant gradients with DOY rolling window mean
+        # todo: this could also be not on DOYs
+        grad_ds = xr.DataArray(dims={'time': climate.time.data},
+                               data=itgrad.data,
+                               coords={'time': ('time', climate.time.data)})
+        grad_unc_ds = xr.DataArray(dims={'time': climate.time.data},
+                                   data=itgrad_unc.data,
+                                   coords={'time': ('time',
+                                                    climate.time.data)})
+
+        grad_rmean = grad_ds.rolling(time=30, center=True, min_periods=5).mean(
+            skipna=True).groupby('time.dayofyear').mean(skipna=True)
+        grad_unc_rmean = grad_unc_ds.rolling(
+            time=30, center=True, min_periods=5).mean(skipna=True).groupby(
+            'time.dayofyear').mean(skipna=True)
+
+        # days with nan should be the same in both itgrad and itgrad_unc
+        nan_doys = [pd.Timestamp(x).dayofyear for x in
+                    climate.time[np.isnan(itgrad)].values]
+
+        if use_kalmanfilter is False and use_bayes_post is False:
+            # fill NaNs - to be sure
+            grad_rmean = grad_rmean.fillna(default_tgrad)
+            # todo: define a mean tgrad uncertainty?
+            grad_unc_rmean = grad_unc_rmean.fillna(np.nanmean(itgrad_unc))
+            # fill finally
+            itgrad[np.isnan(itgrad)] = (
+                grad_rmean.sel(dayofyear=nan_doys).values)
+            itgrad_unc[np.isnan(itgrad_unc)] = \
+                grad_unc_rmean.sel(dayofyear=nan_doys).values
+        elif use_bayes_post is True:
+            pass
+        elif use_kalmanfilter is True:
+            # here, we want the std of the climatology gradient
+            grad_rstd = grad_ds.rolling(time=30, center=True,
+                min_periods=5).mean(skipna=True).groupby('time.dayofyear').std(
+                skipna=True)
+
+            def gaussian_multiply(g1_mean, g1_var, g2_mean, g2_var):
+                mean = (g1_var * g2_mean + g2_var * g1_mean) / (
+                            g1_var + g2_var)
+                variance = (g1_var * g2_var) / (g1_var + g2_var)
+                return mean, variance
+
+            def update(prior_mean, prior_var, likelihood_mean, likelihood_var):
+                posterior = gaussian_multiply(likelihood_mean, likelihood_var,
+                                              prior_mean, prior_var)
+                return posterior
+
+            itgrad, itgrad_var = update(
+                grad_rmean[climate.time.dt.dayofyear.values-1],
+                grad_rstd[climate.time.dt.dayofyear.values-1]**2,
+                itgrad, itgrad_unc**2)
+            itgrad_unc = np.sqrt(itgrad_var)
+
+        # todo: should this really happen??????
+        # apply the boundaries, in case the gradient goes wild
+        itgrad = np.clip(itgrad, minmax_tgrad[0], minmax_tgrad[1])
+
+        itgrad = xr.DataArray(itgrad, coords={'time': climate.coords['time']},
+                     dims=('time',), name='tgrad')
+        itgrad_unc = xr.DataArray(itgrad_unc,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='tgrad_unc')
+
+        if use_bayes_post is True:
+            itgrad_loc = xr.DataArray(itgrad_loc,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='tgrad_loc')
+            itgrad_scale = xr.DataArray(itgrad_scale,
+                                      coords={'time': climate.coords['time']},
+                                      dims=('time',), name='tgrad_scale')
+        else:
+            itgrad_loc = None
+            itgrad_scale = None
+
+    return itgrad, itgrad_unc, itgrad_loc, itgrad_scale
+
+
+def get_pgrad_from_window(climate, ilat, ilon, win_size, default_pgrad,
+                          minmax_pgrad, use_kalmanfilter=False,
+                          use_bayes_post=True):
+    """
+    Get precipitation gradient from linear regression of surrounding grid cells.
+
+    # todo: this method should get an overhaul & analyse the orographic facets
+            as suggested by Christoph Frei (pers. comm.)
+
+    Parameters
+    ----------
+    climate: xr.Dataset
+        Climate dataset, needs to contain variables/coordinates "time", "prcp"
+        and "hgt".
+    win_size:
+        Search window size in number of grid cells.
+    ilat: int
+        Index of latitude of the central grid cell.
+    ilon: int
+        Index of longitude of the central grid cell.
+    default_pgrad: float
+        Default precipitation gradient to be used when regression fails (i.e.
+        not significant).
+    minmax_tgrad: tuple
+        Min/Max bounds of the local temperature gradient, in case the window
+        regression kernel search delivers strange values (should not happen for
+        the MeteoSwiss grids, but who knows...).
+    use_kalmanfilter: bool, optional
+        Whether to use a Kalman Filter to calculate the gradient and its
+        uncertainty. This method uses a `gradient climatology` with its mean
+        and standard deviation as background and the observed gradient and
+        standard error of the slope as `observation`. Median and standard
+        deviation of the posterior are used as gradient ("ipgrad)" and its
+        uncertainty ("itprad_unc"), respectively. Mutually exclusive with
+        `use_bayes_post`. Default: False.
+    use_bayes_post: bool, optional
+        Use a Bayesian posterior for the slope (see e-mail Hansruedi Künsch
+         13.06.2021). Mutually exclusive with `use_kalmanfilter`. Default: True
+
+
+    Returns
+    -------
+    igrad: np.array
+        Precipitation gradient over time for the given ilat/ilon.
+    """
+
+    if use_bayes_post is True and use_kalmanfilter is True:
+        raise ValueError('`use_kalmanfilter` is mutually exclusive with '
+                         '`use_bayes_post`.')
+
+    ipgrad = np.full(len(climate.time), np.nan)
+    ipgrad_unc = np.full(len(climate.time), np.nan)
+
+    # some min/max constants for the window
+    pminw = divmod(win_size, 2)[0]
+    pmaxw = divmod(win_size, 2)[0] + 1
+
+    platslice = slice(ilat - pminw, ilat + pmaxw)
+    plonslice = slice(ilon - pminw, ilon + pmaxw)
+
+    # time should be first (we iterate over pprcp.values)
+    climate = climate.transpose('time', ...)
+
+    pprcp = climate.prcp.isel(dict(lat=platslice, lon=plonslice))
+    phgt = climate.hgt.isel(dict(lat=platslice, lon=plonslice))
+
+    # todo: no kalman/bayes option for prediction implemented yet
+    if 'member' in pprcp.dims:
+        ipgrad_loc = np.full(len(climate.time), np.nan)
+        ipgrad_scale = np.full(len(climate.time), np.nan)
+        pprcp_stack = pprcp.stack(ens=['member', 'time'])
+        slope = xr.apply_ufunc(_calc_slope, phgt, pprcp_stack, vectorize=True,
+                              input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                              output_core_dims=[[]], output_dtypes=[np.float],
+                              dask='parallelized')
+        slope = slope.unstack()
+        pval = xr.apply_ufunc(_calc_pval, phgt, pprcp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        pval = pval.unstack()
+        stderr = xr.apply_ufunc(_calc_stderr, phgt, pprcp_stack, vectorize=True,
+                               input_core_dims=[['lat', 'lon'], ['lat', 'lon']],
+                               output_core_dims=[[]], output_dtypes=[np.float],
+                               dask='parallelized')
+        stderr = stderr.unstack()
+
+        # replace correlations and stderrs with high pvals
+        # todo: better filling with rolling means also here
+        ipgrad = slope.where(pval < 0.01, cfg.PARAMS['prcp_default_gradient'])
+        ipgrad_unc = stderr.where(pval < 0.01, np.nanmean(stderr))
+    else:
+        phgt = phgt.values.flatten()
+
+        # make climatology
+        for t, locp in enumerate(pprcp.values):
+            # NaNs happen at grid edges, 0 should be excluded for slope
+            mask = ~np.isnan(locp) & (locp != 0.)
+            flattened_mask = locp[mask].flatten()
+            if (~mask).all():
+                continue
+
+            slope, icpt, _, p_val, stderr = stats.linregress(
+                np.ma.masked_array(phgt, ~mask).compressed(), flattened_mask)
+
+            ipgrad[t] = np.nanmean(
+                ((flattened_mask + slope) / flattened_mask) - 1) if (
+                    (p_val < 0.01) and (p_val != 0.)) else default_pgrad
+            # todo: I think this is bullshit: Gradient - Gradient derived with steeper slope
+            ipgrad_unc[t] = stderr if ((p_val < 0.01) and
+                                       (p_val != 0.)) else np.nan
+                # (ipgrad[t] - np.nanmean(
+                # ((flattened_mask + slope + stderr) / flattened_mask) - 1)) if (
+                #        (p_val < 0.01) and (p_val != 0.)) else np.nan
+
+        # make gradient climatology - here we select only positive
+        # todo: fill prcp gradient with rolling window mean?
+        ref_cell = pprcp.values[:, int(win_size / 2),
+                   int(win_size / 2)]
+        # prec_true = ref_cell > 0.
+
+        # mean is influenced a lot by outliers!
+        # ipgrad[np.isnan(ipgrad)] = np.nanmedian(ipgrad)  # & prec_true)] =
+        # np.nanmedian(ipgrad)
+        # we take std around the median
+        # ipgrad_unc[np.isnan(ipgrad_unc)] = np.sqrt(  # & prec_true)] =
+        # np.sqrt(np.nanmean((ipgrad_unc - np.nanmedian(ipgrad_unc)) ** 2))
+        # apply the boundaries, in case the gradient goes wild
+        # ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
+
+        # fill not significant gradients with DOY rolling window mean
+        # todo: this could also be not on DOYs
+        grad_ds = xr.DataArray(dims={'time': climate.time.data},
+                               data=ipgrad.data,
+                               coords={'time': ('time', climate.time.data)})
+        grad_unc_ds = xr.DataArray(dims={'time': climate.time.data},
+                                   data=ipgrad_unc.data,
+                                   coords={'time': ('time',
+                                                    climate.time.data)})
+
+        grad_rmean = grad_ds.rolling(time=30, center=True,
+                                     min_periods=5).mean(
+            skipna=True).groupby('time.dayofyear').mean(skipna=True)
+        grad_unc_rmean = grad_unc_ds.rolling(time=30, center=True,
+                                             min_periods=5).mean(
+            skipna=True).groupby('time.dayofyear').mean(skipna=True)
+        # fill NaNs - to be sure
+        grad_rmean = grad_rmean.fillna(default_pgrad)
+        # todo: define a mean tgrad uncertainty?
+        grad_unc_rmean = grad_unc_rmean.fillna(np.nanmean(ipgrad_unc))
+
+        # make actual values
+        ipgrad = np.full(len(climate.time), np.nan)
+        ipgrad_unc = np.full(len(climate.time), np.nan)
+        ipgrad_loc = np.full(len(climate.time), np.nan)
+        ipgrad_scale = np.full(len(climate.time), np.nan)
+        for t, locp in enumerate(pprcp.values):
+            # NaNs happen at grid edges, 0 should be excluded for slope
+            mask = ~np.isnan(locp) & (locp != 0.)
+            flattened_mask = locp[mask].flatten()
+            if (~mask).all():
+                continue
+
+            # Todo: Is that a good method?
+            # gradient in % m-1: mean(all prcp values + slope for 1 m)
+            # p=0. happens if there are only two grids cells
+            if use_kalmanfilter is True:
+                raise NotImplementedError(
+                    'Use of Kalman-filtered precipitation gradients is not yet'
+                    ' implemented.')
+            elif use_bayes_post is True:
+                # we calculate is directly
+
+                mask = ~np.isnan(locp)
+                flattened_mask = locp[mask].flatten()
+
+                h = np.ma.masked_array(phgt, ~mask).compressed()
+                h_diff = h - np.nanmean(h)
+                center_pix = int(np.floor(win_size / 2.))
+
+                doy = pd.Timestamp(pprcp.isel(time=t).time.values).dayofyear
+                climate_pgrad_at_doy = grad_rmean.sel(dayofyear=doy).item()
+
+                # if precipitation at reference cell
+                if locp[center_pix, center_pix] > 0.:
+                    flattened_mask_sqrt = np.sqrt(flattened_mask)
+
+                    bayes_mean, bayes_std, bayes_loc, bayes_scale = (
+                        bayes_slope_from_t_dist(h_diff, flattened_mask_sqrt,
+                                                df=win_size**2-1,
+                        b_0=climate_pgrad_at_doy))#b_0=default_pgrad)
+                else:  # no precip at reference cell
+                    # see e-mail Hansruedi 17.07.2021
+                    alpha = 0.9  # just a guess factor
+                    k = np.sum((locp == 0.)) - 1  # other cells w/o precip
+                    # do not mask zeros this time
+                    mask = ~np.isnan(locp)
+                    # todo: sqrt here ok as well?
+                    flattened_mask = np.sqrt(locp[mask].flatten())
+                    # all non-zero values
+                    nonzero = flattened_mask[flattened_mask != 0.]
+                    nonzero_h_diff = h_diff.copy()
+
+                    # update selection of h
+                    h = np.ma.masked_array(phgt, ~mask).compressed()
+                    h_diff = h - np.nanmean(h)
+
+                    # prob. of zero precip. at reference
+                    prob_zero_precip = alpha + (1-alpha) * k / \
+                                       (flattened_mask.size - 1)
+                    # prob of non-zero precip at ref. cell
+                    prob_nonzero_precip = (1-alpha) * \
+                                          ((flattened_mask.size - 1) - k) / \
+                                          (flattened_mask.size - 1)
+
+
+                    bayes_mean_zero, bayes_std_zero, bayes_loc_zero, bayes_scale_zero = bayes_slope_from_t_dist(
+                        h_diff, flattened_mask, df=win_size**2-1,
+                        b_0=climate_pgrad_at_doy) # b_0=default_pgrad)
+
+                    # 10000 random samples
+                    cases = np.random.choice([0, 1], size=10000,
+                                             p=[prob_zero_precip,
+                                                prob_nonzero_precip])
+
+                    bayes_mean_list = []
+                    bayes_std_list = []
+                    bayes_loc_list = []
+                    bayes_scale_list = []
+
+                    # for all non-zero cases we randomly assign the values of
+                    # another non-zero cell value to the reference cell
+                    # worst case no 1 drawn
+                    for i in range(max(np.sum(cases), 1)):
+
+                        # todo: sqrt okay here as well?
+                        replaced = np.sqrt(locp.copy())
+                        replaced[center_pix, center_pix] = \
+                            np.random.choice(nonzero, size=1)[0]
+                        replaced = replaced.flatten()
+
+                        temp_mean, temp_std, temp_loc, temp_scale = (
+                            bayes_slope_from_t_dist(
+                        h_diff, replaced, df=win_size**2-1,
+                        b_0=climate_pgrad_at_doy))  # b_0=default_pgrad)
+                        bayes_mean_list.append(temp_mean)
+                        bayes_std_list.append(temp_std)
+                        bayes_loc_list.append(temp_loc)
+                        bayes_scale_list.append(temp_scale)
+
+                    bayes_mean = np.average(
+                        [np.mean(np.array(bayes_mean_list)), bayes_mean_zero],
+                        weights=[prob_nonzero_precip, prob_zero_precip])
+                    bayes_std = np.average(
+                        [np.mean(np.array(bayes_std_list)), bayes_std_zero],
+                        weights=[prob_nonzero_precip, prob_zero_precip])
+                    bayes_loc = np.average(
+                        [np.mean(np.array(bayes_loc_list)), bayes_loc_zero],
+                        weights=[prob_nonzero_precip, prob_zero_precip])
+                    bayes_scale = np.average(
+                        [np.mean(np.array(bayes_scale_list)), bayes_scale_zero],
+                        weights=[prob_nonzero_precip, prob_zero_precip])
+
+
+
+                ipgrad[t] = bayes_mean
+                ipgrad_unc[t] = bayes_std
+                ipgrad_loc[t] = bayes_loc
+                ipgrad_scale[t] = bayes_scale
+                if np.isnan(bayes_mean) or np.isnan(bayes_std):
+                    print(pprcp.time.isel(time=t), pprcp.values[t])
+            else:
+                slope, icpt, _, p_val, stderr = stats.linregress(
+                    np.ma.masked_array(phgt, ~mask).compressed(),
+                    flattened_mask)
+
+                ipgrad[t] = np.nanmean(((flattened_mask + slope) /
+                                        flattened_mask) - 1) if (
+                        (p_val < 0.01) and (p_val != 0.)) else default_pgrad
+                # todo: I think this is bullshit: Gradient - Gradient derived with steeper slope
+                ipgrad_unc[t] = \
+                    (ipgrad[t] - np.nanmean(((flattened_mask + slope + stderr)
+                                             / flattened_mask) - 1)) if \
+                        ((p_val < 0.01) and (p_val != 0.)) else np.nan
+
+        # todo: fill prcp gradient with rolling window mean?
+        ref_cell = pprcp.values[:, int(win_size / 2), int(win_size / 2)]
+        # prec_true = ref_cell > 0.
+
+        # mean is influenced a lot by outliers!
+        # ipgrad[np.isnan(ipgrad)] = np.nanmedian(
+        #    ipgrad)  # & prec_true)] = np.nanmedian(ipgrad)
+        # we take std around the median
+        # ipgrad_unc[np.isnan(ipgrad_unc)] = np.sqrt(  # & prec_true)] = np.sqrt(
+        #    np.nanmean((ipgrad_unc - np.nanmedian(ipgrad_unc)) ** 2))
+        # apply the boundaries, in case the gradient goes wild
+        # ipgrad = np.clip(ipgrad, minmax_pgrad[0], minmax_pgrad[1])
+
+        ipgrad = xr.DataArray(ipgrad, coords={'time': climate.coords['time']},
+                              dims=('time',), name='pgrad')
+        ipgrad_unc = xr.DataArray(ipgrad_unc,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='pgrad_unc')
+
+        if use_bayes_post is True:
+            ipgrad_loc = xr.DataArray(ipgrad_loc,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='pgrad_loc')
+            ipgrad_scale = xr.DataArray(ipgrad_scale,
+                                  coords={'time': climate.coords['time']},
+                                  dims=('time',), name='pgrad_scale')
+
+    return ipgrad, ipgrad_unc, ipgrad_loc, ipgrad_scale
 
 
 def _cut_with_CH_glac(xr_ds):
@@ -1387,9 +2179,9 @@ def get_zones_from_worksheet(worksheet, id_col, gdir=None, shape=None,
     # Process either input to be GeoDataFrame in the end
     if gdir is not None:
         try:
-            gdf = gpd.read_file(gdir.get_filepath('outlines_ts'))
+            gdf = gdir.read_shapefile('outlines_ts')
         except:  # no such file or directory: bad practice, but no
-            gdf = gpd.read_file(gdir.get_filepath('outlines'))
+            gdf = gdir.read_shapefile('outlines')
     if shape is not None:
         gdf = gpd.read_file(shape)
     if gpd_obj is not None:
@@ -1510,7 +2302,7 @@ def _local_dem_to_xr_dataset(to_merge, acq_date, dx, calendar_startyear=0,
 
     # coord/dim changes
     merged = merged.squeeze(dim='band')
-    merged = merged.drop('band')
+    # merged = merged.drop_sel('band')
     # Replaces -9999.0 with NaN: See here:
     # https://github.com/pydata/xarray/issues/1749
     merged = merged.where(merged != -9999.0)
@@ -1555,9 +2347,11 @@ def get_local_dems(gdir):
 
     References
     ----------
-    .. [1] http://xarray.pydata.org/en/stable/auto_gallery/plot_rasterio.html#recipes-rasterio
+    .. [1] https://shorturl.at/eQV47
     """
-
+    # get already the dx to which the DEMs should be interpolated later on
+    dx = dx_from_area(gdir.area_km2)
+    '''
     # get forest inventory DEMs (quite hard-coded for the LFI file names)
     out = mount_network_drive(cfg.PATHS['lfi_dir'], r'wsl\landmann', log=log)
 
@@ -1580,9 +2374,12 @@ def get_local_dems(gdir):
 
     # 'common' DEMs for this glacier (all years!)
     cdems = []
-    for z in zones:
-        plist = [x for x in lfi_dem_list if 'ADS_{}'.format(z) in x]
-        cdems.extend(plist)
+    for q in zones:
+        match = 'ADS_{}'.format(str(q))
+        # somehow, this doesn't work with list comprehension
+        for i in lfi_dem_list:
+            if match in i:
+                cdems.append(i)
 
     # check the common dates for all zones
     cdates = [dt.datetime(int(os.path.basename(x).split('_')[4]),
@@ -1592,8 +2389,7 @@ def get_local_dems(gdir):
     cdates = np.unique(cdates)
     cyears = np.unique([d.year for d in cdates])
 
-    # get already the dx to which the DEMs should be interpolated later on
-    dx = dx_from_area(gdir.area_km2)
+    
 
     lfi_all = []
     for cd in cyears:
@@ -1640,11 +2436,11 @@ def get_local_dems(gdir):
 
     concat.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w',
                      group=cfg.NAMES['LFI'])
-
+    '''
     # get DHM25 DEMs
     log.info('Assembling DHM25 DEM for {}'.format(gdir.rgi_id))
-    d_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+cfg.NAMES['DHM25'].upper() +
-                       '*\\*.agr')
+    d_list = glob.glob(os.path.join(cfg.PATHS['dem_dir'], '*' +
+                                    cfg.NAMES['DHM25'].upper() + '*', '*.agr'))
     d_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                        '*' + cfg.NAMES['DHM25'].upper() +
                                        '*.shp'))
@@ -1655,16 +2451,16 @@ def get_local_dems(gdir):
     # TODO: Replace with real acquisition dates!
     d_acq_dates = dt.datetime(1970, 1, 1)
     d_dem = _local_dem_to_xr_dataset(d_to_merge, d_acq_dates, dx)
-    d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='a',
+    d_dem.to_netcdf(path=gdir.get_filepath('dem_ts'), mode='w',
                     group=cfg.NAMES['DHM25'])
 
     # get SwissALTI3D DEMs
     log.info('Assembling SwissALTI3D DEM for {}'.format(gdir.rgi_id))
-    a_list = glob.glob(cfg.PATHS['dem_dir']+'\\*'+
-                       cfg.NAMES['SWISSALTI2010'].upper()+'*\\*.agr')
+    a_list = glob.glob(os.path.join(cfg.PATHS['dem_dir'], '*' +
+                       cfg.NAMES['SWISSALTI2010'].upper() + '*', '*.agr'))
     a_ws_path = glob.glob(os.path.join(cfg.PATHS['dem_dir'], 'worksheets',
                                        '*'+cfg.NAMES['SWISSALTI2010'].upper()
-                                       +'*.shp'))
+                                       + '*.shp'))
     a_zones = get_zones_from_worksheet(a_ws_path[0], 'zone', gdir=gdir)
     a_to_merge = []
     for a_z in a_zones:
@@ -1679,11 +2475,11 @@ def get_local_dems(gdir):
 def get_cirrus_yesterday():
     """Check if data has already been delivered."""
     try:
-        climate = xr.open_dataset(cfg.PATHS['climate_file'])
-        yesterday = pd.Timestamp(climate.time.values[-1])
-    except Exception as e:
-        log.warning('Can\'t determine the \'s yesterday from climate file, '
-                    'because:' + str(e))
+        with xr.open_dataset(cfg.PATHS['climate_file']) as climate:
+            yesterday = pd.Timestamp(climate.time.values[-1])
+    except Exception:
+        log.warning('Can\'t determine the Cirrus yesterday from climate file.'
+                    ' Trying it with logic...')
         now = dt.datetime.now()
         if now.hour >= 12 and now.minute >= 30:
             yesterday = (now - dt.timedelta(1))
@@ -1723,7 +2519,10 @@ def dx_from_area(area_km2):
     return dx
 
 
-def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
+def get_possible_parameters_from_past(gdir, mb_model, as_list=False,
+                                      latest_climate=False, only_pairs=True,
+                                      constrain_with_bw_prcp_fac=True,
+                                      suffix=''):
     """
     Get all possible calibration parameters from past calibration.
 
@@ -1737,6 +2536,19 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
     mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
     as_list: bool
         True if the result returned should be a list.
+    latest_climate: bool
+        If only the last 30 years of the claibration period shall be considered.
+    only_pairs:
+        Determines whether there are only parameter combinations used which
+        have already appeared, no random mixing. If False, the all available
+        parameters are randomly mixed. Validation has shown that it makes sense
+        to use pairs as the parameters are often correlated. #todo: reference
+    constrain_with_bw_prcp_fac: bool
+        If True and in the last row of the calibration dataframe only a prcp
+        factor is given, all possible combinations will be restricted to this
+        factor and the possible melt factors. Default: True.
+    suffix: str
+        Suffix for the calibration file to generate the parameters from.
 
     Returns
     -------
@@ -1745,12 +2557,38 @@ def get_possible_parameters_from_past(gdir, mb_model, as_list=False):
         set to True, a list.
     """
 
-    cali_df = gdir.get_calibration(mb_model)
+    cali_df = gdir.get_calibration(mb_model, filesuffix=suffix)
 
     cali_filtered = cali_df.filter(regex=mb_model.__name__)
+    # important: be sure columns match the "order" of the params
+    cali_filtered = cali_filtered[[mb_model.__name__ + '_' + i for i in
+                         mb_model.cali_params_list]]
     cali_sel = cali_filtered.drop_duplicates().dropna().values
 
-    param_prod = product(*cali_sel.T)
+    # TODO: check from theory if this is a clever idea
+    if latest_climate:
+        try:
+            cali_sel = cali_sel[-30:]
+        except IndexError:
+            pass
+
+    if only_pairs:
+        param_prod = cali_sel.copy()
+    else:
+        param_prod = product(*cali_sel.T)
+
+    # todo: the output format is a mess now: list, array or product
+
+    if constrain_with_bw_prcp_fac:
+        log.info('PRCP_FAC is constrained with BW prcp_fac.')
+        param_prod = np.array(list(param_prod))
+        if ~pd.isnull(cali_df.tail(1)[mb_model.__name__ + '_' +
+                                      'prcp_fac']).item() and \
+                pd.isnull(cali_df.tail(1)[mb_model.__name__ + '_' +
+                                          mb_model.cali_params_list[0]]).item():
+            param_prod[:, mb_model.cali_params_list.index('prcp_fac')] = \
+                cali_df.tail(1)[mb_model.__name__ + '_prcp_fac']
+
     if as_list is True:
         return list(param_prod)
     else:
@@ -1807,14 +2645,14 @@ class GlacierDirectory(object):
 
     References
     ----------
-    .. [1] http://oggm.readthedocs.io/en/latest/generated/oggm.GlacierDirectory.html#oggm.GlacierDirectory
+    .. [1] https://shorturl.at/pACMN
     """
 
     def __init__(self, entity, base_dir=None, reset=False):
         """Creates a new directory or opens an existing one.
         Parameters
         ----------
-        entity : a `GeoSeries <http://geopandas.org/data_structures.html#geoseries>`_ or str
+        entity : a `GeoSeries <https://shorturl.at/bfL39>`_ or str
             glacier entity read from the shapefile (or a valid RGI ID if the
             directory exists)
         base_dir : str
@@ -1825,7 +2663,8 @@ class GlacierDirectory(object):
         """
 
         # Making oggm.GlacierDirectory available for composition
-        self.OGGMGD = OGGMGlacierDirectory(entity, base_dir=base_dir, reset=reset)
+        self.OGGMGD = OGGMGlacierDirectory(entity, base_dir=base_dir,
+                                           reset=reset)
 
         if base_dir is None:
             if not cfg.PATHS.get('working_dir', None):
@@ -1870,8 +2709,8 @@ class GlacierDirectory(object):
         if self.inventory == 'RGI':
             # Should be V5
             # todo: find a better solution!?
-            #self.id = entity.RGIId
-            #self.rgi_id = entity.RGIId
+            # self.id = entity.RGIId
+            # self.rgi_id = entity.RGIId
             try:
                 self.id = id_string
                 self.rgi_id = id_string
@@ -1904,6 +2743,8 @@ class GlacierDirectory(object):
 
             # remove spurious characters and trailing blanks
             self.name = filter_rgi_name(name)
+            self.plot_name = name.split('*')[0].strip() if '*' in name else \
+                name
 
             # region
             reg_names, subreg_names = parse_rgi_meta(version=self.rgi_version)
@@ -1931,6 +2772,9 @@ class GlacierDirectory(object):
             self.terminus_type = ttkeys[gtype[1]]
             self.is_tidewater = self.terminus_type in ['Marine-terminating',
                                                        'Lake-terminating']
+            # make OGGM compatible
+            self.status = self.OGGMGD.status
+            self.is_nominal = self.status == 'Nominal glacier'
             self.inversion_calving_rate = 0.
             self.is_icecap = self.glacier_type == 'Ice cap'
 
@@ -2032,14 +2876,24 @@ class GlacierDirectory(object):
                                         use_compression=use_compression,
                                         filesuffix=filesuffix)
 
-    def get_calibration(self, mb_model=None):
+    def read_json(self, filename, filesuffix=''):
+        return self.OGGMGD.read_json(filename=filename,
+                                        filesuffix=filesuffix)
+
+    def write_json(self, var, filename, filesuffix=''):
+        return self.OGGMGD.write_json(var=var, filename=filename,
+                                      filesuffix=filesuffix)
+
+    def get_calibration(self, mb_model=None, filesuffix=''):
         """
         Read the glacier calibration as a pandas.DataFrame.
 
         Parameters
         ----------
-        mb_model: `py:class:crampon.core.massbalance.MassBalanceModel`
+        mb_model: `py:class:crampon.core.massbalance.MassBalanceModel` or str
             Model to filter the calibration for.
+        filesuffix: str
+            Suffix for calibration file name (used in experiments).
 
         Returns
         -------
@@ -2047,26 +2901,43 @@ class GlacierDirectory(object):
             Parameter calibration for the glacier directory.
         """
 
-        df = pd.read_csv(self.get_filepath('calibration'), index_col=0,
-                         parse_dates=[0])
+        df = pd.read_csv(self.get_filepath('calibration',
+                                           filesuffix=filesuffix),
+                         index_col=0, parse_dates=[0])
 
         if mb_model is None:
             return df
         else:
-            return df.filter(regex=mb_model.__name__)
+            if isinstance(mb_model, str):
+                return df.filter(regex=mb_model)
+            else:
+                return df.filter(regex=mb_model.__name__)
+
+    def read_shapefile(self, filename, filesuffix=''):
+        return self.OGGMGD.read_shapefile(filename, filesuffix=filesuffix)
+
+    def write_shapefile(self, var, filename, filesuffix=''):
+        return self.OGGMGD.write_shapefile(var, filename,
+                                           filesuffix=filesuffix)
 
     def get_inversion_flowline_hw(self):
         return self.OGGMGD.get_inversion_flowline_hw()
 
-    def log(self, task_name, err=None):
-        return self.OGGMGD.log(task_name=task_name, err=err)
+    def log(self, task_name, *, err=None, task_time=None):
+        return self.OGGMGD.log(task_name=task_name, err=err,
+                               task_time=task_time)
 
     def get_task_status(self, task_name):
         return self.OGGMGD.get_task_status(task_name=task_name)
 
-    def write_monthly_climate_file(self, time, prcp, temp, tmin, tmax, sis,
-                                   tgrad, pgrad, ref_pix_hgt, ref_pix_lon,
-                                   ref_pix_lat,
+    def write_monthly_climate_file(self, time, prcp, temp, tgrad, pgrad,
+                                   ref_pix_hgt, ref_pix_lon, ref_pix_lat, *,
+                                   tmin=None, tmax=None, tgrad_sigma=None,
+                                   sis=None, prcp_sigma=None, temp_sigma=None,
+                                   tmin_sigma=None, tmax_sigma=None,
+                                   sis_sigma=None, pgrad_sigma=None,
+                                   tgrad_loc=None, tgrad_scale=None,
+                                   pgrad_loc=None, pgrad_scale=None,
                                    time_unit='days since 1801-01-01 00:00:00',
                                    file_name='climate_monthly', filesuffix=''):
         """Creates a netCDF4 file with climate data.
@@ -2088,6 +2959,9 @@ class GlacierDirectory(object):
                                        ref_pix_lon, ref_pix_lat)
 
             dtime = nc.createDimension('time', None)
+            # quite hard-coded, but it should anyway not be allowed to mix:
+            if 'member' in prcp.dims:
+                memv = nc.createDimension('member', None)
 
             nc.author = 'OGGM and CRAMPON'
             nc.author_info = 'Open Global Glacier Model and Cryospheric ' \
@@ -2097,40 +2971,123 @@ class GlacierDirectory(object):
             timev.setncatts({'units': time_unit})
             timev[:] = netCDF4.date2num([t for t in time], time_unit)
 
-            v = nc.createVariable('prcp', 'f4', ('time',), zlib=True)
+            # quite hard-coded, but it shoudl anyway not be allowed to mix:
+            if 'member' in prcp.dims:
+                memv = nc.createVariable('member', 'i4', ('member',))
+                memv[:] = prcp.member.values
+
+            v = nc.createVariable('prcp', 'f4', prcp.dims, zlib=True)
             v.units = 'kg m-2'
             v.long_name = 'total daily precipitation amount'
             v[:] = prcp
 
-            v = nc.createVariable('temp', 'f4', ('time',), zlib=True)
+            v = nc.createVariable('temp', 'f4', temp.dims, zlib=True)
             v.units = 'degC'
             v.long_name = 'Mean 2m temperature at height ref_hgt'
             v[:] = temp
 
-            v = nc.createVariable('tmin', 'f4', ('time',), zlib=True)
-            v.units = 'degC'
-            v.long_name = 'Minimum 2m temperature at height ref_hgt'
-            v[:] = tmin
+            if tmin is not None:
+                v = nc.createVariable('tmin', 'f4', tmin.dims, zlib=True)
+                v.units = 'degC'
+                v.long_name = 'Minimum 2m temperature at height ref_hgt'
+                v[:] = tmin
 
-            v = nc.createVariable('tmax', 'f4', ('time',), zlib=True)
-            v.units = 'degC'
-            v.long_name = 'Maximum 2m temperature at height ref_hgt'
-            v[:] = tmax
+            if tmax is not None:
+                v = nc.createVariable('tmax', 'f4', tmax.dims, zlib=True)
+                v.units = 'degC'
+                v.long_name = 'Maximum 2m temperature at height ref_hgt'
+                v[:] = tmax
 
-            v = nc.createVariable('sis', 'f4', ('time',), zlib=True)
-            v.units = 'W m-2'
-            v.long_name = 'daily mean surface incoming shortwave radiation'
-            v[:] = sis
+            if sis is not None:
+                v = nc.createVariable('sis', 'f4', sis.dims, zlib=True)
+                v.units = 'W m-2'
+                v.long_name = 'daily mean surface incoming shortwave radiation'
+                v[:] = sis
 
-            v = nc.createVariable('tgrad', 'f4', ('time',), zlib=True)
+            if prcp_sigma is not None:
+                v = nc.createVariable('prcp_sigma', 'f4', prcp_sigma.dims, zlib=True)
+                v.units = 'kg m-2'
+                v.long_name = 'Precipitation uncertainty as standard deviation'
+                v[:] = prcp_sigma
+
+            if temp_sigma is not None:
+                v = nc.createVariable('temp_sigma', 'f4', temp_sigma.dims, zlib=True)
+                v.units = 'deg C'
+                v.long_name = 'Temperature uncertainty as standard deviation'
+                v[:] = temp_sigma
+
+            if tmin_sigma is not None:
+                v = nc.createVariable('tmin_sigma', 'f4', tmin_sigma.dims, zlib=True)
+                v.units = 'deg C'
+                v.long_name = 'minimum temperature uncertainty as standard ' \
+                              'deviation'
+                v[:] = tmin_sigma
+
+            if tmax_sigma is not None:
+                v = nc.createVariable('tmax_sigma', 'f4', tmax_sigma.dims, zlib=True)
+                v.units = 'deg C'
+                v.long_name = 'maximum temperature uncertainty as standard ' \
+                              'deviation'
+                v[:] = tmax_sigma
+
+            if sis_sigma is not None:
+                v = nc.createVariable('sis_sigma', 'f4', sis_sigma.dims, zlib=True)
+                v.units = 'W m-2'
+                v.long_name = 'daily mean surface incoming shortwave ' \
+                              'radiation as standard deviation'
+                v[:] = sis_sigma
+
+            v = nc.createVariable('tgrad', 'f4', tgrad.dims, zlib=True)
             v.units = 'K m-1'
             v.long_name = 'temperature gradient'
             v[:] = tgrad
 
-            v = nc.createVariable('pgrad', 'f4', ('time',), zlib=True)
+            if tgrad_sigma is not None:
+                v = nc.createVariable('tgrad_sigma', 'f4', tgrad_sigma.dims,
+                                      zlib=True)
+                v.units = 'K m-1'
+                v.long_name = 'temperature gradient uncertainty'
+                v[:] = tgrad_sigma
+
+            if tgrad_loc is not None:
+                v = nc.createVariable('tgrad_loc', 'f4', tgrad_loc.dims,
+                                      zlib=True)
+                v.units = 'K m-1'
+                v.long_name = 'temperature gradient t-distribution loc parameter'
+                v[:] = tgrad_loc
+
+            if tgrad_scale is not None:
+                v = nc.createVariable('tgrad_scale', 'f4', tgrad_scale.dims,
+                                      zlib=True)
+                v.units = 'K m-1'
+                v.long_name = 'temperature gradient t-distribution scale parameter'
+                v[:] = tgrad_scale
+
+            v = nc.createVariable('pgrad', 'f4', pgrad.dims, zlib=True)
             v.units = 'm-1'
             v.long_name = 'precipitation gradient'
             v[:] = pgrad
+
+            if pgrad_sigma is not None:
+                v = nc.createVariable('pgrad_sigma', 'f4', pgrad_sigma.dims,
+                                      zlib=True)
+                v.units = 'm-1'
+                v.long_name = 'precipitation gradient uncertainty'
+                v[:] = pgrad_sigma
+
+            if pgrad_loc is not None:
+                v = nc.createVariable('pgrad_loc', 'f4', pgrad_loc.dims,
+                                      zlib=True)
+                v.units = 'm-1'
+                v.long_name = 'precipitation gradient t-distribution loc parameter'
+                v[:] = pgrad_loc
+
+            if pgrad_scale is not None:
+                v = nc.createVariable('pgrad_scale', 'f4', pgrad_scale.dims,
+                                      zlib=True)
+                v.units = ''
+                v.long_name = 'precipitation gradient t-distribution scale parameter'
+                v[:] = pgrad_scale
 
     def create_gridded_ncdf_file(self, filename):
         """
@@ -2270,7 +3227,7 @@ def idealized_gdir(surface_h, widths_m, map_dx, flowline_dx=1, name=None,
     entity.O2Region = '0'
     gdir = GlacierDirectory(entity, base_dir=base_dir, reset=reset)
     gdf = gpd.GeoDataFrame([entity], crs=entity_gdf.crs)
-    gdf.to_file(gdir.get_filepath('outlines'))
+    gdir.write_shapefile(gdf, 'outlines')
 
     # Idealized flowline
     if coords:
@@ -2288,6 +3245,410 @@ def idealized_gdir(surface_h, widths_m, map_dx, flowline_dx=1, name=None,
     grid.to_json(gdir.get_filepath('glacier_grid'))
 
     return gdir
+
+
+# this function is copied from OGGM
+def initialize_merged_gdir_crampon(main, tribs=[], glcdf=None,
+                           filename='climate_daily', input_filesuffix=''):
+    """Creates a new GlacierDirectory if tributaries are merged to a glacier
+    This function should be called after centerlines.intersect_downstream_lines
+    and before flowline.merge_tributary_flowlines.
+    It will create a new GlacierDirectory, with a suitable DEM and reproject
+    the flowlines of the main glacier.
+    Parameters
+    ----------
+    main : oggm.GlacierDirectory
+        the main glacier
+    tribs : list or dictionary containing oggm.GlacierDirectories
+        true tributary glaciers to the main glacier
+    glcdf: geopandas.GeoDataFrame
+        which contains the main glacier, will be downloaded if None
+    filename: str
+        Baseline climate file
+    input_filesuffix: str
+        Filesuffix to the climate file
+    Returns
+    -------
+    merged : oggm.GlacierDirectory
+        the new GDir
+    """
+    from oggm.core.gis import define_glacier_region, merged_glacier_masks
+
+    # If its a dict, select the relevant ones
+    if isinstance(tribs, dict):
+        tribs = tribs[main.rgi_id]
+    # make sure tributaries are iteratable
+    tribs = tolist(tribs)
+
+    # read flowlines of the Main glacier
+    mfls = main.read_pickle('model_flowlines') # OGGM
+
+    # ------------------------------
+    # 0. create the new GlacierDirectory from main glaciers GeoDataFrame
+    # Should be passed along, if not download it
+    if glcdf is None:
+        glcdf = get_rgi_glacier_entities([main.rgi_id])
+    # Get index location of the specific glacier
+    idx = glcdf.loc[glcdf.RGIId == main.rgi_id].index
+    maindf = glcdf.loc[idx].copy()
+
+    # add tributary geometries to maindf
+    merged_geometry = maindf.loc[idx, 'geometry'].iloc[0]
+    for trib in tribs:
+        geom = trib.read_pickle('geometries')['polygon_hr']
+        geom = salem.transform_geometry(geom, crs=trib.grid)
+        merged_geometry = merged_geometry.union(geom)
+
+    # to get the center point, maximal extensions for DEM and single Polygon:
+    maindf.loc[idx, 'geometry'] = merged_geometry.convex_hull
+
+    # make some adjustments to the rgi dataframe
+    # 1. update central point of new glacier
+    # Could also use the mean of the Flowline centroids, to shift it more
+    # downstream. But this is more straight forward.
+    maindf.loc[idx, 'CenLon'] = maindf.loc[idx, 'geometry'].centroid.x
+    maindf.loc[idx, 'CenLat'] = maindf.loc[idx, 'geometry'].centroid.y
+    # 2. update names
+    maindf.loc[idx, 'RGIId'] += '_merged'
+    if maindf.loc[idx, 'Name'].iloc[0] is None:
+        maindf.loc[idx, 'Name'] = main.name + ' (merged)'
+    else:
+        maindf.loc[idx, 'Name'] += ' (merged)'
+
+    # finally create new Glacier Directory
+    # 1. set dx spacing to the one used for the flowlines
+    dx_method = cfg.PARAMS['grid_dx_method']
+    dx_spacing = cfg.PARAMS['fixed_dx']
+    cfg.PARAMS['grid_dx_method'] = 'fixed'
+    # changed from OGGM - can be uncommented when dealing with flowlines
+    # cfg.PARAMS['fixed_dx'] = mfls[-1].map_dx
+    merged = GlacierDirectory(maindf.loc[idx].iloc[0])
+
+    # run define_glacier_region to get a fitting DEM and proper grid
+    define_glacier_region(merged, entity=maindf.loc[idx].iloc[0])
+
+    # write gridded data and geometries for visualization
+    merged_glacier_masks(merged, merged_geometry)
+
+    # reset dx method
+    cfg.PARAMS['grid_dx_method'] = dx_method
+    cfg.PARAMS['fixed_dx'] = dx_spacing
+
+    # copy main climate file, climate info and local_mustar to new gdir
+    climfilename = filename + '_' + main.rgi_id + input_filesuffix + '.nc'
+    climfile = os.path.join(merged.dir, climfilename)
+    shutil.copyfile(main.get_filepath(filename, filesuffix=input_filesuffix),
+                    climfile)
+
+    # care for the second climate file if needed
+    if 'climate_monthly' not in filename:
+        climfilename_m = 'climate_monthly_' + main.rgi_id + input_filesuffix \
+                         + '.nc'
+        climfile_m = os.path.join(merged.dir, climfilename_m)
+        try:
+            shutil.copyfile(main.get_filepath('climate_monthly',
+                                              filesuffix=input_filesuffix),
+                            climfile_m)
+        except:
+            log.warning('No climate_monthly file found for {} during '
+                        'GlacierDirectory merging.'.format(main.rgi_id))
+
+    # try/except form OGGM
+    try:
+        _mufile = os.path.basename(merged.get_filepath('local_mustar')).split(
+            '.')
+        mufile = _mufile[0] + '_' + main.rgi_id + '.' + _mufile[1]
+        shutil.copyfile(main.get_filepath('local_mustar'),
+                        os.path.join(merged.dir, mufile))
+    except FileNotFoundError:
+        log.warning('No mu_star file found for {} during GlacierDirectory '
+                    'merging.'.format(main.rgi_id))
+
+    # Crampon extension
+    try:
+        _califile = os.path.basename(merged.get_filepath('calibration')).split(
+            '.')
+        califile = _califile[0] + '_' + main.rgi_id + '.' + _califile[1]
+        shutil.copyfile(main.get_filepath('calibration'),
+                        os.path.join(merged.dir, califile))
+    except FileNotFoundError:
+        log.warning(
+            'No calibration file found for {} during GlacierDirectory '
+            'merging.'.format(main.rgi_id))
+    # I think I need the climate_info only for the main glacier
+    shutil.copyfile(main.get_filepath('climate_info'),
+                    merged.get_filepath('climate_info'))
+
+    try:
+        _ipotfile = os.path.basename(merged.get_filepath('ipot')).split('.')
+        ipotfile = _ipotfile[0] + '_' + main.rgi_id + '.' + _ipotfile[1]
+        shutil.copyfile(main.get_filepath('ipot'),
+                        os.path.join(merged.dir, ipotfile))
+    except FileNotFoundError:
+        log.warning('No Ipot file found for {} during GlacierDirectory '
+                    'merging.'.format(main.rgi_id))
+
+    try:
+        _ippffile = os.path.basename(
+            merged.get_filepath('ipot_per_flowline')).split('.')
+        ippffile = _ippffile[0] + '_' + main.rgi_id + '.' + _ippffile[1]
+        shutil.copyfile(main.get_filepath('ipot_per_flowline'),
+                        os.path.join(merged.dir, ippffile))
+    except FileNotFoundError:
+        log.warning('No Ipot per flowline file found for {} during '
+                    'GlacierDirectory merging.'.format(main.rgi_id))
+
+    # reproject the flowlines to the new grid
+    for nr, fl in reversed(list(enumerate(mfls))):
+
+        # 1. Step: Change projection to the main glaciers grid
+        _line = salem.transform_geometry(fl.line,
+                                         crs=main.grid, to_crs=merged.grid)
+        # 2. set new line
+        fl.set_line(_line)
+
+        # 3. set flow to attributes
+        if fl.flows_to is not None:
+            fl.set_flows_to(fl.flows_to)
+        # remove inflow points, will be set by other flowlines if need be
+        fl.inflow_points = []
+
+        # 5. set grid size attributes
+        dx = [shpg.Point(fl.line.coords[i]).distance(
+            shpg.Point(fl.line.coords[i+1]))
+            for i, pt in enumerate(fl.line.coords[:-1])]  # get distance
+        # and check if equally spaced
+        if not np.allclose(dx, np.mean(dx), atol=1e-2):
+            raise RuntimeError('Flowline is not evenly spaced.')
+        # dx might very slightly change, but should not
+        fl.dx = np.mean(dx).round(2)
+        # map_dx should stay exactly the same
+        # fl.map_dx = mfls[-1].map_dx
+        # fl.dx_meter = fl.map_dx * fl.dx
+
+        # replace flowline within the list
+        mfls[nr] = fl
+
+    # Write the reprojecflowlines
+    merged.write_pickle(mfls, 'model_flowlines')
+
+    return merged
+
+
+# overwrite OGGM
+initialize_merged_gdir = initialize_merged_gdir_crampon
+
+
+class LogitNormal(stats.rv_continuous):
+    """
+    Logit normal distribution class in the style of scipy.
+
+    This is copied from [1]_
+
+    References:
+    .. [1] https://bit.ly/3sdRqiZ
+    """
+    def __init__(self, scale=1, loc=0):
+        super().__init__(self)
+        self.scale = scale
+        self.loc = loc
+
+    def _pdf(self, x):
+        return stats.norm.pdf(special.logit(x), loc=self.loc,
+                              scale=self.scale) / (x*(1-x))
+
+
+def physical_to_log(x: float or np.array, lower_bound: float,
+                    fudge_fac: float = 0.) -> float or np.array:
+    """
+    Transformation from physical to log space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for a
+        [0, Inf] interval of the precipitation correction factor.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in log space.
+    """
+
+    # correct bound to avoid discontinuities
+    lower_corr = lower_bound - fudge_fac
+    x[x < lower_bound] = lower_bound
+    xs = x - lower_corr
+
+    # actual transform
+    xts = np.log(xs)
+
+    return xts
+
+
+def log_to_physical(x: float or np.array, lower_bound: float,
+                    fudge_fac: float = 0.) -> float or np.array:
+    """
+    Transformation from log to physical space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for a
+        [0, Inf] interval of the precipitation correction factor.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in physical space.
+    """
+
+    # transform back
+    xt = np.exp(x)
+
+    # correct boundaries
+    lower_corr = lower_bound - fudge_fac
+    xts = xt + lower_corr
+    xts[xts < lower_bound] = lower_bound
+    return xts
+
+
+def physical_to_logit(x: float or np.array, lower_bound: float,
+                      upper_bound: float, fudge_fac: float = 0.) \
+        -> float or np.array:
+    """
+    Transformation from physical to logit space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for
+        albedo.
+    upper_bound : float
+        Upper bound of the variable in physical space. Set e.g. to one for
+        albedo.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in logit space.
+    """
+
+    # correct the bounds numerically
+    l = lower_bound - fudge_fac
+    u = upper_bound + fudge_fac
+
+    # do actual transform
+    xs = (x - l) / (u - l)
+    xts = np.log(xs) - np.log(1 - xs)
+
+    return xts
+
+
+def logit_to_physical(x: float or np.array, lower_bound: float,
+                      upper_bound: float, fudge_fac: float = 0.) \
+        -> float or np.array:
+    """
+    Transformation from physical to logit space.
+
+    Fudge factor inspired by https://bit.ly/3skFf4t.
+
+    Parameters
+    ----------
+    x : float or np.array
+        Variable to be transformed.
+    lower_bound : float
+        Lower bound of the variable in physical space. Set e.g. to zero for
+        albedo.
+    upper_bound : float
+        Upper bound of the variable in physical space. Set e.g. to one for
+        albedo.
+    fudge_fac: float, optional
+        From https://bit.ly/3skFf4t: Fudge factor (0<fudge_fac<<1) to avoid
+        discontinuities at the boundaries in the scaled logit transform.
+        Recommended value is 1e-2. Default: 0.
+
+    Returns
+    -------
+    xts: same as input
+        Transformed variable in logit space.
+    """
+    # correct the bounds numerically
+    lower_corr = lower_bound - fudge_fac
+    upper_corr = upper_bound + fudge_fac
+
+    # do actual backtransform
+    xts = (upper_corr - lower_corr) / (1 + np.exp(-x)) + lower_corr
+    xts[xts < lower_bound] = lower_bound
+    xts[xts > upper_bound] = upper_bound
+
+    return xts
+
+
+def popup_html_string(point):
+    """
+    Make an HTML string used in a popup over a glacier.
+
+    Parameters
+    ----------
+    point: pd.Series
+       The Series must contain the name "RGIId".
+
+    Returns
+    -------
+    html: str
+        HTML string.
+    """
+
+    # a little less hardcoding
+    pure_sgi_id = point.RGIId.split('.')[1]
+    fs = 18
+    clickable_mb_dist = '<a href="static/plots/mb_dist/{}_mb_dist_' \
+                        'ensemble.png" target="_blank"><p ' \
+                        'style="font-size:{}px;"> Mass ' \
+                        'Balance Distribution (click to enlarge)</p>' \
+                        '<img src="static/plots/mb_dist/{}_mb_dist_' \
+                        'ensemble_prev.png" style="max-width:150%; ' \
+                        'position:relative; ' \
+                        'display:inline; overflow:hidden; margin:0;" ' \
+                        '/></a>'.format(pure_sgi_id, fs, pure_sgi_id)
+    other_clickables = '<a href="static/plots/mb_spaghetti/{}_intera' \
+                       'ctive_mb_spaghetti.html" target="_blank"><p ' \
+                       'style="font-size:{}px;"> Mass Balance ' \
+                       'Spaghetti</p></a>'.format(pure_sgi_id, fs)
+
+    html = '<p style="font-size:{}px;"> '.format(
+        fs) + point.Name + ' (' + pure_sgi_id + ')</p><br>'
+    html += '<div style="width:420px; height:250px; text-align: ' \
+            'center">{}</div>'.format(clickable_mb_dist)
+    html += '<p style="font-size:{}px;"> Further information: ' \
+            '</p>'.format(fs)
+    html += other_clickables
+    return html
 
 
 if __name__ == '__main__':

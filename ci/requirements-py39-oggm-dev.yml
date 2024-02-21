@@ -1,0 +1,50 @@
+name: test_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - six
+  - numpy
+  - scipy
+  - pyproj
+  - joblib
+  - netCDF4
+  - shapely
+  - geopandas
+  - rasterio
+  - pandas>=0.25
+  - xarray>=0.16
+  - dask
+  - matplotlib
+  - Pillow
+  - cartopy
+  - paramiko
+  - configobj
+  - folium
+  - mpld3
+  - numba
+  - scikit-learn
+  - folium
+  - branca
+  - mpld3
+  - bokeh
+  - pysolar
+  - descartes
+  - filterpy
+  - properscoring
+  - cftime
+  - cfgrib
+  - selenium
+  - geckodriver
+  - firefox
+  - pytables
+  - pip
+  - pip:
+    - git+https://github.com/OGGM/oggm.git
+    - git+https://github.com/fmaussion/salem.git
+    - schedule
+    - coveralls
+    - pytest-cov
+    - pytest-mpl
+    - motionless
+

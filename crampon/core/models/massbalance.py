@@ -1,4 +1,5 @@
 from __future__ import division
+from typing import Optional
 
 from oggm.core.massbalance import *
 from crampon import cfg
@@ -7,10 +8,22 @@ from crampon import utils
 import xarray as xr
 import datetime as dt
 from enum import IntEnum, unique
-import cython
+from scipy.stats import percentileofscore
 from crampon.core.preprocessing import climate
+from crampon.core.preprocessing import gis
 import numba
 from collections import OrderedDict
+from itertools import product
+import pandas as pd
+import copy
+from pyproj import Proj, transform
+from crampon.core.holfuytools import prepare_holfuy_camera_readings
+
+import logging
+
+# Module logger
+log = logging.getLogger(__name__)
+
 
 
 class DailyMassBalanceModel(MassBalanceModel):
@@ -20,10 +33,13 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     cali_params_list = ['mu_star', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [10., 1.5]))
+    prefix = 'DailyMassBalanceModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, mu_star=None, bias=None, prcp_fac=None,
                  filename='climate_daily', filesuffix='',
-                 heights_widths=(None, None), param_ep_func=np.nanmean):
+                 heights_widths=(None, None), param_ep_func=np.nanmedian,
+                 cali_suffix='', debris=None): 
 
         """
         Model to calculate the daily mass balance of a glacier.
@@ -36,19 +52,30 @@ class DailyMassBalanceModel(MassBalanceModel):
         prcp_fac:
         filename:
         filesuffix:
+        cali_suffix: str
+            Suffix for getting the calibration file.
         # todo: wouldn't it rather make sense to make a gdir from beginning on that has only fewer heights? Conflict with stability of flow approach?!!
         heights_widths: tuple
             Heights and widths if not those from the gdir shall be taken
         param_ep_func: numpy arithmetic function
             Method to use for extrapolation when there are no calibrated
             parameters available for the time step where the mass balance
-            should be calcul
+            should be calculated. Default: np.nanmedian.
+
+        Attributes
+        ----------
+        temp_bias : float, default 0
+            Add a temperature bias to the time series
+        prcp_bias : float, default 1
+            Precipitation factor to the time series (called bias for
+            consistency with `temp_bias`)
         """
 
         super().__init__()
 
         # Needed for the calibration parameter names in the csv file
         self.__name__ = type(self).__name__
+        self.prefix = self.__name__ + '_'
 
         # just a temporal dummy
         self.snowcover = None
@@ -56,10 +83,11 @@ class DailyMassBalanceModel(MassBalanceModel):
         # should probably be replaced by a direct access to a file that
         # contains uncertainties (don't know how to handle that yet)
         # todo: think again if this is a good solution to save code
+        #print(mu_star, prcp_fac, bias)
         if any([p is None for p in [mu_star, prcp_fac, bias]]):
             # do not filter for mb_model here, otherwise mu_star is not found
             # ('self' can also be a downstream inheriting class!)
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
 
         # DailyMassbalanceModel should also be able to grab OGGM calibrations
         if mu_star is None:
@@ -89,9 +117,9 @@ class DailyMassBalanceModel(MassBalanceModel):
         self.mu_star = mu_star
         self.bias = bias
         self.prcp_fac = prcp_fac
-        # temporary solution: Later this should be more flexible: Either the
-        # update should happen in the mass balance method directly or the
-        # heights/widths should be multitemporal
+        # todo: temporary solution: Later this should be more flexible: Either
+        #  the update should happen in the mass balance method directly or the
+        #  heights/widths should be multitemporal
         if (heights_widths[0] is not None) and (heights_widths[1] is not None):
             self.heights, self.widths = heights_widths
         elif (heights_widths[0] is None) and (heights_widths[1] is None):
@@ -110,39 +138,73 @@ class DailyMassBalanceModel(MassBalanceModel):
         self.t_liq = cfg.PARAMS['temp_all_liq']
         self.t_melt = cfg.PARAMS['temp_melt']
 
-        # Read file
-        fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
-        with netCDF4.Dataset(fpath, mode='r') as nc:
-            # time as nc time variable
-            self.nc_time = nc.variables['time']
-            self.nc_time_units = self.nc_time.units
-            # time as array of datetime instances
-            time = netCDF4.num2date(self.nc_time[:], self.nc_time.units)
-
-            # identify the time span
-            self.tspan_meteo = time
-            self.tspan_meteo_dtindex = pd.DatetimeIndex(time)
-
-            # Read timeseries
-            self.temp = nc.variables['temp'][:]
-            self.prcp_unc = nc.variables['prcp'][:]
-            if isinstance(self.prcp_fac, pd.Series):
-                self.prcp = nc.variables['prcp'][:] * \
-                            self.prcp_fac.reindex(index=time,
-                                                  method='nearest')\
-                                .fillna(value=self.param_ep_func(self.prcp_fac))
-            else:
-                self.prcp = nc.variables['prcp'][:] * self.prcp_fac
-            self.tgrad = nc.variables['tgrad'][:]
-            self.pgrad = nc.variables['pgrad'][:]
-            self.ref_hgt = nc.ref_hgt
-
-        self.meteo = climate.GlacierMeteo(self.gdir)
-
         # Public attrs
         self.temp_bias = 0.
+        self.prcp_bias = 1.
+
+        # Read meteo data
+        self.meteo = climate.GlacierMeteo(self.gdir, filename=filename,
+                                          filesuffix=self.filesuffix)
+        self.tspan_meteo = self.meteo.meteo.time.values
+        self.tspan_meteo_dtindex = pd.DatetimeIndex(self.meteo.index)
+        self.temp = self.meteo.tmean
+        if isinstance(self.prcp_fac, pd.Series):
+            self.prcp = \
+                self.meteo.prcp * self.prcp_fac.reindex(
+                    index=self.tspan_meteo_dtindex, method='nearest')\
+                    .fillna(value=self.param_ep_func(self.prcp_fac)).values
+        else:
+            # todo: check out whether we can pass several corr. factors at once
+            self.prcp = self.meteo.prcp * np.atleast_2d(self.prcp_fac).T
+
+        self.tgrad = self.meteo.tgrad
+        self.pgrad = self.meteo.pgrad
+        self.ref_hgt = self.meteo.ref_hgt
 
         self._time_elapsed = None
+
+        # determine the annual cyclicity of the precipitation correction factor
+        # this assumes that every year has the length of a leap year (shouldn't
+        # matter) and that the winter calibration phase is always OCT-APR
+        prcp_fac_annual_cycle = climate.prcp_fac_annual_cycle(
+            np.arange(1, sum(cfg.DAYS_IN_MONTH_LEAP) + 1))
+        prcp_fac_cyc_winter_mean = np.mean(np.hstack([
+            prcp_fac_annual_cycle[-sum(cfg.DAYS_IN_MONTH_LEAP[-3:]):],
+            prcp_fac_annual_cycle[:sum(cfg.DAYS_IN_MONTH_LEAP[:4])]]))
+        self.prcp_fac_cycle_multiplier = prcp_fac_annual_cycle / \
+                                         prcp_fac_cyc_winter_mean
+        
+        if debris is None:
+            self.debris = cfg.PARAMS['debris']
+            
+        DR = np.array([])
+        fls = gdir.read_pickle('inversion_flowlines')
+        for fl in fls:
+            DR = np.append(DR, fl.debris_ratio)
+        self.DR = DR
+        # Define debris ratio and debris factor
+        self.DF = cfg.PARAMS['DF']
+
+    @property
+    def temp_bias(self):
+        """Temperature bias to add to the original series."""
+        return self._temp_bias
+
+    @temp_bias.setter
+    def temp_bias(self, value):
+        """Temperature bias to change the ELA."""
+        #self.ela_h = self.orig_ela_h + value * 150  # OGGM
+        self._temp_bias = value
+
+    @property
+    def prcp_bias(self):
+        """Precipitation factor to apply to the original series."""
+        return self._prcp_bias
+
+    @prcp_bias.setter
+    def prcp_bias(self, value):
+        """Precipitation factor to apply to the original series."""
+        self._prcp_bias = value
 
     @property
     def time_elapsed(self):
@@ -158,11 +220,43 @@ class DailyMassBalanceModel(MassBalanceModel):
                 self._time_elapsed = date
             else:
                 try:
-                    self._time_elapsed = pd.DatetimeIndex(start=date, end=date,
+                    self._time_elapsed = pd.DatetimeIndex(np.array([date]),
                                                           freq='D')
                 except TypeError:
                     raise TypeError('Input date type ({}) for elapsed time not'
                                     ' understood'.format(type(date)))
+
+    def get_params(self, date):
+        """
+        Get model parameters at specific date.
+
+        Parameters
+        ----------
+        date: pd.Timestamp
+            The date for which to get the model parameters.
+
+        Returns
+        -------
+        p_now_list: list
+            List with parameters in the order of `self.cali_params_list`.
+        """
+        p_now_list = []
+
+        for p in self.cali_params_list:
+            model_param = getattr(self, p)
+
+            # todo: maybe go back to 'get_loc' with option "nearest"? (takes
+            #  200µs longer)
+            if isinstance(model_param, pd.Series):
+                try:
+                    p_now = model_param.loc[model_param.index == date].item()
+                except KeyError:
+                    p_now = self.param_ep_func(model_param).item()
+            else:
+                p_now = model_param
+            p_now_list.append(p_now)
+
+        return p_now_list
 
     def get_prcp_sol_liq(self, iprcp, ipgrad, heights, temp):
         # Compute solid precipitation from total precipitation
@@ -180,11 +274,14 @@ class DailyMassBalanceModel(MassBalanceModel):
 
     def get_tempformelt(self, temp):
         # Compute temperature available for melt
+
+        # CAUTION: THIS FUNCTION DOES NOT DISTRIBUTE TEMPERATURES ON HEIGHTs!
         tempformelt = temp - self.t_melt
-        tempformelt[:] = np.clip(tempformelt, 0, tempformelt.max())
+        tempformelt[tempformelt < 0.] = 0.
+        assert (tempformelt >= 0.).all()
         return tempformelt
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -210,37 +307,27 @@ class DailyMassBalanceModel(MassBalanceModel):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: datetime.datetime or pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
         """
-
+        
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
-        if isinstance(self.prcp_fac, pd.Series):
-            try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
-            except KeyError:
-                iprcp_fac = self.param_ep_func(self.prcp_fac)
-            if pd.isnull(iprcp_fac):
-                iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
-        else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+        mu_star, iprcp_fac = self.get_params(date)
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
         itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
 
         # For each height pixel:
         # Compute temp tempformelt (temperature above melting threshold)
@@ -248,37 +335,34 @@ class DailyMassBalanceModel(MassBalanceModel):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
-
-        # TODO: What happens when `date` is out of range of the cali df index?
-        # THEN should it take the mean or raise an error?
-        if isinstance(self.mu_star, pd.Series):
-            try:
-                mu_star = self.mu_star.iloc[self.mu_star.index.get_loc(
-                    date, **kwargs)]
-            except KeyError:
-                mu_star = self.param_ep_func(self.mu_star)
-            if pd.isnull(mu_star):
-                mu_star = self.param_ep_func(self.mu_star)
-        else:
-            mu_star = self.mu_star
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
 
         if isinstance(self.bias, pd.Series):
-            bias = self.bias.iloc[self.bias.index.get_loc(date, **kwargs)]
+            bias = self.bias.iloc[self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
 
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
-        mb_day = prcpsol - mu_star * tempformelt - bias
-
+        #mb_day = prcpsol - mu_star * tempformelt - bias
+        
+        acc = prcpsol
+        abl = - (mu_star * tempformelt)
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            abl = abl * (1-DR)
+        
+        mb_day = acc + abl - bias
+        
         self.time_elapsed = date
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
 
-    def get_daily_specific_mb(self, heights, widths, date=None, **kwargs):
+    def get_daily_specific_mb(self, heights, widths, date=None):
         """Specific mass balance for a given date and geometry (m w.e. d-1).
 
         Parameters
@@ -287,7 +371,7 @@ class DailyMassBalanceModel(MassBalanceModel):
             The altitudes at which the mass-balance will be computed.
         widths: ndarray
             The widths of the flowline (necessary for the weighted average).
-        date: datetime.datetime or array of datetime.datetime
+        date: pd.Timestamp or array of pd.Timestamp
             The date(s) when to calculate the specific mass balance.
 
         Returns
@@ -295,12 +379,12 @@ class DailyMassBalanceModel(MassBalanceModel):
         The specific mass-balance of (units: mm w.e. d-1)
         """
         if len(np.atleast_1d(date)) > 1:
-            out = [self.get_daily_specific_mb(heights, widths, date=d, **kwargs)
+            out = [self.get_daily_specific_mb(heights, widths, date=d)
                    for d in date]
             return np.asarray(out)
-
+        
         # m w.e. d-1
-        mbs = self.get_daily_mb(heights, date=date, **kwargs) * \
+        mbs = self.get_daily_mb(heights, date=date) * \
               cfg.SEC_IN_DAY * cfg.RHO / cfg.RHO_W
         mbs_wavg = np.average(mbs, weights=widths)
         return mbs_wavg
@@ -310,6 +394,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         Units: [m s-1], or meters of ice per second
         Note: `year` is optional because some simpler models have no time
         component.
+
         Parameters
         ----------
         heights: ndarray
@@ -323,8 +408,11 @@ class DailyMassBalanceModel(MassBalanceModel):
         -------
         the mass-balance (same dim as `heights`) (units: [m s-1])
         """
-
-        month_mb = None
+        month_beg = cfg.PARAMS['begin_mbyear_month']
+        day_beg = cfg.PARAMS['begin_mbyear_day']
+        year_range = pd.date_range(
+            '{}-{}-{}'.format(year - 1, month_beg, day_beg),
+            '{}-{}-{}'.format(year, month_beg, day_beg))
 
     def get_annual_mb(self, heights, year=None, fl_id=None):
         """Like `self.get_monthly_mb()`, but for annual MB.
@@ -333,6 +421,7 @@ class DailyMassBalanceModel(MassBalanceModel):
         Units: [m s-1], or meters of ice per second
         Note: `year` is optional because some simpler models have no time
         component.
+
         Parameters
         ----------
         heights: ndarray
@@ -352,7 +441,7 @@ class DailyMassBalanceModel(MassBalanceModel):
     def generate_climatology(self, write_out=True, n_exp=1):
         """
         EXPERIMENTAL!
-
+        
         For this to be a method and still be able to produce current
         conditions, a snow conditions file must be written
         Otherwise, if the script to write the current conditions is not run
@@ -379,7 +468,7 @@ class DailyMassBalanceModel(MassBalanceModel):
                                                  date=date)
                 mb.append(tmp)
 
-            mb_ds = xr.Dataset({'MB': (['time', 'n'],
+            mb_ds = xr.Dataset({self.prefix + 'MB': (['time', 'n'],
                                        np.atleast_2d(mb).T)},
                                coords={'n': (['n'], exp),
                                        'time': pd.to_datetime(self.span_meteo)},
@@ -404,15 +493,55 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
     Include SnowCover, so that all classes can inherit from it and there is not conflicts
     """
 
+    prefix = 'DailyMassBalanceModelWithSnow_'
+    mb_name = prefix + 'MB'
+
     def __init__(self, gdir, mu_star=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
-                 filename='climate_daily',
-                 filesuffix=''):
+                 filename='climate_daily', param_ep_func=np.nanmedian,
+                 filesuffix='', cali_suffix='', snow_redist=True):
+        """
+        Instantiate.
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The glacier directory to set up the mass balance model for.
+        mu_star: float or None, optional
+            A relict from the OGGM mass balance model. Default: None (omit).
+        bias: float or None, optional
+            A mass balance bias. Default: None (no bias).
+        prcp_fac: float or pd.Series or None, optional
+            Precipitation correction factor from calibration. Default: None
+            (get from calibration file).
+        snow_init : np.ndarray or None, optional
+            Initial conditions for snow, given as snow water equivalent (m
+            w.e.). If None, the snow cover will be initiated with zero.
+            Default: None.
+        snowcover : `crampon.core.models.massbalance.SnowFirnCover` or None,
+                     optional
+            A SnowFirnCover object determining the initial conditions for snow
+            and firn on the glacier. If None, snow and firn will be initiated
+            with zeros.
+        heights_widths : tuple of np.array or None, optional
+            Glacier heights and widths as numpy arrays. If None, heights and
+            widths are taken from the glacier directory.
+        filename : str, optional
+            Filename for the climate to use. Default: 'climate_daily'.
+        filesuffix : str, optional
+            Suffix to use when mass balance shall be written to gdir. This is
+            not used yet. Default: '' (no suffix, i.e. use calibration.csv)
+        cali_suffix : str, optional
+            Suffix to use for calibration file.
+        snow_redist : bool, optional
+            Whether to use snow redistribution. Default: True.
+        """
 
         super().__init__(gdir, mu_star=mu_star, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
-                         filesuffix=filesuffix, param_ep_func=np.nanmean)
+                         filesuffix=filesuffix, param_ep_func=param_ep_func,
+                         cali_suffix=cali_suffix)
 
         if snow_init is None:
            self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
@@ -420,8 +549,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
            self.snow_init = np.atleast_2d(snow_init)
 
         # todo: REPLACE THIS! It's just for testing
-        rho_init = np.zeros_like(self.snow_init)
-        rho_init.fill(100.)
+        rho_init = np.full_like(self.snow_init, cfg.PARAMS['rho_fresh_snow'])
         origin_date = dt.datetime(1961, 1, 1)
         if snowcover is None:
             self.snowcover = SnowFirnCover(self.heights, self.snow_init,
@@ -430,6 +558,25 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
             self.snowcover = snowcover
 
         self._snow = np.nansum(self.snowcover.swe, axis=1)
+
+        # get the snow redistribution factor, if desired and possible
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                # todo: move this warning somehwre else (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
 
     # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
     @property
@@ -444,7 +591,7 @@ class DailyMassBalanceModelWithSnow(DailyMassBalanceModel):
     def snowcover(self, value):
         self._snowcover = value
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         # todo: implement
         raise NotImplementedError
 
@@ -468,12 +615,16 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
     cali_params_list = ['mu_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [6.5, 1.5]))
+    param_bounds = ([0.0, 0.1], [np.inf, 5.0])
+    calibration_timespan = (None, None)
+    prefix = 'BraithwaiteModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, mu_ice=None, mu_snow=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  heights_widths=(None, None),
                  filename='climate_daily',
-                 filesuffix=''):
+                 filesuffix='', cali_suffix='', snow_redist=True):
         """
         Implementing the temperature index melt model by Braithwaite.
 
@@ -521,20 +672,21 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         super().__init__(gdir, mu_star=mu_ice, bias=bias, prcp_fac=prcp_fac,
                          filename=filename, heights_widths=heights_widths,
                          filesuffix=filesuffix, snowcover=snowcover,
-                         snow_init=snow_init)
+                         snow_init=snow_init, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         self.ratio_s_i = cfg.PARAMS['ratio_mu_snow_ice']
 
         if mu_ice is None:
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             mu_ice = cali_df[self.__name__ + '_' + 'mu_ice']
         if (mu_ice is not None) and (mu_snow is None):
             mu_snow = mu_ice * self.ratio_s_i
         if (mu_ice is None) and (mu_snow is None):
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             mu_snow = cali_df[self.__name__ + '_' + 'mu_ice'] * self.ratio_s_i
         if bias is None:
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             if cfg.PARAMS['use_bias_for_run']:
                 bias = cali_df[self.__name__ + '_' + 'bias']
             else:
@@ -542,7 +694,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
                                     data=np.zeros_like(cali_df.index,
                                                        dtype=float))
         if prcp_fac is None:
-            cali_df = gdir.get_calibration()
+            cali_df = gdir.get_calibration(filesuffix=cali_suffix)
             prcp_fac = cali_df[self.__name__ + '_' + 'prcp_fac']
 
         self.mu_ice = mu_ice
@@ -550,52 +702,19 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         self.bias = bias
         self.prcp_fac = prcp_fac
 
-        #if snow_init is None:
-        #    self.snow_init = np.atleast_2d(np.zeros_like(self.heights))
-        #else:
-        #    self.snow_init = np.atleast_2d(snow_init)
-
-        ## todo: REPLACE THIS! It's just for testing
-        #rho_init = np.zeros_like(self.snow_init)
-        #rho_init.fill(100.)
-        #origin_date = dt.datetime(1961, 1, 1)
-        #if snowcover is None:
-        #    self.snowcover = SnowFirnCover(self.heights, self.snow_init,
-        #                                   rho_init, origin_date)
-        #else:
-        #    self.snowcover = snowcover
-
-        #self._snow = np.nansum(self.snowcover.swe, axis=1)
-
-        # Read file
-        fpath = gdir.get_filepath(filename, filesuffix=filesuffix)
-        with netCDF4.Dataset(fpath, mode='r') as nc:
-            # time as nc time variable
-            self.nc_time = nc.variables['time']
-            self.nc_time_units = self.nc_time.units
-            # time as array of datetime instances
-            time = netCDF4.num2date(self.nc_time[:], self.nc_time.units)
-
-            # identify the time span
-            self.tspan_meteo = time
-            self.tspan_meteo_dtindex = pd.DatetimeIndex(time)
-            # self.years = np.unique([y.year for y in self.nc_time])
-
-            # Read timeseries
-            self.temp = nc.variables['temp'][:]
-            if isinstance(self.prcp_fac, pd.Series):
-                self.prcp = nc.variables['prcp'][:] * \
-                            self.prcp_fac.reindex(index=time,
-                                                  method='nearest').fillna(
-                    value=self.param_ep_func(self.prcp_fac))
-            else:
-                self.prcp = nc.variables['prcp'][:] * self.prcp_fac
-            self.tgrad = nc.variables['tgrad'][:]
-            self.pgrad = nc.variables['pgrad'][:]
-            self.ref_hgt = nc.ref_hgt
-
-        # Public attrs
-        self.temp_bias = 0.
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
 
     # todo: this shortcut is stupid...you can't set the attribute, it's just good for getting, but setting is needed in the calibration
     @property
@@ -610,7 +729,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
     def snowcover(self, value):
         self._snowcover = value
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -636,37 +755,34 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
-        """
-
+        """  
+        
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+            iprcp_fac = self.prcp_fac
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
 
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
@@ -674,14 +790,30 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
+
+        # redistribute prcpsol if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(self.snowdistfac.sel(time=date).D.values,
+                                      (0, npix - self.snowdistfac.sel(
+                                          time=date).D.values.size),
+                                      'constant', constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[:npix]
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
         if isinstance(self.mu_ice, pd.Series):
             try:
                 mu_ice = self.mu_ice.iloc[
-                    self.mu_ice.index.get_loc(date, **kwargs)]
+                    self.mu_ice.index.get_loc(date)]
             except KeyError:
                 mu_ice = self.param_ep_func(self.mu_ice)
             if pd.isnull(mu_ice):
@@ -692,7 +824,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.mu_snow, pd.Series):
             try:
                 mu_snow = self.mu_snow.iloc[
-                    self.mu_snow.index.get_loc(date, **kwargs)]
+                    self.mu_snow.index.get_loc(date)]
             except KeyError:
                 mu_snow = self.param_ep_func(self.mu_snow)
             if pd.isnull(mu_snow):
@@ -702,7 +834,7 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -716,36 +848,42 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
         mu_comb[:] = mu_ice
         np.put(mu_comb, snowdist, mu_snow)
 
-        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
-        mb_day = prcpsol - mu_comb * tempformelt - bias
-
+        # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias 
+        #mb_day = prcpsol - mu_comb * tempformelt - bias
+        
+        acc = prcpsol
+        abl = - (mu_comb * tempformelt)
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            abl = abl * (1-DR)
+            
+        mb_day = acc + abl - bias
+        
         self.time_elapsed = date
-
+        
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
             temp + cfg.ZERO_DEG_KELVIN)
-        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date,
+                                      temperature=temp+cfg.ZERO_DEG_KELVIN)
 
-        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
-
-        if date == pd.Timestamp(1966, 9, 15):
-            print('stop')
+        if date.day == cfg.PARAMS['bgday_hydro'] and \
+                date.month == cfg.PARAMS['bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
-
+    
     def update_snow(self, date, mb):
         """
         Updates the snow cover on the glacier after a mass balance calculation.
 
         Parameters
         ----------
-        date: datetime.datetime
+        date: datetime.datetime or pd.Timestamp
             The date for which to update the snow cover.
         mb: array-like
             Mass balance at given heights.
@@ -771,7 +909,8 @@ class BraithwaiteModel(DailyMassBalanceModelWithSnow):
 
 class HockModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by Hock (1999).
-
+    
+    
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [1]_.
 
@@ -790,33 +929,63 @@ class HockModel(DailyMassBalanceModelWithSnow):
             doi:10.3189/2014JoG14J011
     """
 
-    cali_params_list = ['mu_hock', 'a_ice', 'a_snow', 'prcp_fac']
+    cali_params_list = ['mu_hock', 'a_ice', 'prcp_fac']
     cali_params_guess = OrderedDict(
-        zip(cali_params_list, [1.8, 0.013, 0.013, 1.5]))
+        zip(cali_params_list, [1.8, 0.013, 1.5]))
+    param_bounds = ([0.0, 0.0, 0.1], [np.inf, np.inf, 5.0])
+    calibration_timespan = (None, None)
+    prefix = 'HockModel_'
+    mb_name = prefix + 'MB'
     # todo: is there also a factor of 0.5 between a_snow and a_ice?
 
     def __init__(self, gdir, mu_hock=None, a_ice=None,
                  prcp_fac=None, bias=None, snow_init=None, snowcover=None,
                  filename='climate_daily', heights_widths=(None, None),
-                 albedo_method=None, filesuffix=''):
+                 albedo_method=None, filesuffix='', cali_suffix='',
+                 snow_redist=True):
         # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=mu_hock, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover)
+                         snowcover=snowcover, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         if mu_hock is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.mu_hock = cali_df[self.__name__ + '_' + 'mu_hock']
         else:
             self.mu_hock = mu_hock
         if a_ice is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.a_ice = cali_df[self.__name__ + '_' + 'a_ice']
         else:
             self.a_ice = a_ice
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+        self.a_snow = cfg.PARAMS['ratio_a_snow_ice'] * self.a_ice
+
+        ipf = gdir.read_pickle('ipot_per_flowline')
+        # flatten as we also concatenate flowline heights
+        self.ipot = np.array([i for sub in ipf for i in sub])
+
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                # todo: move this warning to a better place (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
+
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -844,12 +1013,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -857,24 +1022,37 @@ class HockModel(DailyMassBalanceModelWithSnow):
             Glacier mass balance at the respective heights in m ice s-1.
         """
 
+        # this is for the case that the glacier shape has changed:
+        # at the moment, we can only add constant value to ipot at the tongue
+        # todo: this makes life way too easy
+        if heights.shape[0] > self.ipot.shape[0]:
+            self.ipot = np.pad(
+                self.ipot, ((0, heights.shape[0]-self.ipot.shape[0]), (0, 0)),
+                mode='constant', constant_values=((0, self.ipot[-1]), (0, 0)))
+        elif heights.shape[0] < self.ipot.shape[0]:
+            self.ipot = self.ipot[:heights.shape[0], :]
+        else:
+            pass
+
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
         itemp = self.temp[ix] + self.temp_bias
         itgrad = self.tgrad[ix]
-        ipgrad = self.pgrad[ix]
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp = self.prcp_unc[ix] * iprcp_fac
         else:
-            iprcp = self.prcp_unc[ix] * self.prcp_fac
+            iprcp_fac = self.prcp_fac
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
 
         # For each height pixel:
         # Compute temp and tempformelt (temperature above melting threshold)
@@ -882,14 +1060,30 @@ class HockModel(DailyMassBalanceModelWithSnow):
         temp = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         tempformelt = self.get_tempformelt(temp)
-        prcpsol, _ = self.get_prcp_sol_liq(iprcp, ipgrad, heights, temp)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
+
+        # redistribute if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(self.snowdistfac.sel(time=date).D.values,
+                                      (0, npix - self.snowdistfac.sel(
+                                          time=date).D.values.size),
+                                      'constant', constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[:npix]
 
         # TODO: What happens when `date` is out of range of the cali df index?
         # THEN should it take the mean or raise an error?
         if isinstance(self.mu_hock, pd.Series):
             try:
                 mu_hock = self.mu_hock.iloc[
-                    self.mu_hock.index.get_loc(date, **kwargs)]
+                    self.mu_hock.index.get_loc(date)]
             except KeyError:
                 mu_hock = self.param_ep_func(self.mu_hock)
             if pd.isnull(mu_hock):
@@ -900,7 +1094,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.a_ice, pd.Series):
             try:
                 a_ice = self.a_ice.iloc[
-                    self.a_ice.index.get_loc(date, **kwargs)]
+                    self.a_ice.index.get_loc(date)]
             except KeyError:
                 a_ice = self.param_ep_func(self.a_ice)
             if pd.isnull(a_ice):
@@ -911,7 +1105,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.a_snow, pd.Series):
             try:
                 a_snow = self.a_snow.iloc[
-                    self.a_snow.index.get_loc(date, **kwargs)]
+                    self.a_snow.index.get_loc(date)]
             except KeyError:
                 a_snow = self.param_ep_func(self.a_snow)
             if pd.isnull(a_snow):
@@ -921,7 +1115,7 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -934,20 +1128,36 @@ class HockModel(DailyMassBalanceModelWithSnow):
         a_comb[:] = a_ice
         np.put(a_comb, snowdist, a_snow)
 
+        # todo: find a much better solution for leap years:
+        try:
+            i_pot = self.ipot[:, date.timetuple().tm_yday-1]
+        except IndexError: # end of leap year
+            i_pot = self.ipot[:, date.timetuple().tm_yday-2]
         # (mm w.e. d-1) = (mm w.e. d-1) - (mm w.e. d-1 K-1) * K - bias
+        #print(mu_hock, a_comb, i_pot)
         mb_day = prcpsol - (mu_hock + a_comb * i_pot) * tempformelt - bias
-
+        
+        acc = prcpsol
+        abl = - (mu_hock + a_comb * i_pot) * tempformelt
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            abl = abl * (1-DR)
+            
+        mb_day = acc + abl - bias
+        
         self.time_elapsed = date
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
             temp + cfg.ZERO_DEG_KELVIN)
-        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date,
+                                      temperature=temp + cfg.ZERO_DEG_KELVIN)
 
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -956,7 +1166,8 @@ class HockModel(DailyMassBalanceModelWithSnow):
 
 class PellicciottiModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by Pellicciotti et al. (2005).
-
+    
+    
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [1]_.
 
@@ -988,13 +1199,17 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
     """
 
     cali_params_list = ['tf', 'srf', 'prcp_fac']
-    cali_params_guess = OrderedDict(zip(cali_params_list, [0.15, 0.006, 1.5]))
-    calibration_timespan = (2005, None)
+    cali_params_guess = OrderedDict(zip(cali_params_list, [3., 0.13, 1.5]))
+    param_bounds = ([0.0, 0.0, 0.1], [np.inf, np.inf, 5.0])
+    calibration_timespan = (1984, None)
+    prefix = 'PellicciottiModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, tf=None, srf=None, bias=None,
                  prcp_fac=None, snow_init=None, snowcover=None,
                  filename='climate_daily', heights_widths=(None, None),
-                 albedo_method=None, filesuffix=''):
+                 albedo_method=None, filesuffix='', cali_suffix='',
+                 snow_redist=True):
         # todo: Documentation
         """
 
@@ -1026,17 +1241,18 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
         References
         ----------
-        [1]_.. : MeteoSwiss TabsD product description:
-                 https://www.meteoswiss.admin.ch/content/dam/meteoswiss/fr/climat/le-climat-suisse-en-detail/doc/ProdDoc_TabsD.pdf
+        [1]_.. : MeteoSwiss TabsD product description: https://bit.ly/3d32wR7
         """
 
         # todo: here we hand over tf to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=tf, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover)
+                         snowcover=snowcover, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         self.albedo = GlacierAlbedo(self.heights) #TODO: finish Albedo object
+        self.ice_albedo = cfg.PARAMS['ice_albedo_default']
 
         # todo: improve this IF: default is "brock" and ELIFs would be appropriate...but what is the ELSE then?
         if albedo_method is None:
@@ -1052,20 +1268,69 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             self.update_albedo = self.albedo.update_ensemble
 
         if tf is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.tf = cali_df[self.__name__ + '_' + 'tf']
         else:
             self.tf = tf
         if srf is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.srf = cali_df[self.__name__ + '_' + 'srf']
         else:
             self.srf = srf
 
-        # get positive temperature sum since snowfall
-        self.tpos_since_snowfall = np.zeros_like(self.heights)
+        try:
+            self.sis_scale_factor = xr.open_dataset(gdir.get_filepath(
+                'sis_scale_factor')).sis_scale_fac.values
+            self.sis_scale_factor = np.concatenate([self.sis_scale_factor.T,
+                                                    np.atleast_2d(
+                                                        self.sis_scale_factor[
+                                                        :, -1])]).T
+        except FileNotFoundError:
+            self.sis_scale_factor = None
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+        # get positive temperature sum since snowfall
+        swe = np.nansum(self.snowcover.swe, axis=1)
+        init_tpos = np.zeros_like(self.heights)
+        init_tpos[swe == 0.] = cfg.PARAMS['tacc_ice']
+        init_tpos[swe > 0.] = cfg.PARAMS['tacc_ice'] / 2.
+        self.tpos_since_snowfall = init_tpos
+
+        # daily snowfall when alpha is reset (here: 1mm, Ragettli et al. 2015))
+        self.reset_alpha_swe = 1.  # it's in mm here, because precip is in mm
+
+        # get the snow redistribution factor, if desired and possible
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                # todo: move this warning to a better place (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
+
+        self._sis_bias = 0.
+
+
+    @property
+    def sis_bias(self):
+        """Shortwave incoming radiation bias to add to the original series."""
+        return self._sis_bias
+
+    @sis_bias.setter
+    def sis_bias(self, value):
+        """Set a bias for the shortwave incoming radiation."""
+        self._sis_bias = value
+
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -1097,51 +1362,92 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
         ndarray:
             Glacier mass balance at the respective heights in m ice s-1.
         """
-
+        
+        # this is for the case that the glacier shape has changed:
+        # at the moment, we can only add constand value to ipot at the tongue
+        # todo: this makes life way too easy
+        if heights.shape[0] > self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = np.pad(
+                self.tpos_since_snowfall, ((heights.shape[0] -
+                                            self.tpos_since_snowfall.shape[0]),
+                                           (0)),
+                               mode='constant',
+                               constant_values=(self.tpos_since_snowfall[-1]))
+        elif heights.shape[0] < self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = \
+                self.tpos_since_snowfall[:heights.shape[0]]
+        else:
+            pass
+        
         # index of the date of MB calculation
-        # Todo: Timeit and compare with solution where the dtindex becomes a parameter
         ix = self.meteo.get_loc(date)
 
         # Read timeseries
-        # Todo: what to do with the bias? We don't calculate temp this way anymore
-        #itemp = self.meteo.tmean[ix] + self.temp_bias
-        #itgrad = self.meteo.tgrad[ix]
-        #iprcp_unc = self.meteo.prcp[ix]
-        #ipgrad = self.meteo.pgrad[ix]
-        isis = self.meteo.sis[ix]
+        isis = self.meteo.sis[ix] + self.sis_bias
 
-        tempformelt = self.meteo.get_tmean_for_melt_at_heights(date, cfg.PARAMS['temp_melt'], heights)
-        # Todo: make precip calculation method a member of cfg.PARAMS
-        prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date, heights)
+        # should only happen in last 2 months & be removed when SIS operational
+        if np.isnan(isis):
+            return np.full_like(heights, np.nan)
+        
+        if self.sis_scale_factor is not None:
+            doy = date.dayofyear
+            isis = isis * self.sis_scale_factor[:, doy-1]
+
+        itemp = self.temp[ix] + self.temp_bias
+        itgrad = self.tgrad[ix]
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[
+                    self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp_corr = prcpsol_unc * iprcp_fac
         else:
-            iprcp_corr = prcpsol_unc * self.prcp_fac
+            iprcp_fac = self.prcp_fac
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
+        # For each height pixel:
+        # Compute temp and tempformelt (temperature above melting threshold)
+        # doing it here is faster than in GlacierMeteo...
+        npix = len(heights)
+        tmean = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
+        
+        # redistribute if snowdistfac is given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(
+                        self.snowdistfac.sel(time=date).D.values, (0, len(
+                            heights) - self.snowdistfac.sel(
+                            time=date).D.values.size), 'constant',
+                        constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[
+                                   :len(heights)]
 
         if isinstance(self.tf, pd.Series):
             try:
                 tf_now = self.tf.iloc[
-                    self.tf.index.get_loc(date, **kwargs)]
+                    self.tf.index.get_loc(date)]
             except KeyError:
                 tf_now = self.param_ep_func(self.tf)
             if pd.isnull(tf_now):
@@ -1152,17 +1458,17 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.srf, pd.Series):
             try:
                 srf_now = self.srf.iloc[
-                    self.srf.index.get_loc(date, **kwargs)]
+                    self.srf.index.get_loc(date)]
             except KeyError:
                 srf_now = self.param_ep_func(self.srf)
             if pd.isnull(srf_now):
-               srf_now = self.param_ep_func(self.srf)
+                srf_now = self.param_ep_func(self.srf)
         else:
             srf_now = self.srf
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -1181,42 +1487,60 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
             # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
             # todo: getting efficiently pos t sum between doesn't work with arrays???
             if self.albedo_method == 'brock':
-                self.tpos_since_snowfall[iprcp_corr > 0.] = 0
-                self.tpos_since_snowfall[iprcp_corr <= 0.] += \
-                    climate.get_temperature_at_heights(self.meteo.tmax[ix],
+                self.tpos_since_snowfall[prcpsol >
+                                         self.reset_alpha_swe] = 0.
+                tmax = climate.get_temperature_at_heights(self.meteo.tmax[ix],
                                                        self.meteo.tgrad[ix],
                                                        self.meteo.ref_hgt,
-                                                       heights)[iprcp_corr <= 0.]
-                albedo = self.update_albedo(t_acc=self.tpos_since_snowfall)
+                                                       heights)
+                self.tpos_since_snowfall[prcpsol <=
+                                         self.reset_alpha_swe] += \
+                    np.clip(tmax[prcpsol <= self.reset_alpha_swe], 0., None)
+                # prcp not yet included
+                swe = np.nansum(self.snowcover.swe, axis=1) + prcpsol
+                icedist = (swe <= self.reset_alpha_swe / 1000.)
+                albedo = self.update_albedo(swe, self.tpos_since_snowfall,
+                                            icedist)
+                # important: set ice value for next day
+                # todo: is the change correct
+                self.tpos_since_snowfall[icedist] = \
+                    np.clip(self.tpos_since_snowfall[icedist],
+                            cfg.PARAMS['tacc_ice'], None)
             elif self.albedo_method == 'oerlemans':
                 age_days = self.snowcover.age_days[np.arange(
                     self.snowcover.n_heights), self.snowcover.top_layer]
                 albedo = self.albedo.update_oerlemans(self.snowcover)
             elif self.albedo_method == 'ensemble':
-                albedo = self.albedo.update_ensemble() # NotImplementedError
+                albedo = self.albedo.update_ensemble()  # NotImplementedError
             else:
                 raise ValueError('Albedo method is still not allowed.')
 
 
         # todo: where to put the bias here?
         # Pellicciotti(2005): melt really only occurs when temp is above Tt
-        Tt = 1.  # Todo: Is this true? I think it should be -1! Ask Francesca if it's a typo in her paper!
-        melt_day = tf_now * tempformelt + srf_now * (1 - albedo) * isis
-        melt_day[tempformelt <= Tt] = 0.
+        Tt = 1.
 
-        mb_day = iprcp_corr - melt_day
+        # SIS: doesn't matter when tmean<=Tt => calc. melt possible also w/o!
+        melt_day = - (tf_now * tmean + srf_now * (1 - albedo) * isis)
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            melt_day = melt_day * (1-DR)
+        
+        melt_day[tmean <= Tt] = 0.
+        mb_day = prcpsol + melt_day
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
-            self.meteo.get_tmean_at_heights(date, heights) + cfg.ZERO_DEG_KELVIN)
-        self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
+            tmean + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(
+            mb_day / 1000., rho, date, temperature=tmean + cfg.ZERO_DEG_KELVIN)
         self.time_elapsed = date
 
-        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return ((10e-3 kg m-2) w.e. d-1) * (d s-1) * (kg-1 m3) = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
@@ -1225,7 +1549,7 @@ class PellicciottiModel(DailyMassBalanceModelWithSnow):
 
 class OerlemansModel(DailyMassBalanceModelWithSnow):
     """ This class implements the melt model by [Oerlemans (2001)]_.
-
+    
     The calibration parameter guesses are only used to initiate the calibration
     are rough mean values from [Gabbi et al. (2014)]_.
 
@@ -1245,17 +1569,21 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
     cali_params_list = ['c0', 'c1', 'prcp_fac']
     cali_params_guess = OrderedDict(zip(cali_params_list, [-110., 16., 1.5]))
-    calibration_timespan = (2005, None)
+    param_bounds = ([-225., 1., 0.1], [-5., 33., 5.0])
+    calibration_timespan = (1984, None)
+    prefix = 'OerlemansModel_'
+    mb_name = prefix + 'MB'
 
     def __init__(self, gdir, c0=None, c1=None, prcp_fac=None, bias=None,
                  snow_init=None, snowcover=None, filename='climate_daily',
                  heights_widths=(None, None), albedo_method=None,
-                 filesuffix=''):
+                 filesuffix='', cali_suffix='', snow_redist=True):
         # todo: here we hand over c0 to DailyMassBalanceModelWithSnow as mu_star...this is just because otherwise it tries to look for parameters in the calibration that might not be there
         super().__init__(gdir, mu_star=c0, bias=bias, prcp_fac=prcp_fac,
                          heights_widths=heights_widths, filename=filename,
                          filesuffix=filesuffix, snow_init=snow_init,
-                         snowcover=snowcover)
+                         snowcover=snowcover, cali_suffix=cali_suffix,
+                         snow_redist=snow_redist)
 
         self.albedo = GlacierAlbedo(self.heights)  # TODO: finish Albedo object
 
@@ -1274,20 +1602,69 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             self.update_albedo = self.albedo.update_ensemble
 
         if c0 is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.c0 = cali_df[self.__name__ + '_' + 'c0']
         else:
             self.c0 = c0
         if c1 is None:
-            cali_df = gdir.get_calibration(self)
+            cali_df = gdir.get_calibration(self, filesuffix=cali_suffix)
             self.c1 = cali_df[self.__name__ + '_' + 'c1']
         else:
             self.c1 = c1
 
-        # get positive temperature sum since snowfall
-        self.tpos_since_snowfall = np.zeros_like(self.heights)
+        try:
+            self.sis_scale_factor = xr.open_dataset(gdir.get_filepath(
+                'sis_scale_factor')).sis_scale_fac.values
+            self.sis_scale_factor = np.concatenate([self.sis_scale_factor.T,
+                                                    np.atleast_2d(
+                                                        self.sis_scale_factor[
+                                                        :, -1])]).T
+        except FileNotFoundError:
+            self.sis_scale_factor = None
 
-    def get_daily_mb(self, heights, date=None, **kwargs):
+        # get positive temperature sum since snowfall
+        swe = np.nansum(self.snowcover.swe, axis=1)
+        init_tpos = np.zeros_like(self.heights)
+        init_tpos[swe == 0.] = cfg.PARAMS['tacc_ice']
+        init_tpos[swe > 0.] = cfg.PARAMS['tacc_ice'] / 2.
+        self.tpos_since_snowfall = init_tpos
+
+        # daily snowfall when alpha is reset (here: 1mm, Ragettli et al. 2015))
+        self.reset_alpha_swe = 1.  # it's in mm here, because precip is in mm
+
+        # get the snow redistribution factor, if desired and possible
+        if snow_redist is True:
+            try:
+                self.snowdistfac = xr.open_dataset(
+                    gdir.get_filepath('snow_redist'))
+                try:
+                    self.snowdistfac = self.snowdistfac.sel(
+                        model=self.__name__)
+                except Exception:
+                    self.snowdistfac = None
+            except FileNotFoundError:
+                # todo: move this warning to a better place (less spam)
+                if gdir in cfg.PARAMS['glamos_ids']:
+                    log.warning('Snow redist factors not found for {}'.format(
+                        gdir.rgi_id))
+                self.snowdistfac = None
+        else:
+            self.snowdistfac = None
+
+        self._sis_bias = 0.
+
+
+    @property
+    def sis_bias(self):
+        """Shortwave incoming radiation bias to add to the original series."""
+        return self._sis_bias
+
+    @sis_bias.setter
+    def sis_bias(self, value):
+        """Set a bias for the shortwave incoming radiation."""
+        self._sis_bias = value
+
+    def get_daily_mb(self, heights, date=None):
         """
         Calculates the daily mass balance for given heights.
 
@@ -1319,12 +1696,8 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         ----------
         heights: ndarray
             Heights at which mass balance should be calculated.
-        date: datetime.datetime
+        date: pd.Timestamp
             Date at which mass balance should be calculated.
-        **kwargs: dict-like, optional
-            Arguments passed to the pd.DatetimeIndex.get_loc() method that
-            selects the fitting melt parameters from the melt parameter
-            attributes.
 
         Returns
         -------
@@ -1332,34 +1705,80 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             Glacier mass balance at the respective heights in m ice s-1.
         """
 
+        # this is for the case that the glacier shape has changed:
+        # at the moment, we can only add constand value to ipot at the tongue
+        # todo: this makes life way too easy
+        if heights.shape[0] > self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = np.pad(self.tpos_since_snowfall, (
+                (heights.shape[0] - self.tpos_since_snowfall.shape[0]), (0)),
+                                              mode='constant',
+                                              constant_values=(
+                                              (self.tpos_since_snowfall[-1])))
+        elif heights.shape[0] < self.tpos_since_snowfall.shape[0]:
+            self.tpos_since_snowfall = self.tpos_since_snowfall[
+                                       :heights.shape[0]]
+        else:
+            pass
+
         # index of the date of MB calculation
-        ix = self.tspan_meteo_dtindex.get_loc(date, **kwargs)
+        ix = self.tspan_meteo_dtindex.get_loc(date)
 
         # Read timeseries
-        isis = self.meteo.sis[ix]
+        isis = self.meteo.sis[ix] + self.sis_bias
 
-        tmean = self.meteo.get_tmean_at_heights(date, heights)
+        # should only happen in last 2 months & be removed when SIS operational
+        if np.isnan(isis):
+            return np.full_like(heights, np.nan)
 
-        # Todo: make precip calculation method a member of cfg.PARAMS
-        prcpsol_unc, _ = self.meteo.get_precipitation_liquid_solid(date,
-                                                                   heights)
+        if self.sis_scale_factor is not None:
+            doy = date.dayofyear
+            isis = isis * self.sis_scale_factor[:, doy-1]
+
+        itemp = self.temp[ix] + self.temp_bias
+        itgrad = self.tgrad[ix]
+        npix = len(heights)
+        tmean = np.ones(npix) * itemp + itgrad * (heights - self.ref_hgt)
 
         if isinstance(self.prcp_fac, pd.Series):
             try:
-                iprcp_fac = self.prcp_fac[self.prcp_fac.index.get_loc(date,
-                                                                      **kwargs)]
+                iprcp_fac = self.prcp_fac[
+                    self.prcp_fac.index.get_loc(date)]
             except KeyError:
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
             if pd.isnull(iprcp_fac):
                 iprcp_fac = self.param_ep_func(self.prcp_fac)
-            iprcp_corr = prcpsol_unc * iprcp_fac
         else:
-            iprcp_corr = prcpsol_unc * self.prcp_fac
+            iprcp_fac = self.prcp_fac
+
+        # correct for annual variation and potential overall bias
+        iprcp_fac *= self.prcp_fac_cycle_multiplier[date.dayofyear - 1]
+        iprcp_fac *= self.prcp_bias
+
+        # Todo: make precip calculation method a member of cfg.PARAMS
+        prcpsol, _ = self.meteo.get_precipitation_solid_liquid(
+            date, heights, prcp_fac=iprcp_fac)
+
+        # redistribute prcpsol if given
+        if self.snowdistfac is not None:
+            try:
+                prcpsol *= self.snowdistfac.sel(time=date).D.values
+            except KeyError:
+                pass
+            except ValueError:
+                try:
+                    prcpsol *= np.pad(
+                        self.snowdistfac.sel(time=date).D.values, (0, len(
+                            heights) - self.snowdistfac.sel(
+                            time=date).D.values.size), 'constant',
+                        constant_values=(1., 1.))
+                except ValueError:
+                    prcpsol *= self.snowdistfac.sel(time=date).D.values[
+                                   :len(heights)]
 
         if isinstance(self.c0, pd.Series):
             try:
                 c0 = self.c0.iloc[
-                    self.c0.index.get_loc(date, **kwargs)]
+                    self.c0.index.get_loc(date)]
             except KeyError:
                 c0 = self.param_ep_func(self.c0)
             if pd.isnull(c0):
@@ -1370,7 +1789,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         if isinstance(self.c1, pd.Series):
             try:
                 c1 = self.c1.iloc[
-                    self.c1.index.get_loc(date, **kwargs)]
+                    self.c1.index.get_loc(date)]
             except KeyError:
                 c1 = self.param_ep_func(self.c1)
             if pd.isnull(c1):
@@ -1380,7 +1799,7 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         if isinstance(self.bias, pd.Series):
             bias = self.bias.iloc[
-                self.bias.index.get_loc(date, **kwargs)]
+                self.bias.index.get_loc(date)]
             # TODO: Think of clever solution when no bias (=0)?
         else:
             bias = self.bias
@@ -1400,15 +1819,23 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
             # todo: this complicated as the different methods take input parameters! They should be able to get them themselves
             # todo: getting efficiently pos t sum between doesn't work with arrays???
             if self.albedo_method == 'brock':
-                self.tpos_since_snowfall[iprcp_corr > 0.] = 0
-                self.tpos_since_snowfall[iprcp_corr <= 0.] += \
+                self.tpos_since_snowfall[prcpsol >
+                                         self.reset_alpha_swe] = 0.
+                self.tpos_since_snowfall[
+                    prcpsol <= self.reset_alpha_swe] += np.clip(
                     climate.get_temperature_at_heights(self.meteo.tmax[ix],
-                                                       self.meteo.tgrad[
-                                                           ix],
+                                                       self.meteo.tgrad[ix],
                                                        self.meteo.ref_hgt,
                                                        heights)[
-                        iprcp_corr <= 0.]
-                albedo = self.update_albedo(t_acc=self.tpos_since_snowfall)
+                        prcpsol <= self.reset_alpha_swe], 0., None)
+                icedist = self.snowcover.get_total_height() <= 0.
+                swe = np.nansum(self.snowcover.swe, axis=1)
+                albedo = self.update_albedo(swe, self.tpos_since_snowfall,
+                                            icedist)
+                # todo: change ok?
+                self.tpos_since_snowfall[icedist] = \
+                    np.clip(self.tpos_since_snowfall[icedist],
+                            cfg.PARAMS['tacc_ice'], None)
             elif self.albedo_method == 'oerlemans':
                 age_days = self.snowcover.age_days[np.arange(
                     self.snowcover.n_heights), self.snowcover.top_layer]
@@ -1425,6 +1852,123 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
         qmelt = np.clip(qmelt, 0., None)
 
         # kg m-2 d-1 = W m-2 * s * J-1 kg
+        # we want ice flux, so we drop RHO_W for the first...!?
+        melt = - (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
+        
+        if self.debris:
+            DR = self.DR * (1-self.DF)
+            melt = melt * (1-DR)
+            
+        # kg m-2 = kg m-2 - kg m-2
+        mb_day = prcpsol + melt
+
+        # todo: take care of temperature!?
+        rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
+            tmean + cfg.ZERO_DEG_KELVIN)
+        self.snowcover.ingest_balance(mb_day / 1000., rho, date,
+                                      temperature=tmean + cfg.ZERO_DEG_KELVIN)
+        self.time_elapsed = date
+
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
+
+        # return kg m-2 s-1 kg-1 m3 = m ice s-1
+        icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
+        return icerate
+
+
+class EnsembleMassBalanceModel(object):
+    """A wrapper around mass balance models to get model mass balances at once.
+    # TODO? change get_daily_mb and get_daily_specific_mb to account for debris?
+    """
+
+    # todo: this is still WIP
+    
+    def __init__(self, gdir, models=None, bias=0., **kwargs):
+        """
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The GlacierDirectory to get the mass balance for.
+        models: list of `py:class:crampon.core.massbalance.MassbalanceModel` or
+                 None
+            The mass balance models to include in the ensemble. All given mass
+            balance models must have the methods `get_daily_mb` and
+            `get_daily_specific_mb`.
+        bias: float
+            # todo: should this be a list of biases?
+            The mass balance model bias. Default: 0. (no bias)
+        **kwargs: dict
+            Keywords passed on to the mass balance model class.
+        """
+        self.gdir = gdir
+
+        if models is None:
+            self.models = [eval(m) for m in cfg.MASSBALANCE_MODELS]
+        else:
+            self.models = models
+
+        # instantiate models
+        self.models = [m(gdir, bias=bias, **kwargs) for m in self.models]
+
+    def get_daily_mb(self, heights: np.ndarray, date: pd.Timestamp) -> list:
+        """
+        Get the daily mass balance at heights in term of meter ice per second.
+
+        Parameters
+        ----------
+        heights: array
+            Heights at which mass balance should be calculated.
+        date: pd.Timestamp
+            Date at which mass balance should be calculated.
+
+        Returns
+        -------
+        all_mb: list
+            A nested list with all mass balance values at the given heights.
+        """
+
+        all_mb = []
+        for m in self.models:
+            all_mb.append(m.get_daily_mb(heights, date))
+        return all_mb
+
+    def get_daily_specific_mb(self, heights, widths, date) -> list:
+        """
+        Get the daily specific mass balance at heights in terms of meter ice
+        per second.
+
+        Parameters
+        ----------
+        heights: ndarray
+            The altitudes at which the mass-balance will be computed.
+        widths: ndarray
+            The widths of the flowline (necessary for the weighted average).
+        date: pd.Timestamp or array of pd.Timestamp
+            The date(s) when to calculate the specific mass balance.
+
+        Returns
+        -------
+        all_mb: list
+            A list with the estimates of the mass balance models.
+        """
+        all_mb = []
+        for m in self.models:
+            all_mb.append(m.get_daily_specific_mb(heights, widths, date))
+        return all_mb
+
+    def get_monthly_mb(self, heights, year=None, fl_id=None):
+        raise NotImplementedError
+
+    def get_annual_mb(self, heights, year=None, fl_id=None):
+        raise NotImplementedError
+
+
+        # kg m-2 d-1 = W m-2 * s * J-1 kg
+        # we want ice flux, so we drop RHO_W for the first...!?
         melt = (qmelt * cfg.SEC_IN_DAY) / cfg.LATENT_HEAT_FUSION_WATER
 
         # kg m-2 = kg m-2 - kg m-2
@@ -1432,21 +1976,361 @@ class OerlemansModel(DailyMassBalanceModelWithSnow):
 
         # todo: take care of temperature!?
         rho = np.ones_like(mb_day) * get_rho_fresh_snow_anderson(
-            self.meteo.get_tmean_at_heights(date,
-                                            heights) + cfg.ZERO_DEG_KELVIN)
+            tmean + cfg.ZERO_DEG_KELVIN)
         self.snowcover.ingest_balance(mb_day / 1000., rho, date)  # swe in m
         self.time_elapsed = date
 
-        # todo: is this a good idea? it's totally confusing if half of the snowpack is missing...
-        # TODO: THIS IS ACTUALLY NEITHER HERE NOR IN PELLIMODEL ALLOWED; BECAUSE WE USE THE SNOW DENSITY TO DETERMINE THE TYPE, WHICH IN TURN DETERMINES THE ALBEDO; THUS WE EVEN NEED STO DENSIFY!
-        # remove old snow to make model faster
-        if date.day == 1:  # this is a good compromise in terms of time
-            oldsnowdist = np.where(self.snowcover.age_days > 365)
-            self.snowcover.remove_layer(ix=oldsnowdist)
+        if date.day == cfg.PARAMS['bgday_hydro'] and date.month == cfg.PARAMS[
+            'bgmon_hydro']:
+            self.snowcover.merge_by_age(period='A')
+            self.snowcover.remove_ice_layers(by='age')
 
         # return kg m-2 s-1 kg-1 m3 = m ice s-1
         icerate = mb_day / cfg.SEC_IN_DAY / cfg.RHO
         return icerate
+
+
+
+
+class ParameterGenerator(object):
+    """Interface to calibrated temperature index model parameters."""
+
+    def __init__(self, gdir=None, mb_model=None, latest_climate=False,
+                 only_pairs=True, constrain_with_bw_prcp_fac=False,
+                 bw_constrain_year=None, narrow_distribution=False,
+                 output_type=None, suffix=''):
+        """
+        Instantiate.
+
+        Parameters
+        ----------
+        gdir: `py:class:crampon.GlacierDirectory`
+            The glacier directory for which to get parameter values.
+        mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
+                  or str
+            The mass balance model to get the parameters for.
+        latest_climate: bool
+            If only the last 30 years of the calibration period shall be
+            considered. If no values from the last 30 years are available, a
+            warning is issued.
+        only_pairs:
+            Determines whether there are only parameter combinations used which
+            have already appeared, no random mixing. If False, the all
+            available parameters are randomly mixed.
+        constrain_with_bw_prcp_fac: bool
+            If True and in the last row of the calibration dataframe only a
+            prcp correction factor is given, all possible combinations will be
+            restricted to this factor and the possible melt factors.
+            Default: True.
+        bw_constrain_year: int or None
+            If given, this can force to set the precipitation correction factor
+            to the value of the given year. Mostly used for hindcast
+            experiments (e.g. a mass budget year has already been fully
+            calibrated, but we want to pretend the melt factors are still
+            unknown.
+        narrow_distribution: bool or float
+            Whether to narrow down the distribution, i.e. clipping off the
+            edges of the found parameter ranges. Default: False.
+        output_type = str or None
+            Desired output type for the functions. Allowed: 'array' or 'list.
+            Default: None (don't force output of the function to be something
+            else).
+            # todo: move this a keyword to the methods
+        suffix: str
+            Suffix for calibration file to generate parameters from, e.g.
+            '_fischer_unique'.
+        """
+        self.gdir = gdir
+        if isinstance(mb_model, str):
+            mb_model = eval(mb_model)
+        self.mb_model = mb_model
+        self.latest_climate = latest_climate
+        self.only_pairs = only_pairs
+        self.constrain_with_bw_prcp_fac = constrain_with_bw_prcp_fac
+        self.bw_constrain_year = bw_constrain_year
+        self.narrow_distribution = narrow_distribution
+        self.output_type = output_type
+        self.suffix = suffix
+
+    @lazy_property
+    def single_glacier_params(self):
+        """Get unique parameters for a single glacier."""
+        cali_df = self.gdir.get_calibration(self.mb_model,
+                                            filesuffix=self.suffix)
+        cali_filtered = cali_df.filter(regex=self.mb_model.__name__)
+
+        try:
+            # 'last' for fisch_unique cali and latest_climate=True: otherwise date is 1962-10-01
+            cali_sel = cali_filtered[~cali_filtered.duplicated(keep='last')]
+        except pd.core.indexing.IndexingError:
+            log.error(
+                'Desired calibration for {} does not seem to be present. '
+                'Glacier needs to be recalibrated.'.format(
+                    self.mb_model.__name__))
+            # todo: check if this makes sense
+            return cali_filtered
+            # todo: trigger calibration here according to cali file was chosen
+            #  or with a function 'cali_best_effort' or so
+
+        # todo: check from theory if this is a clever idea
+        if self.latest_climate:
+            try:
+                cali_sel = cali_sel[(dt.datetime.now().year -
+                                     cali_sel.index.year) <= 30.]
+            except IndexError:
+                pass
+
+            if cali_sel.empty:
+                log.warning('With choosing the latest climatology only, there '
+                            'are no calibration values left.')
+
+        # important: be sure columns match the "order" of the params
+        cali_sel = cali_sel[[self.mb_model.__name__ + '_' + i for i in
+                             self.mb_model.cali_params_list]]
+        # how = 'all' keeps the rows with precipitation correction factor only
+        cali_sel.dropna(inplace=True, how='all')
+        return cali_sel
+
+    @lazy_property
+    def pooled_params(self, which='glamos'):
+        """
+        Get pooled parameters from all calibrated glaciers
+
+        Parameters
+        ----------
+        which: str, optional
+            Pool parameters from 'glamos' glaciers or 'all'? Default: 'glamos'.
+        """
+        if which == 'glamos':
+            calibrated_ids = cfg.PARAMS['glamos_ids']
+        elif which == 'all':
+            raise NotImplementedError
+        else:  # "all" could be an option after iter. calibration on LFI done
+            raise NotImplementedError
+        bdir = cfg.PATHS['working_dir'] + '/per_glacier/'
+        calibrated_gdirs = [utils.GlacierDirectory(gid, base_dir=bdir) for gid
+                            in calibrated_ids]
+        all_dfs = []
+        for g in calibrated_gdirs:
+            try:
+                all_dfs.append(g.get_calibration(self.mb_model,
+                                                 filesuffix=self.suffix))
+            except:
+                pass
+        pool_filt = [df.filter(regex=self.mb_model.__name__) for df in all_dfs]
+        pool_uni = [pf.drop_duplicates().dropna() for pf in pool_filt]
+        # list comprehension necessary to keep column order (prcp_fac last!)
+        pool_df = pd.concat([p for p in pool_uni if not p.empty])
+        return pool_df
+
+    def from_single_glacier(self, clip_years=None):
+        """Generate parameters from the calibration of the given glacier only.
+
+        Parameters
+        ----------
+        clip_years: tuple or None
+            Whether parameters should be clipped to specified year range.
+        """
+        cali_sel = self.single_glacier_params
+
+        if cali_sel.empty:
+            log.error('No calibration values  for {} and {}'.format(
+                self.gdir.id, self.mb_model.__name__))
+            return cali_sel
+
+        if clip_years is not None:
+            if clip_years[0] is not None:
+                cali_sel = cali_sel[cali_sel.index.year >= clip_years[0]]
+            if clip_years[1] is not None:
+                cali_sel = cali_sel[cali_sel.index.year <= clip_years[1]]
+
+        # TODO: check from theory if this is a clever idea
+        if self.latest_climate:
+            try:
+                cali_sel = cali_sel[(dt.datetime.now().year -
+                                     cali_sel.index.year) <= 30.]
+            except IndexError:
+                pass
+
+        if self.only_pairs:
+            param_prod = cali_sel.copy()
+        else:
+            param_prod = product(*cali_sel.T)
+
+        # todo: the output format is a mess now: list, array or product
+        # todo: this is a complicated mixture of constrain_with_bw_prcp_fac and bw_constrain_year
+        param_prod = np.array(list(param_prod.values))
+        if self.constrain_with_bw_prcp_fac:
+            constrain_pfac = self.get_constraining_prcp_fac(cali_sel)
+            if ~np.isnan(constrain_pfac):
+                param_prod[:, self.mb_model.cali_params_list.index(
+                    'prcp_fac')] = constrain_pfac
+
+        if self.narrow_distribution > 0.:
+            param_prod = self.narrow_down_distribution(
+                self.narrow_distribution)
+
+        return self.generate_output(param_prod)
+
+    def from_cali_pool(self, clip_years=None):
+        """Generate parameters from the pool of all calibrated parameters."""
+
+        cali_sel = self.pooled_params
+
+        if clip_years is not None:
+            if clip_years[0] is not None:
+                cali_sel = cali_sel[cali_sel.index.year >= clip_years[0]]
+            if clip_years[1] is not None:
+                cali_sel = cali_sel[cali_sel.index.year <= clip_years[1]]
+
+        # TODO: check from theory if this is a clever idea
+        if self.latest_climate:
+            try:
+                cali_sel = cali_sel[(dt.datetime.now().year -
+                                     cali_sel.index.year) <= 30.]
+            except IndexError:
+                pass
+
+        if self.only_pairs:
+            param_prod = cali_sel.copy()
+        else:
+            param_prod = product(*cali_sel.T)
+
+        if (self.narrow_distribution is not None) and \
+                (self.narrow_distribution > 0.):
+            param_prod = self.narrow_down_distribution(param_prod,
+                self.narrow_distribution)
+
+        return self.generate_output(param_prod)
+
+    def narrow_down_distribution(self, params, n_percent=None, ends='both'):
+        """Narrows down the distribution of parameters by clipping off ends.
+
+        Parameters
+        ----------
+        params: np.array
+            Parameter distributon to be clipped.
+        n_percent: float
+            Determine how many percent shall be clipped off.
+        ends: str
+            Where the percentage given shall be clipped off. Can be either
+            'both', 'lower' or 'upper'. Default: 'both'.
+        """
+        if n_percent is None:
+            n_percent = self.narrow_distribution
+
+        # todo: which parameter to choose for clipoff? -> the one with the biggest normalized variance
+        out = params.copy()
+        for n in range(len(params.columns)):
+            out = params[(params[params.columns[n]] > params[params.columns[n]].quantile(n_percent/100.)) &
+                         (params[params.columns[n]] < params[params.columns[n]].quantile(1-n_percent/100.))]
+        return out
+
+    def get_constraining_prcp_fac(self, cali_sel):
+        """
+        Extract the prcp_fac for constraining from the calibration dataframe.
+
+        We distinguish several cases:
+        1) The year from which the prcp_fac shall be taken is not given. The
+           prcp_fac of the last year in the dataframe is taken
+        2) The year from which the prcp_fac shall be taken is given. If there
+           is a prcp_fac for this year, it is taken, otherwise NaN is returned!
+        3) It doesn't make sense to take it from the given calibration
+           dataframe. This is the case when the calibration dataframe contains
+           calibrated parameters from geodetic mass balances. In this case,
+           take the constraining factor from the GLAMOS calibration files - if
+           available. If not available, the we take the mean (to be sure) of
+           the given dataframe.
+
+
+
+        Parameters
+        ----------
+        cali_sel: pd.Dataframe
+            dataframe containing the calibrated parameters.
+
+        Returns
+        -------
+        constr_pfac: float or np.nan
+            The constraining precipitation correction factor. It is NaN when
+            the value desired is not available (especially when the year from
+             which it shall be atken is not there).
+        """
+        # todo: this is maybe too hard-coded
+        if not ('fischer' in self.suffix.lower()):
+
+            if self.bw_constrain_year is None:
+                if ~pd.isnull(cali_sel.tail(1)[
+                    self.mb_model.__name__ + '_' + 'prcp_fac']).item() and \
+                    pd.isnull(cali_sel.tail(1)[self.mb_model.__name__ + '_' +
+                    self.mb_model.cali_params_list[0]]).item():
+                    constr_pfac = cali_sel.tail(1)[self.mb_model.__name__
+                                                      + '_prcp_fac'].item()
+                else:
+                    constr_pfac = np.nan
+            else:
+                try:
+                    # + 1 because we selected dropna keep the first date
+                    cali_sel.loc[
+                        cali_sel.index.year + 1 == self.bw_constrain_year,
+                        self.mb_model.__name__ + '_prcp_fac'].item()
+                    constr_pfac = cali_sel.loc[
+                        cali_sel.index.year + 1 == self.bw_constrain_year,
+                        self.mb_model.__name__ + '_prcp_fac'].item()
+                except ValueError:  # no value there yet to constrain with
+                    constr_pfac = np.nan
+        else:
+            try:
+                glamos_cali = ParameterGenerator(
+                    self.gdir, self.mb_model, self.latest_climate,
+                    self.only_pairs, self.constrain_with_bw_prcp_fac,
+                    self.bw_constrain_year, self.narrow_distribution,
+                    output_type='array', suffix='')
+                glamos_cali.bw_constrain_year = \
+                    glamos_cali.single_glacier_params.tail(1).index.item()
+                log.info('Constraining precipitation correction factor is '
+                         'taken from GLAMOS calibration.')
+                constr_pfac = glamos_cali.get_constraining_prcp_fac(
+                    glamos_cali.single_glacier_params)
+            except FileNotFoundError:
+                log.warning(
+                    'Precipitation correction factor could not be constrained,'
+                    ' GLAMOS calibration file is is missing.')
+                # todo: this is not a good idea!?
+                constr_pfac = np.nan
+        log.info("PRCP_FAC is constrained with PRCP_FAC of {}."
+                 .format(constr_pfac))
+        return constr_pfac
+
+    def generate_output(self, params):
+        """Generate desired output format."""
+
+        if isinstance(params, type(product)):
+            if self.output_type == 'array':
+                params = np.array(list(params))
+            elif self.output_type == 'list':
+                params = list(params)
+            else:
+                pass
+        elif isinstance(params, np.ndarray):
+            if self.output_type == 'list':
+                params = params.tolist()
+            else:
+                pass
+        elif isinstance(params, list):
+            if self.output_type == 'array':
+                params = np.array(params)
+        elif isinstance(params, pd.DataFrame):
+            if self.output_type == 'array':
+                params = params.values
+            elif self.output_type == 'list':
+                params = list(params.values)
+            else:
+                pass
+        else:
+            pass
+
+        return params
 
 
 @unique
@@ -1511,7 +2395,7 @@ class SnowFirnCover(object):
         rho: np.array, same shape swe or None
             Density of an initial layer (kg m-3). If None, the inital density
             is set to NaN. # Todo: make condition for rho=None: if swe >0, then determine initial density from temperature
-        origin: datetime.datetime or np.array with same shape as swe
+        origin: datetime.datetime, pd.Timestamp or np.array with shape as SWE
             Origin date of the initial layer.
         temperatures: np.array, same shape as swe, optional
             Temperatures of initial layer (K). If not given, they will be set
@@ -1539,6 +2423,7 @@ class SnowFirnCover(object):
         self.init_rho = np.full_like(swe, np.nan) if rho is None else rho
         self.init_sh = self.init_swe * (cfg.RHO_W / self.init_rho)
         if isinstance(origin, dt.datetime):
+            origin = pd.Timestamp(origin)
             self.init_origin = [origin] * self.n_heights
         else:
             self.init_origin = origin
@@ -1617,7 +2502,7 @@ class SnowFirnCover(object):
                     (np.atleast_2d(self.init_origin), init_array))
             self._last_update = np.hstack(
                 (np.atleast_2d(self.init_last_update),
-                 init_array))
+                 np.full_like(init_array, np.datetime64('nat'), dtype='object')))
             self._temperature = np.hstack((
                 np.atleast_2d(self.init_temperature), init_array))
             self._liq_content = np.hstack(
@@ -1632,7 +2517,7 @@ class SnowFirnCover(object):
         # for temperature models that don't update layer by layer
         # must be initialized by hand with the desired form
         self._regridded_temperature = None
-        self._ice_melt = np.zeros_like(swe)
+        self._ice_melt = np.zeros_like(self.height_nodes)
 
     @property
     def swe(self):
@@ -1753,8 +2638,9 @@ class SnowFirnCover(object):
 
         """
 
-        self._status = np.empty_like(self.swe)  # ensure size
-        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = CoverTypes['snow'].value
+        self._status = np.full_like(self.swe, np.nan)  # ensure size
+        self._status[self.rho < cfg.PARAMS['snow_firn_threshold']] = \
+            CoverTypes['snow'].value
         self._status[(cfg.PARAMS['snow_firn_threshold'] <= self.rho) &
                      (self.rho < cfg.PARAMS['pore_closeoff'])] = \
             CoverTypes['firn'].value
@@ -1800,6 +2686,141 @@ class SnowFirnCover(object):
     @ice_melt.setter
     def ice_melt(self, value):
         self._ice_melt = value
+
+    def to_dataset(self, date=None):
+        """
+        Convert the SnowFirnCover object into an xarray dataset.
+
+        Returns
+        -------
+        ds: xr.Dataset
+        """
+        if date is None:
+            try:
+                time = pd.to_datetime((np.nanmax(
+                    self.origin[~pd.isnull(self.origin)]) + dt.timedelta(
+                    days=np.nanmin(self.age_days))))
+            except ValueError:
+                time = np.nan  # stupid, but the best solution?
+        else:
+            time = date
+
+        ds = xr.Dataset({'swe': (['fl_id', 'layer', 'time'],
+                                 np.atleast_3d(self.swe)),
+                         'sh': (['fl_id', 'layer', 'time'],
+                                np.atleast_3d(self.sh)),
+                         'rho': (['fl_id', 'layer', 'time'],
+                                 np.atleast_3d(self.rho)),
+                         'origin': (['fl_id', 'layer', 'time'],
+                                    np.atleast_3d(self.origin)),
+                         'temperature': (['fl_id', 'layer', 'time'],
+                                         np.atleast_3d(self.temperature)),
+                         'liq_content': (['fl_id', 'layer', 'time'],
+                                         np.atleast_3d(self.liq_content)),
+                         'age_days': (['fl_id', 'layer', 'time'],
+                                      np.atleast_3d(self.age_days)),
+                         'last_update': (['fl_id', 'layer', 'time'],
+                                      np.atleast_3d(self.last_update)),
+                         'ice_melt': (['fl_id', 'time'],
+                                      np.atleast_2d(self.ice_melt).T),
+                         'heights': (['fl_id', 'time'],
+                                     np.atleast_2d(self.height_nodes).T)},
+                        coords={'fl_id': (['fl_id', ],
+                                          np.arange(self.n_heights)),
+                                'layer': (['layer', ],
+                                          np.arange(self.swe.shape[1])),
+                                'time': (['time', ], [time])
+                                }
+                        )
+
+        return ds
+
+    @classmethod
+    def from_dataset(self, ds=None, path=None, **kwargs):
+        """
+        Create a SnowFirnCover object from an xarray Dataset.
+
+        Both an xarray.Dataset or a path to an xarray.Dataset can be given
+        (mutually exclusive). In both cases the Dataset must contain all
+        variables to create a SnowFirnCover, i.e. 'SWE' (snow water equivalent)
+         and either of 'SH' (snow height) or 'RHO' (density). The properties
+         are then inferred from the input.
+
+        Parameters
+        ----------
+        ds: xarray.Dataset
+            An xarray.Dataset instance containing at least variables
+        path:
+            Path to an xarray.Dataset
+        **kwargs: dict
+            Further arguments to be passed to the SnowFirnCover object.
+
+        Returns
+        -------
+        A SnowFirnCover instance.
+
+        See Also
+        --------
+        to_dataset: create an xarray.Dataset from a SnowFirnCover instance.
+        """
+
+        if (ds is None) and (path is None):
+            raise ValueError('Either of "path" or "ds" must be given.')
+        if (ds is not None) and (path is not None):
+            raise ValueError('Only one of "path" and "ds" can be given.')
+
+        # if time coordinate is indexed: length of time may only be one
+        if ('time' in ds.coords.indexes.keys()) and len(ds.time) > 1:
+            raise ValueError('Time dimension may only have length one.')
+        elif ('time' in ds.coords.indexes.keys()) and len(ds.time) == 1:
+            ds = ds.isel(time=0)
+        # if there is no time coord, that's also fine
+        else:
+            pass
+
+        if path is not None:
+            ds = xr.open_dataset(path)
+
+        swe = ds.swe.values
+        # we give preference to RHO (sh is a property based on rho and swe)
+        try:
+            rho = ds.rho.values
+        except KeyError:
+            try:
+                rho = swe / ds.sh.values
+            except KeyError:
+                raise ValueError('Input dataset must contain either density ("'
+                                 'RHO") or snow height ("SH").')
+
+        # mixing datetime and np.nan was a stupid idea
+        origin = ds.origin.values
+        origino = origin.astype(object)
+        for i, j in product(range(origin.shape[0]), range(origin.shape[1])):
+            if (origino[i][j] is None) or pd.isnull(origin[i][j]):
+                origino[i][j] = np.nan
+            else:
+                origino[i][j] = pd.to_datetime(
+                    np.datetime64(origino[i][j], 'ns'))
+
+        try:
+            temp = ds.temperature.values
+        except:
+            temp = None
+
+        try:
+            lc = ds.liq_content.values
+        except KeyError:
+            lc = None
+
+        try:
+            lu = ds.last_update.values
+        except KeyError:
+            lu = None
+        sfc_obj = SnowFirnCover(ds.heights.values, swe, rho, origino,
+                                temperatures=temp, liq_content=lc,
+                                last_update=lu, **kwargs)
+
+        return sfc_obj
 
     def get_type_indices(self, layertype):
         """
@@ -2186,6 +3207,7 @@ class SnowFirnCover(object):
         self._liq_content = self._liq_content[remove_n:]
         self._last_update = self._last_update[remove_n:]
         self._status = self._status[remove_n:]
+        self._age_days = self._age_days[remove_n:]
 
     def get_total_height(self):
         """
@@ -2224,6 +3246,7 @@ class SnowFirnCover(object):
         if widths is None:
             return self.get_total_height()
         else:
+            # reminder: flowline_dx is the distance in pixel coordinates
             return self.get_total_height() * widths * \
                    cfg.PARAMS['flowline_dx'] * map_dx
 
@@ -2256,7 +3279,7 @@ class SnowFirnCover(object):
         h = np.zeros_like(range(self.n_heights), dtype=np.float32)
         where_type = self.get_type_indices(layertype)
         h_actual = np.nansum(np.atleast_2d(self.sh[where_type]), axis=0)
-        h[where_type[0]] = h_actual[where_type[0]]
+        h[where_type[1]] = h_actual[where_type[1]]
         return h
 
     def get_mean_density(self):
@@ -2310,7 +3333,7 @@ class SnowFirnCover(object):
 
         # NaN part becomes negative as with the NaN from NaN subtraction zero
         # is returned since NumPy 1.9.0
-        ovb_dpth = np.clip(ovb_dpth, 0., None)
+        ovb_dpth[ovb_dpth < 0.] = 0.  # might be faster than np.clip here
 
         if ix is None:
             return ovb_dpth
@@ -2336,7 +3359,7 @@ class SnowFirnCover(object):
                              ovb_swe.shape[1], axis=1)
         # NaN part becomes negative as with the NaN from NaN subtraction zero
         # is returned since NumPy 1.9.0
-        ovb_swe = np.clip(ovb_swe, 0., None)
+        ovb_swe[ovb_swe < 0.] = 0.  # might be faster than np.clip here
 
         if ix is None:
             return ovb_swe
@@ -2391,19 +3414,42 @@ class SnowFirnCover(object):
 
         return ret_val
 
-    def remove_ice_layers(self):
+    def remove_ice_layers(self, by: Optional[str] = 'type',
+                          transform_years: Optional[int] = 15):
         """
         Removes layers a the bottom (only there!) that have exceeded the
         threshold density for ice.
 
+        Parameters
+        ----------
+        by: str, optional
+            Whether to remove the ice layers by type or by age. Default:
+            "type".
+        transform_years: int, optional
+            How many years it shall take for snow to become ice. Only relevant
+            if `by` is set to `age`. Default: 15 (rough value from [1]_,
+            p. 17).
+
         Returns
         -------
         None
+
+        References
+        ----------
+        [1].. Cuffey, K. M., & Paterson, W. S. B. (2010). The physics of
+              glaciers. Academic Press.
         """
 
-        # this sets values to NaN
-        ice_ix = self.get_type_indices('ice')
+        if by == 'type':
+            # this sets values to NaN
+            ice_ix = self.get_type_indices('ice')
+        elif by == 'age':
+            ice_ix = np.where(self.age_days > transform_years * 365)
+        else:
+            raise ValueError('Way to remove ice layers by `{}` is not '
+                             'accepted.'.format(by))
         # todo: a check that the layers to be removed are at the bottom!
+        # todo: check if remove layers are transferred to ice_melt?
         self.remove_layer(ice_ix)
 
     def update_temperature(self, date, airtemp, max_depth=15., deltat=86400,
@@ -2476,8 +3522,9 @@ class SnowFirnCover(object):
         temp = np.ones_like(depth)
         temp[np.isnan(depth)] = np.nan
         slope = (surface_temp - max_depth_temp) / (-max_depth)
-        temp = slope * depth + surface_temp + cfg.ZERO_DEG_KELVIN
-        temp = np.clip(temp, None, cfg.ZERO_DEG_KELVIN)
+        temp = np.atleast_2d(slope).T*depth + np.atleast_2d(surface_temp).T + \
+               cfg.ZERO_DEG_KELVIN
+        temp[temp > cfg.ZERO_DEG_KELVIN] = cfg.ZERO_DEG_KELVIN
         # temperature is now the layer temperature at the center depth
         self.temperature = temp
 
@@ -2630,9 +3677,6 @@ class SnowFirnCover(object):
         None
         """
 
-        # Todo: remove comment out
-        #self.merge_firn_layers(date)
-
         # Mean annual surface temperature, 'presumably' firn temperature at 10m
         # depth (Reeh (2008)); set to 273 according to Huss 2013
         # TODO: this should be actually calculated
@@ -2759,7 +3803,7 @@ class SnowFirnCover(object):
             b = np.nanmax(masked, axis=1)
             #b = b.filled(masked.fill_value)  # to eliminate 1e20 from the mask
             #b = np.repeat(np.atleast_2d(b).T, self.rho.shape[1], axis=1)
-            #b = np.clip(b, 0, None)
+            #b[b < 0.] = 0.
             b = np.apply_along_axis(lambda x: np.clip(x, 0, b), 0,
                                 self.get_overburden_swe())
             # todo: there is a problem when there is only one layer: it does not densify, because it has no overburden weight and then it densifies to 900 directly
@@ -2829,7 +3873,7 @@ class SnowFirnCover(object):
 
         days2reduce = days.copy()
 
-        for dt in (np.ones(int(np.nanmax(days))) * 24 * 3600):
+        for dt in (np.ones(int(np.nanmax(days))) * cfg.SEC_IN_DAY):
 
             current_rho = self.rho
             si_ratio = current_rho / cfg.RHO
@@ -2924,7 +3968,7 @@ class SnowFirnCover(object):
         deltat = target_dt
 
         rho_old = self.rho
-        temperature = self.temperature
+        #temperature = self.temperature
 
         # create cumsum, then subtract top layer swe, clip and convert to mass
         ovb_mass = self.get_overburden_mass()
@@ -2954,13 +3998,133 @@ class SnowFirnCover(object):
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _anderson_equation(rho_old, ovb_mass, deltat, eta0, etaa, temperature_sub, etab, snda, sndb, sndc, clippie, G=cfg.G):
+    def _anderson_equation(rho_old, ovb_mass, deltat, eta0, etaa,
+                           temperature_sub, etab, snda, sndb, sndc, clippie,
+                           G=cfg.G):
         """ This is just the actual equation, made faster with numba"""
         rho_new = (rho_old + (
                     rho_old * G * ovb_mass * deltat / eta0) * np.exp(etaa * (
-                    temperature_sub) - etab * rho_old) + deltat * rho_old * snda * np.exp(
-            sndb * (temperature_sub) - sndc * clippie))
+                    temperature_sub) - etab * rho_old) + deltat * rho_old *
+                   snda * np.exp(sndb * (temperature_sub) - sndc * clippie))
         return rho_new
+
+    def merge_by_age(self, period: Optional[str] = 'M',
+                     keep_last_days: Optional[int] = 365):
+        """
+        Merge layers by age using a pandas freq string.
+
+        Parameters
+        ----------
+        period : str, optional
+            To which frequency should old layers be merged? Default: 'MS'
+            (merge to monthly frequency and assign month start date).
+        keep_last_days: int, optional
+            How many days in the recent history shall be preserved at high
+            frequency? Default: 365 (keep last year).
+
+        Returns
+        -------
+        None
+        """
+        # todo: remove ice layers first here?
+        # todo: MonthBegin is now hard coded
+        try:
+            periods_to_be_merged = pd.interval_range(
+                min(self.origin[~pd.isnull(self.origin)]) - pd.offsets.MonthBegin(
+                    2),
+                max(self.origin[~pd.isnull(self.origin)]) + pd.offsets.MonthBegin(
+                    1) - pd.Timedelta(days=keep_last_days), freq=period)
+        except ValueError:
+            # no snow/firn left
+            return
+
+        # we're at the very beginning
+        if len(periods_to_be_merged) == 0:
+            return
+
+        # just roughly: in fact there are less layers, we crop later
+        shape_0 = self.swe.shape[0]
+        shape_1 = self.swe.shape[1]
+
+        new_arr = np.full((shape_0, shape_1), np.nan)
+        new_swe = new_arr.copy()
+        new_rho = new_arr.copy()
+        new_origin = new_arr.copy().astype(object)
+        new_temperature = new_arr.copy()
+        new_liq_content = new_arr.copy()
+        new_last_update = new_arr.copy().astype(object)
+        new_age_days = new_arr.copy()
+        new_status = new_arr.copy()
+
+        # some pandas to numpy time conversion bullshit
+        orig_copy = self.origin.copy()
+        last_up_copy = self.last_update.copy()
+
+        def conv_func(x):
+            return x.to_numpy()
+
+        conv_func = np.vectorize(conv_func)
+        orig_copy[pd.isnull(orig_copy)] = pd.NaT
+        last_up_copy[pd.isnull(last_up_copy)] = pd.NaT
+        orig_np = conv_func(orig_copy)
+        last_up_np = conv_func(last_up_copy)
+
+        for ti in periods_to_be_merged:
+            begin = ti.left
+            end = ti.right
+            ti_range = pd.date_range(begin, end, freq='D')
+            merge = np.where(np.isin(orig_np, ti_range))
+
+            if merge[0].size == 0:
+                continue
+
+            # todo: is i a good choice? (there might be gaps between the layers! rather use self.top_layer+1?
+            layers_bool = np.logical_or(np.isin(new_swe, [0.]), np.isnan(new_swe))
+            ins_y = np.argmax(layers_bool, axis=1)[np.unique(merge[0])]
+            ins_x = np.unique(merge[0])
+
+            # there is not other way than iterating!?
+            new_swe[ins_x, ins_y] = [np.nansum(self.swe[u, merge[1][np.where(merge[0] == u)]]) for u in ins_x]
+            new_rho[ins_x, ins_y] = [np.nanmean(self.rho[u, merge[1][np.where(merge[0] == u)]]) for u in ins_x]
+            weights = self.swe[merge]
+            # this can happen at the initial year when there is now snow left
+            if (weights == 0.).all():
+                weights[:] = 1.
+            new_origin[ins_x, ins_y] = pd.Timestamp(np.average(orig_np.astype(np.int64)[merge], weights=weights, axis=0), unit='ns').round('D'),  # average dates!?
+            new_last_update[ins_x, ins_y] = pd.Timestamp(np.average(last_up_np.astype(np.int64)[merge], weights=weights, axis=0), unit='ns').round('D'),  # average dates!?  # average dates!?
+            new_age_days[ins_x, ins_y] = np.average(self.age_days[merge], axis=0, weights=weights).astype(int)
+
+            # TODO: MAKE TEMPERATURE CALCULATION CORRECT
+            new_temperature[ins_x, ins_y] = [np.nanmean(self.temperature[u, merge[1][np.where(merge[0]==u)]]) for u in ins_x]
+            new_liq_content[ins_x, ins_y] = [np.nansum(self.liq_content[u, merge[1][np.where(merge[0]==u)]]) for u in ins_x]
+
+        # insert the stuff we still want to have in high res
+        hires_ix = np.where(orig_np > periods_to_be_merged[-1].right)
+        layers_bool = np.logical_or(np.isin(new_swe, [0.]), np.isnan(new_swe))
+        top = np.argmax(layers_bool, axis=1)
+        for hiu in np.unique(hires_ix[0]):
+            top_hiu = top[hiu]
+            hi_clip_y = hires_ix[1][np.where(hires_ix[0]==hiu)]
+            hi_ins_y = np.arange(top_hiu, top_hiu + len(hi_clip_y))
+            new_swe[hiu, hi_ins_y] = self.swe[hiu, hi_clip_y]
+            new_rho[hiu, hi_ins_y] = self.rho[hiu, hi_clip_y]
+            new_origin[hiu, hi_ins_y] = self.origin[hiu, hi_clip_y]
+            new_last_update[hiu, hi_ins_y] = self.last_update[hiu, hi_clip_y]
+            new_age_days[hiu, hi_ins_y] = self.age_days[hiu, hi_clip_y]
+            new_temperature[hiu, hi_ins_y] = self.temperature[hiu, hi_clip_y]
+            new_liq_content[hiu, hi_ins_y] = self.liq_content[hiu, hi_clip_y]
+
+        # status first, because it depends on the others
+        #self._status = new_status
+        self._swe = new_swe
+        self._rho = new_rho
+        self._origin = new_origin
+        self._temperature = new_temperature
+        self._liq_content = new_liq_content
+        self._last_update = new_last_update
+        self._age_days = new_age_days
+
+        self.remove_unnecessary_array_space()
 
     def merge_firn_layers(self, date):
         """
@@ -3166,35 +4330,59 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         a_firn_init: float
             Initial (maximum albedo for firn. Default: 0.5
         """
-        self.x = x
+        self.x = x.copy()
         self.a_snow_init = a_snow_init
         self.a_firn_init = a_firn_init
+        self.a_ice_default = cfg.PARAMS['ice_albedo_default']
+
+        # todo: make GlacierAlbedo time-aware (no memory though)
+        self.date = None
 
         if alpha is None:
-            self.x[snow_ix] = self.a_snow_init
+            self.alpha = np.ones_like(x) * cfg.PARAMS['snow_albedo_default']
+        else:
+            self.alpha = alpha
 
         self.tmax_avail = cfg.PARAMS['tminmax_available']
 
-    def update_brock(self, p1=0.86, p2=0.155, t_acc=None):
+    def update_brock(self, swe, t_acc, icedist, p1=0.713, p2=0.112, p3=0.442,
+                     p4=0.058, a_u=None, d_star=0.024, alpha_max=0.85):
         """
         Update the snow albedo using the method in [Brock et al. (2000)]_.
 
         Parameters
         ----------
-        p1: float, optional
-           Empirical coefficient, described by the albedo of fresh snow (for
-           Ta=1 deg C). Default: (see Pellicciotti et al., 2005 and Gabbi et
-           al, 2014).
-        p2: float, optional
-           Empirical coefficient. Default: (see Pellicciotti et al., 2005 and
-           Gabbi et al., 2014)
+        swe: array-like
+            Snow water equivalent (m w.e.)
         t_acc: array-like
             Accumulated daily maximum temperature > 0 deg C since snowfall.
             Default: None (calculate).
+        icedist: array_like
+            Ice distribution as boolean array. True where there is ice,
+            False where there is no ice.
+        p1: float, optional
+            Empirical coefficient. Default: 0.713 (see [Brock et al. (2000)]_).
+        p2: float, optional
+            Empirical coefficient. Default: 0.112 (see [Brock et al. (2000)]_).
+        p3: float, optional
+            Empirical coefficient. Default: 0.442 (see [Brock et al. (2000)]_).
+        p4: float, optional
+            Empirical coefficient. Default: 0.058 (see [Brock et al. (2000)]_).
+        a_u: float or array or None, optional
+            # todo: this should be a better default and allow underlying firn
+            Albedo of the underlying material (ice/firn). Default: None
+            (we set the albedo of ice from the parameter file)
+        d_star: float, optional
+            Scaling length for the snow water equivalent. Default: 0.0024 (see
+            [Brock et al. (2000)]_).
+        alpha_max: float, optional
+            Maximum albedo that all values are clipped to. Default: 0.85 (see
+            [Brock et al. (2000)]_).
+
 
         References
         ----------
-        [Brock et al. (2000)]_.. : Brock, B., Willis, I., & Sharp, M. (2000).
+        [Brock et al. (2000)] .. : Brock, B., Willis, I., & Sharp, M. (2000).
             Measurement and parameterization of albedo variations at Haut
             Glacier d’Arolla, Switzerland. Journal of Glaciology, 46(155),
             675-688. doi:10.3189/172756500781832675
@@ -3204,9 +4392,21 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         if t_acc is None:
             t_acc = self.get_accumulated_temperature()
 
-        # todo: check clipping with francesca: The function can become greater than one!
-        # clip at 1. so that alpha doesn't become bigger than p1
-        alpha = p1 - p2 * np.log10(np.clip(t_acc, 1., None))
+        if a_u is None:
+            a_u = cfg.PARAMS['ice_albedo_default']
+
+        # deep snow equation
+        # clip alpha at 1. so that alpha doesn't become bigger than p1
+        alpha_ds = np.clip((p1 - p2 * np.log10(t_acc)), None, alpha_max)
+        # shallow snow equation
+        alpha_ss = np.clip((a_u + p3 * np.exp(-p4 * t_acc)), None, alpha_max)
+        # combining deep and shallow
+        alpha = (1. - np.exp(-swe / d_star)) * alpha_ds + \
+                np.exp(-swe / d_star) * alpha_ss
+
+        # where there is ice, put its default albedo
+        alpha[icedist] = self.a_ice_default
+        self.alpha = alpha
         return alpha
 
     def update_oerlemans(self, snowcover, a_frsnow_oerlemans=0.75,
@@ -3279,11 +4479,69 @@ class GlacierAlbedo(object, metaclass=SuperclassMeta):
         # here comes the snowfall event threshold (eq. 6 in paper)
         sh_too_low = np.where(snow_depth < event_thresh)
         alpha_i_total[sh_too_low] = a_background[sh_too_low]
-
+        self.alpha = alpha_i_total
         return alpha_i_total
 
-    def update_ensemble(self):
+    def update_dutra(self, mb, tao_s=0.01, alpha_max=0.85,
+                     tao_a=0.00800064, alpha_min=0.45,
+                     tao_f=0.00240192):
+        """
+        Update according to the equation in [1]_ as used in [2]_.
+
+        Parameters
+        ----------
+        mb : np.array
+            'Net accumulation', i.e. mass balance of the snow pack in m w.e.
+        tao_s : float
+            Snowfall threshold for albedo update. Default: 0.01 m w.e..
+        alpha_max : float
+            Maximum albedo for fresh snow. Default: 0.85.
+        tao_a : float
+            Aging constant for non-melting snow. Default: 9.26 * 10 ** -8 *
+            86400 d-1.
+        alpha_min : float
+            Minimum albedo for snow. Default: 0.45.
+        tao_f : float
+            Aging constant for non-melting snow. Default: 2.78 * 10 ** -8 *
+            86400 d-1.
+
+        Returns
+        -------
+        self.alpha: np.array
+            Updated albedo.
+
+        References
+        ----------
+        .. [1] : Dutra, E., Balsamo, G., Viterbo, P., Miranda, P. M., Beljaars,
+                 A., Schär, C., & Elder, K. (2010). An improved snow scheme for
+                 the ECMWF land surface model: Description and offline
+                 validation. Journal of Hydrometeorology, 11(4), 899-916.
+        .. [2] : Aalstad, K., Westermann, S., Schuler, T., Boike, J., &
+                 Bertino, L. (2018). Ensemble-based assimilation of fractional
+                 snow-covered area satellite retrievals to estimate the snow
+                 distribution at Arctic sites. The Cryosphere, 12(1), 247-270.
+        """
+
+        # todo: this function is not yet tested
+        if mb > 0.:
+            self.alpha = self.alpha + np.min([1., mb / tao_s]) * (alpha_max -
+                                                                  self.alpha)
+        elif mb == 0.:
+            self.alpha = np.max([self.alpha - tao_a, alpha_min])
+        else:
+            self.alpha = (self.alpha - alpha_min) * np.exp(-tao_f) + alpha_min
+
+        return self.alpha
+
+    def update_ensemble(self, snowcover):
         """ Update the albedo using an ensemble of methods."""
+
+        alpha_brock = self.update_brock()
+        alpha_oerlemans = self.update_oerlemans(snowcover)
+        alpha_dutra = self.update_dutra(mb)
+
+        # self.alpha = alpha_ens
+        # self.sigma_alpha = np.std(alpha_ens, axis=)
 
         raise NotImplementedError
 
@@ -3303,38 +4561,208 @@ class Glacier(object, metaclass=SuperclassMeta):
 class MassBalance(object, metaclass=SuperclassMeta):
     """
     Basic interface for mass balance objects.
+
+    The object has very limited support to units. If the dataset contains an
+    attribute 'units' set to either 'm ice s-1', it is able to convert between
+    ice flux (m ice s-1) and water equivalent (m w.e. d-1).
     """
-    def __init__(self, xarray_obj, gdir, mb_model):
-        """
-        Instantiate the MassBalance base class.
 
-        Parameters
-        ----------
-        gdir: `py:class:crampon.GlacierDirectory`
-        mb_model: `py:class:crampon.core.models.massbalance.MassBalanceModel`
-            The mass balance model used to calculate the time series.
-        dataset: xr.Dataset
-
-        """
+    def __init__(self, xarray_obj):
 
         self._obj = xarray_obj
-        self.gdir = gdir
-        self.mb_model = mb_model
-        self.cali_pool = None # TODO: Calibration(); for this I need to write
-        # a calibration object and implement cli parameters attributes in the
-        # MB_model classes
 
     @staticmethod
-    def time_cumsum(x):
+    def time_cumsum(x, skipna=True, keep_attrs=True):
         """Cumulative sum along time, skipping NaNs."""
-        return x.cumsum(dim='time', skipna=True)
+        return x.cumsum(dim='time', skipna=skipna, keep_attrs=keep_attrs)
 
     @staticmethod
     def custom_quantiles(x, qs=np.array([0.1, 0.25, 0.5, 0.75, 0.9])):
         """Calculate quantiles with user input."""
-        return x.quantile(qs)
+        return x.quantile(qs, keep_attrs=True)
 
-    def create_specific(self, MassBalanceModel, from_date=None, to_date=None,
+    @staticmethod
+    def nan_or_cumsum(x):
+        """Return only valid cumulative sums, i.e. where not everything is zero
+        (stemming from NaN)"""
+        res = MassBalance.time_cumsum(x)
+        if (res == 0.).all():
+            res = res.where(res.MB != 0.)
+        return res
+
+    def select_doy_span(self, doy_begin, doy_end):
+        """
+        Select all days within a span between two DOYs.
+
+        Parameters
+        ----------
+        doy_begin: int
+            First DOY of selection time span.
+        doy_end: int
+            Last DOY of selection time span.
+
+        Returns
+        -------
+        xr.Dataset:
+            The MassBalance dataset, but each year clipped to the DOY range.
+        """
+        def in_span(doys, bgdate_doy, enddate_doy):
+            """Get all dates in time span of DOYs (days of year)."""
+            if bgdate_doy > enddate_doy:
+                return (bgdate_doy <= doys) | (enddate_doy >= doys)
+            else:
+                return (bgdate_doy <= doys) & (enddate_doy >= doys)
+
+        return self._obj.sel(time=in_span(self._obj['time.dayofyear'],
+                                          doy_begin, doy_end))
+
+    def convert_to_meter_we(self):
+        """
+        If unit is ice flux (m ice s-1), convert it to meter water equivalent
+        per day.
+
+        Returns
+        -------
+        None
+        """
+        # todo: This is not flexible, but flexibility requires Pint dependency
+
+        if self._obj.attrs['units'] == 'm ice s-1':
+            for mbname, mbvar in self._obj.data_vars.items():
+                if 'MB' in mbname:
+                    self._obj[mbname] = mbvar * cfg.SEC_IN_DAY * cfg.RHO / \
+                                        cfg.RHO_W
+            self._obj.attrs['units'] = 'm w.e.'
+        else:
+            raise ValueError('Check the unit attribute, it should be "m ice '
+                             's-1" to convert it to meters water equivalent '
+                             'per day.')
+
+    def convert_to_ice_flux(self):
+        """
+        If unit is meter water equivalent per day, convert it to ice flux (m
+        ice s-1).
+
+        Returns
+        -------
+        None
+        """
+        # todo: This is not flexible, but flexibility requires Pint dependency
+
+        if self._obj.attrs['units'] == 'm w.e.':
+            for mbname, mbvar in self._obj.data_vars.items():
+                if 'MB' in mbname:
+                    self._obj[mbname] = mbvar / cfg.SEC_IN_DAY * cfg.RHO_W / \
+                                        cfg.RHO
+            self._obj.attrs['units'] = 'm ice s-1'
+        else:
+            raise ValueError('Check the unit attribute, it should be "m w.e." '
+                             'to ice flux.')
+
+    def make_hydro_years(self, bg_month=None, bg_day=None):
+        """
+        Make an xarray.DataArray containing the hydrological year as variable.
+
+        Parameters
+        ----------
+        bg_month: int or None
+            Begin month of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+        bg_day: int or None
+            Begin day of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+
+        Returns
+        -------
+        hydro_years: xr.DataArray
+            DataArray with hydrological years as variable.
+        """
+        if bg_month is None:
+            bg_month = cfg.PARAMS['bgmon_hydro']
+        if bg_day is None:
+            bg_day = cfg.PARAMS['bgday_hydro']
+
+        hydro_years = xr.DataArray(
+            [t.year if ((t.month < bg_month) or
+                        ((t.month == bg_month) &
+                         (t.day < bg_day)))
+             else (t.year + 1) for t in
+             self._obj.indexes['time']],
+            dims='time', name='hydro_years',
+            coords={'time': self._obj.time})
+        return hydro_years
+
+    def make_hydro_doys(self, hydro_years=None, bg_month=None, bg_day=None):
+        """
+        Make an xarray.DataArray containing the hydrological DOYs as variable.
+
+        Parameters
+        ----------
+        hydro_years: xr.DataArray or None
+            A DataArray with the hydrological year names as variables. If None,
+            it will be generated using the method `make_hydro_years`. Default:
+            None.
+        bg_month: int or None
+            Begin month of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+        bg_day: int or None
+            Begin day of the hydrological year. If None, it will be parsed
+            from the configuration file. Default: None.
+
+        Returns
+        -------
+        hydro_doys: xr.DataArray
+            DataArray with days of the hydrological year (DOYs) as variable.
+        """
+
+        if bg_month is None:
+            bg_month = cfg.PARAMS['bgmon_hydro']
+        if bg_day is None:
+            bg_day = cfg.PARAMS['bgday_hydro']
+        if hydro_years is None:
+            hydro_years = self.make_hydro_years(bg_month=bg_month,
+                                                bg_day=bg_day)
+        # time series might start later than begin of MB year (MB prediction!)
+        ts_begin = pd.Timestamp(hydro_years.time[0].values)
+        mbyear_begin = utils.get_begin_last_flexyear(
+            ts_begin, start_month=bg_month, start_day=bg_day)
+        days_diff = (ts_begin - mbyear_begin).days
+        _, cts = np.unique(hydro_years, return_counts=True)
+        doys = [list(range(1, c + 1)) for c in cts]
+        doys = np.array([i for sub in doys for i in sub]) + days_diff
+        hydro_doys = xr.DataArray(doys, dims='time', name='hydro_doys',
+                                  coords={'time': hydro_years.time})
+        return hydro_doys
+
+    def append_to_gdir(self, gdir, basename, reset=False):
+        """
+        Write mass balance to a glacier directory.
+
+        Choose to be aware of possibly existing files or to reset.
+
+        Parameters
+        ----------
+        reset: bool
+            If True, then an existing mass balance file is replaced. If False,
+            only an existing variable (if present) is overwritten.
+
+        Returns
+        -------
+        None
+        """
+
+        if reset is False:
+            try:
+                mb_ds_old = gdir.read_pickle(basename)
+                to_write = self._obj.combine_first(mb_ds_old)
+            except FileNotFoundError:
+                to_write = self._obj.copy(deep=True)
+        else:
+            to_write = self._obj.copy(deep=True)
+
+        gdir.write_pickle(to_write, basename)
+
+    def create_specific(self, mb_model, from_date=None, to_date=None,
                         write=True):
         """
         Create the time series from a given mass balance model.
@@ -3367,7 +4795,7 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         """
 
-    def extend_until(self, date, write=True):
+    def extend_until(self, date):
         """
         Append one/more time steps at the end of the time series.
 
@@ -3383,18 +4811,47 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         self._obj = xr.concat(self._obj, append)
 
-        if write:
-            self.gdir.write_pickle(self._obj, 'mb_daily')
-            # TODO: write a write_snow and write_mb method to be called here
+        self.append_to_gdir(gdir, basename, reset=False)
 
-    def make_quantiles(self):
+    def make_cumsum_quantiles(self, bg_month=None, bg_day=None, quantiles=None):
         """
-        Apply quantiles to the mass balance data.
+        Apply cumulative sum and then quantiles to the mass balance data.
 
         Returns
         -------
-
+        None
         """
+
+        if bg_month is None:
+            bg_month = cfg.PARAMS['bgmon_hydro']
+        if bg_day is None:
+            bg_day= cfg.PARAMS['bgday_hydro']
+
+        save_attrs = self._obj.attrs  # needed later
+
+        hyears = self.make_hydro_years(bg_month, bg_day)
+        hdoys = self.make_hydro_doys(hyears, bg_month, bg_day)
+
+        mb_cumsum = self._obj.groupby(hyears).apply(
+            lambda x: self.time_cumsum(x))
+
+        # todo: EMERGENCY SOLUTION as long as there is no operational radiation => PLOTS ARE WRONG!
+        # eliminate the runs where we don't have radiation data
+        mb_cumsum = mb_cumsum.where(~np.isnan(self._obj))
+        # todo: EMERGENCY SOLUTION as long as we are not able to calculate
+        #  cumsum with NaNs correctly
+        mb_cumsum = mb_cumsum.where(mb_cumsum.MB != 0.)
+        if quantiles is not None:
+            quant = mb_cumsum.groupby(hdoys) \
+                .apply(lambda x: self.custom_quantiles(x, qs=quantiles))
+        else:
+            quant = mb_cumsum.groupby(hdoys) \
+                .apply(lambda x: MassBalance.custom_quantiles(x))
+
+        # insert attributes again...they get lost when grouping!?
+        quant.attrs.update(save_attrs)
+
+        return quant
 
     def to_array(self):
         """
@@ -3408,10 +4865,13 @@ class MassBalance(object, metaclass=SuperclassMeta):
         arr: np.array
             An array of
         """
+        raise NotImplementedError
 
     def get_balance(self, date1, date2, which='total'):
         """
         Retrieves the balance in a time interval.
+
+        Input must be the mass balance itself, not already a cumulative sum.
 
         Parameters
         ----------
@@ -3426,18 +4886,100 @@ class MassBalance(object, metaclass=SuperclassMeta):
 
         Returns
         -------
-
+        mb_sel: type of `self`
+            The mass balance object, reduced to the variables that contain mass
+            balance information and the type of balance requested.
         """
 
+        mb_sel = self.obj.sel(time=slice(date1, date2))
+        mb_sel = mb_sel[[i for i in mb_sel.data_vars.keys() if 'MB' in i]]
+
         if which == 'total':
-            raise NotImplementedError
+            return mb_sel.sum(dim='time', skipna=True)
         elif which == 'accumulation':
-            raise NotImplementedError
+            return mb_sel.where(mb_sel > 0.).sum(dim='time', skipna=True)
         elif which == 'ablation':
-            raise NotImplementedError
+            return mb_sel.where(mb_sel < 0.).sum(dim='time', skipna=True)
         else:
             raise ValueError('Value {} for balance is not recognized.'.
                              format(which))
+
+    def get_climate_reference_period(self, ref_period='latest',
+                                     mbyear_beginmonth=None,
+                                     mbyear_beginday=None):
+        """
+        Clip the mass balance to a WMO climate reference period.
+
+        Parameters
+        ----------
+        ref_period: str or tuple
+            Which reference period to clip to. Allowed: '1961-1990',
+            '1981-2010', 'latest' or a tuple of integer years and/or None.
+            Accounting for the usual begin of hydrological years, we start
+            clipping already e.g. on OCT 1st 1960 for the 1961-1990 reference
+            period. Default: 'latest' (looks automatically for the latest
+            reference period).
+        mbyear_beginmonth: int
+            Month when mass budget year shall begin.
+        mbyear_beginday: int
+            Day when mass budget year shal begin.
+
+        Returns
+        -------
+        mb_refp: crampon.core.models.massbalance.MassBalance
+            Mass balance clipped to the given reference period.
+        """
+        if mbyear_beginmonth is None:
+            mbyear_beginmonth = cfg.PARAMS['begin_mbyear_month']
+        if mbyear_beginday is None:
+            mbyear_beginday = int(cfg.PARAMS['begin_mbyear_day'])
+
+        if isinstance(ref_period, (tuple, list, np.array)):
+            if ref_period[0] is None:
+                clip_start = None
+            else:
+                clip_start = dt.datetime(ref_period[0], mbyear_beginmonth,
+                                     mbyear_beginday)
+            if ref_period[1] is None:
+                clip_end = None
+            else:
+                clip_end = dt.datetime(ref_period[1], mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == 'latest_ref':
+            latest_ref_endyear = np.floor(dt.datetime.today().year / 10.) * 10.
+            latest_ref_beginyear = latest_ref_endyear - 30
+            clip_start = dt.datetime(latest_ref_beginyear, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(latest_ref_endyear, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == 'latest':
+            today = dt.datetime.today()
+            if today > dt.datetime(today.year, mbyear_beginmonth,
+                                   mbyear_beginday):
+                latest_endyear = today.year - 1
+            else:
+                latest_endyear = today.year
+            latest_beginyear = latest_endyear - 30
+            clip_start = dt.datetime(latest_beginyear, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(latest_endyear, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == '1961-1990':
+            clip_start = dt.datetime(1960, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(1990, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        elif ref_period == '1981-2010':
+            clip_start = dt.datetime(1980, mbyear_beginmonth,
+                                     mbyear_beginday)
+            clip_end = dt.datetime(2010, mbyear_beginmonth,
+                                   mbyear_beginday) - dt.timedelta(days=1)
+        else:
+            raise ValueError('Given value for climate reference period to clip'
+                             ' to is not understood.')
+
+        return self._obj.sel(time=slice(clip_start, clip_end))
+
 
 
 class PastMassBalance(MassBalance):
@@ -3471,13 +5013,12 @@ class CurrentYearMassBalance(MassBalance):
         super().__init__(gdir, mb_model, dataset=dataset)
 
 
-def run_snowfirnmodel_with_options(gdir, run_start, run_end,
-                                   mb=None,
-                                   reclassify_heights=None,
+def run_snowfirnmodel_with_options(gdir, run_start, run_end, mb=None,
+                                   mb_model=None, reclassify_heights=None,
                                    snow_densify='anderson',
                                    snow_densify_kwargs=None,
                                    firn_densify='huss',
-                                   firn_densify_kwargs= None,
+                                   firn_densify_kwargs=None,
                                    temp_update='huss',
                                    temp_update_kwargs=None,
                                    merge_layers=0.05):
@@ -3496,6 +5037,11 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
         # Todo: make this more felxible: one should also be able to let the MB calculate online
         The mass balance time series. Default: None (calculate the MB
         durign the model run).
+    mb_model: `py:class:crampon.core.models.massbalance.DailyMassBalanceModel`,
+              optional
+        The mass balance model to use. Options are BraithwaiteModel and
+        HockModel at the moment, as radiation products do not reach back to
+        1961, when the modeling begins. Default: None (use BraithwaiteModel).
     reclassify_heights: float or None
         Whether to reclassify the glacier flowline heights. This can
         significantly decrease the time to run the model. If a number is
@@ -3543,9 +5089,16 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     else:
         heights, widths = gdir.get_inversion_flowline_hw()
 
-    #if mb is None:
-    day_model = BraithwaiteModel(gdir, bias=0.,
-                                     snow_init=np.zeros_like(heights))
+    if mb is None:
+        if mb_model is None:
+            day_model = BraithwaiteModel(gdir, bias=0.,
+                                         snow_init=np.zeros_like(heights),
+                                         **BraithwaiteModel.cali_params_guess)
+        else:
+            if isinstance(mb_model, utils.SuperclassMeta):
+                day_model = mb_model(gdir, snowcover=None, bias=0.)
+            else:
+                day_model = copy.copy(mb_model)
 
     init_swe = np.zeros_like(heights)
     init_swe.fill(np.nan)
@@ -3557,18 +5110,17 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
     for date in run_time:
 
         # Get the mass balance and convert to m w.e. per day
-        #if mb is None:
-        tmp = day_model.get_daily_mb(heights, date=date) * 3600 * 24 * \
+        if mb is None:
+            tmp = day_model.get_daily_mb(heights, date=date) * cfg.SEC_IN_DAY * \
                   cfg.RHO / cfg.RHO_W
-        #else:
-        #    tmp = mb.sel(time=date).MB.values
+        else:
+            tmp = mb.sel(time=date).MB.values[0]
 
         swe = tmp.copy()
         rho = np.ones_like(tmp) * get_rho_fresh_snow_anderson(
             meteo.meteo.sel(time=date).temp.values + cfg.ZERO_DEG_KELVIN)
         temperature = swe.copy()
         if temp_update.lower() == 'exact':
-            # Todo: place real temperature here
             temperature[~pd.isnull(swe)] = \
                 meteo.get_tmean_at_heights(date, heights)[~pd.isnull(swe)]
         temperature[~pd.isnull(swe)] = cfg.ZERO_DEG_KELVIN
@@ -3623,6 +5175,240 @@ def run_snowfirnmodel_with_options(gdir, run_start, run_end,
                              'does not exist.'.format(temp_update))
 
     return cover
+
+
+def get_melt_percentiles(gdirs, date, mbclim_suffix='', clip_mbclim=None):
+    """
+    Get the current percentile of the melt distribution for observed glaciers.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of `py:class:crampon.GlacierDirectory`s for which to get the
+        percentiles of current melt in the climatological melt distribution.
+    date: pd.Timestamp
+        Date for which to get the percentiles.
+    mbclim_suffix: str
+        Suffix for the mass balance climatology file. Default: '' (no suffix).
+        Possible e.g. 'fischer' for the mass balance climatology from
+        calibration on geodetic mass balances.
+    clip_mbclim: str or tuple
+        String of reference period allowed in
+        MassBalance.get_climate_reference_period() or tuple of None and/or
+        years.
+
+    Returns
+    -------
+    pctl_dict: dict
+        Dictionary with the GlacierDirectory objects as keys and the percentile
+        lists from the zeroth to the 100th percentile as values.
+    """
+
+    pctl_list = []
+    for g in gdirs:
+        clim = g.read_pickle('mb_daily' + mbclim_suffix)
+        if clip_mbclim is not None:
+            clim = clim.mb.get_climate_reference_period(ref_period=clip_mbclim)
+        # todo: for the assimilated mass balance no suffix necessary (yet?)
+        curr = g.read_pickle('mb_assim')
+
+        # get first assimilation date
+        obs = prepare_holfuy_camera_readings(g)
+        first_assim = pd.Timestamp(obs.date.values[0])
+
+        # select onl those DOYs within the span of the year
+        clim_cs = clim.mb.select_doy_span(first_assim.dayofyear, date.dayofyear)
+        curr_cs = curr.mb.select_doy_span(first_assim.dayofyear, date.dayofyear)
+
+        # select only melt days in the time span
+        clim_cs = clim_cs.where(clim_cs.MB <= 0.)
+        curr_cs = curr_cs.where(curr_cs.MB <= 0.)
+
+        # make custom hydrolo years beginning at the first assimilation date
+        climhyears = clim_cs.mb.make_hydro_years(bg_month=first_assim.month,
+                                                 bg_day=first_assim.day)
+        climdoys = clim_cs.mb.make_hydro_doys(climhyears,
+                                              bg_month=first_assim.month,
+                                              bg_day=first_assim.day)
+        # make cumsum and the percentiles on the last DOY of the span
+        mbcsclim = clim_cs.groupby(climhyears).apply(
+            lambda x: MassBalance.nan_or_cumsum(x))
+        climquant = mbcsclim.groupby(climdoys).apply(
+            lambda x: MassBalance.custom_quantiles(
+                x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
+
+        # same for current year
+        currhyears = curr_cs.mb.make_hydro_years(bg_month=first_assim.month,
+                                                 bg_day=first_assim.day)
+        currdoys = curr_cs.mb.make_hydro_doys(currhyears,
+                                              bg_month=first_assim.month,
+                                              bg_day=first_assim.day)
+        mbcscurr = curr_cs.groupby(currhyears).apply(
+            lambda x: MassBalance.nan_or_cumsum(x))
+        currquant = mbcscurr.groupby(currdoys).apply(
+            lambda x: mbcscurr.mb.custom_quantiles(
+                x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
+
+        # compare climatology and current distribution percentile-wise
+        percentiles = [percentileofscore(climquant, a) for a in currquant]
+
+        # save to list
+        pctl_list.append(percentiles)
+
+    # make it a dict so that we don't use the labeling
+    pctl_dict = dict(zip(gdirs, pctl_list))
+
+    return pctl_dict
+
+
+def extrapolate_melt_percentiles(pctl_dict, xi, yi, in_epsg=4326,
+                                 out_epsg=21781, extrap_func=None):
+    """
+    Interpolate the percentiles found for glaciers with data to space.
+    This function uses inverse distance weighting to extrapolate melt
+    percentiles from glacier with camera measurements to space. If there is
+    only one glacier with measurements, then use this value for all neighboring
+    glaciers.
+
+    Parameters
+    ----------
+    pctl_dict: dict
+         Dictionary with GlacierDirectory instances as keys and percentile
+         lists as values.
+    xi: array
+         X coordinates where to interpolate the percentiles to (should be in
+         out_epsg coordinate system).
+    yi: array
+        Y coordinates where to interpolate the observations to (should be in
+         out_epsg coordinate system).
+    in_epsg: int
+         EPSG number of the input coordinate system (glacier centroid).
+    out_epsg: int
+        EPSG number of the output coordinate system (grid with interpolated
+        percentiles).
+    extrap_func: funtion or None
+        Function to extrapolate percentiles into space. Allowed at the moment:
+        'simple_idw' for inverse distance weighting and 'scipy_idw' for inverse
+        distance weighting using NumPy's radial basis function in the linear
+        mode. Default: None (simple_idw).
+
+    Returns
+    -------
+    extrap_ds: xr.Dataset
+        dataset containing the distribution percentiles ('stat') of the
+        interpolated percentiles.
+    """
+
+    if extrap_func is None:
+        extrap_func = gis.simple_idw
+
+    inProj = Proj(init='epsg:{}'.format(in_epsg))
+    # should be metric (for interpolation)!?
+    outProj = Proj(init='epsg:{}'.format(out_epsg))
+    coord_list = []
+    pctl_list = []
+    for k, v in pctl_dict.items():
+        coord_list.append(transform(inProj, outProj, k.cenlon, k.cenlat))
+        pctl_list.append(v)
+    xi_mg, yi_mg = np.meshgrid(xi, yi)
+    xi_flat, yi_flat = xi_mg.flatten(), yi_mg.flatten()
+
+    extrap_list = []
+    npctls = np.arange(101)
+    # make a "percentile distribution of percentiles"
+    for npctl in npctls:
+        extrap = extrap_func([i for i, j in coord_list],
+                            [j for i, j in coord_list],
+                            [np.nanpercentile(k, npctl) for k in pctl_list],
+                             xi_flat, yi_flat)
+        extrap = extrap.reshape((yi.size, xi.size))
+        # todo: is this allowed?
+        extrap = np.clip(extrap, 0., 100.)
+        extrap_list.append(extrap)
+
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from matplotlib import cm
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot_surface(xi_mg, yi_mg,
+                    extrap_list[50], cmap=cm.RdYlGn)
+    ax.set_zlim3d(0, 100)
+    extrap_ds = xr.Dataset(
+        {'percentiles': (['x', 'y', 'stat'], np.array(extrap_list).T)},
+        coords={'x': (['x', ], xi), 'y': (['y', ], yi),
+                'stat': (['stat', ], npctls)})
+    return extrap_ds
+
+
+def infer_current_mb_from_melt_percentiles(gdirs, extrap_pctls, date,
+                                           date_range_obs, mbclim_suffix='',
+                                           in_epsg=4326, out_epsg=21781):
+    """
+    Calculate the current mass balance from an interpolated percentile map.
+
+    Parameters
+    ----------
+    gdirs: list
+        List of `py:class:crampon.GlacierDirectory` instances to get the mass
+        balance for.
+    extrap_pctls: xr.Dataset
+        Dataset containing the distribution percentiles ('stat') of the
+        interpolated percentiles.
+    date_range_obs: pd.date_range
+        Date range of the observations that determine the time span when the
+        current mass balance has been assimilated.
+    mbclim_suffix: str
+        Suffix for the mass balance climatology file. Default: '' (no suffix).
+        Possible e.g. 'fischer' for the mass balance climatology from
+        calibration on geodetic mass balances.
+    in_epsg: int
+         EPSG number of the input coordinate system (glacier centroid).
+    out_epsg: int
+        EPSG number of grid with interpolated percentiles.
+
+    Returns
+    -------
+
+    """
+    inProj = Proj(init='epsg:{}'.format(in_epsg))
+    outProj = Proj(init='epsg:{}'.format(out_epsg))
+
+    out_list = []  # should be same order as gdirs list
+    print(gdirs)
+    for g in gdirs:
+        print(g)
+        print(g.rgi_id)
+        clim = g.read_pickle('mb_daily' + mbclim_suffix)
+        clim_cs = clim.mb.select_doy_span(date_range_obs[0].dayofyear,
+                                          date_range_obs[-1].dayofyear)
+
+        # todo: this is double code with above function
+        # select only melt day in the time span
+        clim_cs = clim_cs.where(clim_cs.MB <= 0.)
+        climhyears = clim_cs.mb.make_hydro_years(
+            bg_month=date_range_obs[0].month, bg_day=date_range_obs[0].day)
+        climdoys = clim_cs.mb.make_hydro_doys(climhyears,
+                                              bg_month=date_range_obs[0].month,
+                                              bg_day=date_range_obs[0].day)
+        mbcsclim = clim_cs.groupby(climhyears).apply(
+            lambda x: MassBalance.nan_or_cumsum(x))
+        climquant = mbcsclim.groupby(climdoys).apply(
+            lambda x: MassBalance.custom_quantiles(
+                x, qs=np.arange(0., 1.01, 0.01))).isel(hydro_doys=-1).MB.values
+
+        gx, gy = transform(inProj, outProj, g.cenlon, g.cenlat)
+
+        # get percentiles on dates where there is assimilation data
+        pctls_to_apply = extrap_pctls.sel(x=gx, y=gy,
+                                          method='nearest').percentiles.values
+
+        # turn the actual percentiles into melt during the period
+        mb_sel = np.nanpercentile(climquant, pctls_to_apply)
+
+        out_list.append(mb_sel)
+
+    return out_list
 
 
 if __name__ == '__main__':

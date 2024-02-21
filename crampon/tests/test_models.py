@@ -9,7 +9,7 @@ from oggm.tests.funcs import get_test_dir, init_hef
 from crampon import utils
 import shutil
 import numpy as np
-from crampon.core.models import massbalance
+from crampon.core.models import massbalance, assimilation
 from crampon.core.models import flowline
 from crampon import cfg
 
@@ -35,6 +35,10 @@ do_plot = False
 
 DOM_BORDER = 80
 
+
+from crampon import cfg
+cfg.initialize(
+    '~\\crampon\\sandbox\CH_params.cfg')
 
 @pytest.mark.internet
 class TestMassBalance(unittest.TestCase):
@@ -98,3 +102,18 @@ class TestMiscModels(unittest.TestCase):
         result = massbalance.get_snow_thermal_diffusivity(self.test_rho,
                                                           273.15)
         np.testing.assert_almost_equal(desired, result)
+
+
+def test_crps_by_observation_height_direct():
+    np.random.seed(0)
+    mval = np.random.randn(2, 1000)
+    sdval = np.ones_like(mval) * 0.015
+    weights = np.ones((2, 1000)) / 1000.
+    y = np.array([-0.688695, 0.1261547])
+    crps = assimilation.crps_by_observation_height_direct(mval,
+                                                          np.atleast_2d(y).T,
+                                                          sdval, wgts=weights)
+    # cross-checked with R function 'crps_mixnorm' from package scoringRules
+    # todo: is this a good test? Number of decimals is actually quite low
+    np.testing.assert_array_almost_equal(crps,
+                                         np.array([0.38648416, 0.22832449]))

@@ -20,7 +20,7 @@ import xarray as xr
 
 # Local imports
 import crampon.cfg as cfg
-from crampon.core.preprocessing import gis, climate
+from crampon.core.preprocessing import gis, climate, radiation
 from oggm.utils import get_demo_file as get_oggm_demo_file
 from crampon.tests import HAS_NEW_GDAL, RUN_PREPRO_TESTS
 
@@ -101,6 +101,19 @@ class TestClimate(unittest.TestCase):
                                                      np.array([2600, 2700]))
         np.testing.assert_equal(p_hgt, np.array([[5.15, 5.3], [10.5, 11.]]))
 
+    def test_interpolate_mean_temperature_uncertainty(self):
+        pass
+
+    def test_interpolate_mean_precipitation_uncertainty(self):
+        pass
+
+    def test_prcp_fac_annual_cycle(self):
+        cycle = climate.prcp_fac_annual_cycle(np.arange(1, 367))
+        np.testing.assert_equal(np.argmin(cycle), 180)
+        np.testing.assert_equal(np.argmax(cycle), 363)
+        np.testing.assert_almost_equal(np.max(cycle), 1.08, 6)
+        np.testing.assert_almost_equal(np.min(cycle), 0.92, 6)
+
 
 class TestGlacierMeteo(unittest.TestCase):
 
@@ -164,3 +177,96 @@ class TestGlacierMeteo(unittest.TestCase):
     @pytest.mark.skip(reason='No lightweight test dataset yet')
     def test_get_precipitation_liquid_solid(self):
         pass
+
+
+class TestRadiation(unittest.TestCase):
+
+    def setUp(self):
+        cfg.initialize()
+
+        # test directory
+        self.testdir = os.path.join(cfg.PATHS['test_dir'], 'tmp_prepro')
+        if not os.path.exists(self.testdir):
+            os.makedirs(self.testdir)
+        self.clean_dir()
+
+    def tearDown(self):
+        self.rm_dir()
+
+    def rm_dir(self):
+        shutil.rmtree(self.testdir)
+
+    def clean_dir(self):
+        shutil.rmtree(self.testdir)
+        os.makedirs(self.testdir)
+
+    def test_irradiation_top_of_atmosphere(self):
+        # test equator, north pole, south pole, 45 deg north
+        # for testing, we set the solar constant to a fixed value
+        result = radiation.irradiation_top_of_atmosphere(np.arange(1, 367),
+                                                         np.array(
+                                                             [0., 90., -90.,
+                                                              45.]),
+                                                         solar_constant=1367.)
+
+        # equator
+        np.testing.assert_equal(np.count_nonzero(result[:, 0]), 366)
+        np.testing.assert_almost_equal(np.min(result[:, 0]), 386.1, decimal=1)
+        np.testing.assert_almost_equal(np.max(result[:, 0]), 438.9, decimal=1)
+        np.testing.assert_almost_equal(np.mean(result[:, 0]), 417.0, decimal=1)
+        np.testing.assert_almost_equal(np.argmin(result[:, 0]), 173)
+        np.testing.assert_almost_equal(np.argmax(result[:, 0]), 69)
+
+        # north pole
+        np.testing.assert_equal(np.count_nonzero(result[:, 1]), 182)
+        np.testing.assert_almost_equal(np.min(result[:, 1]), 0., 1)
+        np.testing.assert_almost_equal(np.max(result[:, 1]), 526.3, 1)
+        np.testing.assert_almost_equal(np.mean(result[:, 1]), 169.8, 1)
+        np.testing.assert_almost_equal(np.argmin(result[:, 1]), 0)
+        np.testing.assert_almost_equal(np.argmax(result[:, 1]), 171)
+
+        # south pole - 184 because of rounding difference
+        np.testing.assert_equal(np.count_nonzero(result[:, 2]), 184)
+        np.testing.assert_almost_equal(np.min(result[:, 2]), 0., 1)
+        np.testing.assert_almost_equal(np.max(result[:, 2]), 561.7, 1)
+        np.testing.assert_almost_equal(np.mean(result[:, 2]), 180.2, 1)
+        np.testing.assert_almost_equal(np.argmin(result[:, 2]), 81)
+        np.testing.assert_almost_equal(np.argmax(result[:, 2]), 354)
+
+        # 45 deg north
+        np.testing.assert_equal(np.count_nonzero(result[:, 3]), 366)
+        np.testing.assert_almost_equal(np.max(result[:, 3]), 485.3, 1)
+        np.testing.assert_almost_equal(np.min(result[:, 3]), 120.7, 1)
+        np.testing.assert_almost_equal(np.mean(result[:, 3]), 304.6, 1)
+        np.testing.assert_almost_equal(np.argmax(result[:, 3]), 170)
+        np.testing.assert_almost_equal(np.argmin(result[:, 3]), 354)
+
+def test_correct_radiation_for_terrain():
+    # test floats
+    # sun in zenith, terrain flat
+    float_result = radiation.correct_radiation_for_terrain(1000., 0., 0., 0.,
+                                                           0., 0.)
+    np.testing.assert_equal(float_result, 1000.)
+    # sun in zenith, terrain at 45 deg, facing south
+    float_result = radiation.correct_radiation_for_terrain(1000., 0.,
+                                                           np.pi / 4., np.pi,
+                                                           0., 0.)
+    np.testing.assert_almost_equal(float_result, 707.1, 1)
+
+    # sun in zenith, terrain at 45 deg, facing north - same value
+    float_result = radiation.correct_radiation_for_terrain(1000., 0.,
+                                                           np.pi / 4., 0.,
+                                                           0., 0.)
+    np.testing.assert_almost_equal(float_result, 707.1, 1)
+
+    # sun at 45 deg in south, terrain at 45 deg, facing south
+    float_result = radiation.correct_radiation_for_terrain(1000., 0.,
+                                                           np.pi / 4., np.pi,
+                                                           np.pi / 4., np.pi)
+    np.testing.assert_almost_equal(float_result, 1414.2, 1)
+
+
+    # array tests
+
+
+

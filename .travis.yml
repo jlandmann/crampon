@@ -1,6 +1,6 @@
 # This is almost a copy from salem, except that python 2.7 is not supported
-language: python
-sudo: required
+language: minimal
+sudo: false
 notifications:
   email: false
 
@@ -28,14 +28,13 @@ matrix:
     env: CONDA_ENV=py36-all-rc MPL=--mpl
 
 before_install:
-  - "export DISPLAY=:99.0"
-  - "sh -e /etc/init.d/xvfb start"
   - wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh;
   - bash miniconda.sh -b -p $HOME/miniconda
   - export PATH="$HOME/miniconda/bin:$PATH"
   - hash -r
   - conda config --set always_yes yes --set changeps1 no
   - conda update -q conda
+  - conda config --set channel_priority strict
   - pip install pyyaml
 
 install:
@@ -43,8 +42,13 @@ install:
   - source activate test_env
   - pip install -e .
 
+before_script:
+  - export MPLBACKEND=agg
+
 script:
-  - pytest crampon $MPL --cov=crampon --cov-report term-missing;
+  - which python
+  - python --version
+  - pytest crampon $MPL --verbose --cov=crampon --cov-report term-missing;
 
 after_success:
 - coveralls

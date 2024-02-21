@@ -13,7 +13,6 @@ from crampon import graphics
 from crampon.core.preprocessing import gis
 import crampon.cfg as cfg
 from crampon.utils import get_oggm_demo_file
-from oggm.tests.test_graphics import test_googlemap
 
 # General settings
 warnings.filterwarnings("once", category=DeprecationWarning)

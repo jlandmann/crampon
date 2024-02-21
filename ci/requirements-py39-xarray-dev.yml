@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - oggm
 dependencies:
-  - python=3.6
+  - python=3.9
   - six
   - numpy
   - scipy
@@ -13,18 +13,35 @@ dependencies:
   - shapely
   - geopandas
   - rasterio
-  - pandas
+  - pandas>=0.25
   - dask
   - matplotlib
   - Pillow
   - cartopy
   - paramiko
-  - six
   - oggm
   - configobj
   - folium
   - mpld3
+  - numba
+  - scikit-learn
+  - folium
+  - branca
+  - mpld3
+  - bokeh
+  - pysolar
+  - descartes
+  - filterpy
+  - properscoring
+  - cftime
+  - cfgrib
+  - selenium
+  - geckodriver
+  - firefox
+  - pytables
+  - pip
   - pip:
+    - git+https://github.com/fmaussion/salem.git
     - git+https://github.com/pydata/xarray.git
     - schedule
     - coveralls

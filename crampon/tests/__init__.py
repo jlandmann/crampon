@@ -103,15 +103,24 @@ except:
     HAS_INTERNET = False
 
 # check if VPN is on (vpn.wsl.ch refuses, so check with speedy 10 & cirrus
-# https://stackoverflow.com/questions/6757587/continuous-check-for-vpn-connectivity-python
-PING_HOSTS = ['speedy10.wsl.ch', 'cirrus.wsl.ch']
+# https://bit.ly/390reBw
+WSL_PING_HOSTS = ['speedy10.wsl.ch', 'cirrus.wsl.ch']
 retcode = 0
-for host in PING_HOSTS:
+for host in WSL_PING_HOSTS:
     retcode += os.system('ping {}'.format(host))
 if retcode:
-    HAS_VPN = False
+    HAS_WSL_VPN = False
 else:
-    HAS_VPN = True
+    HAS_WSL_VPN = True
+
+ETH_PING_HOSTS = ['vierzack06.ethz.ch', 'vierzack03.ethz.ch']
+retcode = 0
+for host in ETH_PING_HOSTS:
+    retcode += os.system('ping {}'.format(host))
+if retcode:
+    HAS_ETH_VPN = False
+else:
+    HAS_ETH_VPN = True
 
 # check if there is a credentials file (should be added to .gitignore)
 cred_path = os.path.abspath(os.path.join(__file__, "../../..", '.credentials'))
@@ -125,12 +134,19 @@ if os.path.exists(cred_path):
 
 
 def requires_credentials(test):
-    # Test decorator
+    """Test decorator to make it require login credentials."""
     msg = 'requires credentials'
     return test if HAS_CREDENTIALS else unittest.skip(msg)(test)
 
 
-def requires_vpn(test):
-    # Test decorator
-    msg = 'requires VPN connection'
-    return test if HAS_VPN else unittest.skip(msg)(test)
+def requires_wsl_vpn(test):
+    """Test decorator to make it require a WSL VPN connection."""
+    msg = 'requires WSL VPN connection'
+    return test if HAS_WSL_VPN else unittest.skip(msg)(test)
+
+
+def requires_eth_vpn(test):
+    """Test decorator to make it require an ETH VPN connection."""
+    msg = 'requires ETH VPN connection'
+    return test if HAS_ETH_VPN else unittest.skip(msg)(test)
+
